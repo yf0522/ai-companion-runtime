@@ -1,0 +1,58 @@
+import logging
+from typing import Optional
+from fastapi import WebSocket
+
+logger = logging.getLogger(__name__)
+
+
+class StreamManager:
+    """Manages sending structured WebSocket messages to the client."""
+
+    def __init__(self, websocket: WebSocket):
+        self._ws = websocket
+
+    async def send_trace(self, trace_id: str):
+        await self._send({"type": "trace", "trace_id": trace_id})
+
+    async def send_first_reply(self, text: str, ttft_ms: int):
+        await self._send({"type": "first_reply", "text": text, "ttft_ms": ttft_ms})
+
+    async def send_delta(self, text: str):
+        await self._send({"type": "delta", "text": text})
+
+    async def send_tool_status(self, tool: str, status: str):
+        await self._send({"type": "tool_status", "tool": tool, "status": status})
+
+    async def send_tool_result(self, tool: str, text: str):
+        await self._send({"type": "tool_result", "tool": tool, "text": text})
+
+    async def send_risk_alert(self, level: str, message: str):
+        await self._send({"type": "risk_alert", "level": level, "message": message})
+
+    async def send_final(
+        self,
+        trace_id: str,
+        message_id: str,
+        ttft_ms: int,
+        total_latency_ms: int,
+        tools_used: list[str],
+        memory_updated: bool,
+    ):
+        await self._send({
+            "type": "final",
+            "trace_id": trace_id,
+            "message_id": message_id,
+            "ttft_ms": ttft_ms,
+            "total_latency_ms": total_latency_ms,
+            "tools_used": tools_used,
+            "memory_updated": memory_updated,
+        })
+
+    async def send_error(self, code: str, message: str, retry: bool = False):
+        await self._send({"type": "error", "code": code, "message": message, "retry": retry})
+
+    async def _send(self, data: dict):
+        try:
+            await self._ws.send_json(data)
+        except Exception as e:
+            logger.error(f"Failed to send WebSocket message: {e}")

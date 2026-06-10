@@ -1,0 +1,24 @@
+harness:
+  max_steps: 5
+  max_tool_calls: 3
+  max_retries: 2
+
+  timeouts:
+    fast_reply: 300
+    analyzer: 100
+    memory_recall: 300
+    model_first_token: 5000
+    model_total: 30000
+    tool_call: 3000
+    tool_total: 10000
+
+  fallback:
+    model_fail: "fallback_model"
+    fallback_fail: "template_reply"
+    tool_fail: "skip_with_apology"
+    memory_fail: "use_current_only"
+    analyzer_fail: "use_defaults"
+
+  templates:
+    model_all_fail: "抱歉，我现在有点反应不过来，你能稍后再试一下吗？"
+    tool_fail_prefix: "我刚刚{tool_name}时有点问题，但我们可以先继续聊。"

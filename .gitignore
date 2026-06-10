@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+
+# Build
+.next/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Docs (design docs not tracked)
+docs/
+*.html
+
+# Data
+data/
+
+# Docker volumes
+pgdata/
+miniodata/
+grafdata/

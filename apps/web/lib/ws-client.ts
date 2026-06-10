@@ -1,0 +1,119 @@
+type MessageHandler = (data: any) => void;
+
+export class CompanionWsClient {
+  private ws: WebSocket | null = null;
+  private url: string;
+  private handlers: Map<string, MessageHandler[]> = new Map();
+  private reconnectAttempts = 0;
+  private maxRetries = 10;
+  private retryIntervals = [1000, 2000, 5000, 10000, 30000];
+  private shouldReconnect = true;
+  private token: string = "";
+  private sessionId: string | null = null;
+  private lastMsgId: string | null = null;
+
+  constructor(baseUrl: string) {
+    this.url = baseUrl;
+  }
+
+  connect(token: string, sessionId?: string, lastMsgId?: string) {
+    this.token = token;
+    this.sessionId = sessionId || null;
+    this.lastMsgId = lastMsgId || null;
+    this.shouldReconnect = true;
+    this._doConnect();
+  }
+
+  private _doConnect() {
+    let url = `${this.url}/ws/chat?token=${this.token}`;
+    if (this.sessionId) url += `&session_id=${this.sessionId}`;
+    if (this.lastMsgId) url += `&last_msg_id=${this.lastMsgId}`;
+
+    this.ws = new WebSocket(url);
+
+    this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
+      this._emit("_status", { status: "connected" });
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        this._emit(data.type, data);
+        this._emit("_any", data);
+      } catch (e) {
+        console.error("Failed to parse WS message:", e);
+      }
+    };
+
+    this.ws.onclose = () => {
+      this._emit("_status", { status: "disconnected" });
+      if (this.shouldReconnect) {
+        this._reconnect();
+      }
+    };
+
+    this.ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+    };
+  }
+
+  private _reconnect() {
+    if (this.reconnectAttempts >= this.maxRetries) {
+      this._emit("_status", { status: "failed" });
+      return;
+    }
+    const delay = this.retryIntervals[
+      Math.min(this.reconnectAttempts, this.retryIntervals.length - 1)
+    ];
+    this._emit("_status", { status: "reconnecting" });
+    setTimeout(() => {
+      this.reconnectAttempts++;
+      this._doConnect();
+    }, delay);
+  }
+
+  disconnect() {
+    this.shouldReconnect = false;
+    this.ws?.close();
+    this.ws = null;
+  }
+
+  send(data: object) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  sendMessage(message: string) {
+    this.send({ type: "user_message", message, session_id: this.sessionId });
+  }
+
+  stopGeneration(traceId: string) {
+    this.send({ type: "stop_generation", trace_id: traceId });
+  }
+
+  on(type: string, handler: MessageHandler) {
+    if (!this.handlers.has(type)) this.handlers.set(type, []);
+    this.handlers.get(type)!.push(handler);
+  }
+
+  off(type: string, handler: MessageHandler) {
+    const list = this.handlers.get(type);
+    if (list) {
+      this.handlers.set(type, list.filter((h) => h !== handler));
+    }
+  }
+
+  private _emit(type: string, data: any) {
+    this.handlers.get(type)?.forEach((h) => h(data));
+  }
+
+  setSessionId(id: string) {
+    this.sessionId = id;
+  }
+
+  setLastMsgId(id: string) {
+    this.lastMsgId = id;
+  }
+}

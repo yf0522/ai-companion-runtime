@@ -1,0 +1,37 @@
+rules:
+  critical:
+    keywords:
+      - "不想活了"
+      - "想死"
+      - "自杀"
+      - "结束生命"
+      - "去死"
+    action: fixed_safety_message
+    notify: admin
+    block_tools: true
+
+  high:
+    keywords:
+      - "活着没意思"
+      - "太痛苦了"
+      - "撑不下去"
+      - "好想消失"
+      - "世界没有我会更好"
+    patterns:
+      - "(?:想|要|去).{0,4}(?:死|走|消失|解脱)"
+      - "(?:活着|人生).{0,6}(?:没意思|没意义|没希望)"
+    action: safety_template
+    include_hotline: true
+    block_tools: true
+
+  medium:
+    conditions:
+      - "emotion_intensity > 0.85 AND valence < -0.7"
+    action: add_care_guidance
+
+safety_hotline:
+  text: "如果你正在经历困难，可以拨打 24 小时心理援助热线：400-161-9995"
+
+safety_messages:
+  critical: "我注意到你可能正在经历很大的困难。你的感受很重要，请你记住你不是一个人。如果你现在需要帮助，请拨打 24 小时心理援助热线：400-161-9995。"
+  high: "我听到你了，你现在的感受一定很不容易。如果你愿意，可以跟我多聊聊。如果你感觉需要专业的支持，24 小时心理援助热线随时可以联系：400-161-9995。"

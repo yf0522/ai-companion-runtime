@@ -1,0 +1,133 @@
+services:
+  api:
+    build: ../apps/api
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    env_file: ../.env
+    volumes:
+      - ../apps/api/app/config:/app/app/config
+    restart: unless-stopped
+
+  web:
+    build: ../apps/web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    environment:
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    restart: unless-stopped
+
+  celery-worker:
+    build: ../apps/api
+    command: celery -A app.workers.celery_app worker -l info -c 4
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    env_file: ../.env
+    restart: unless-stopped
+
+  celery-beat:
+    build: ../apps/api
+    command: celery -A app.workers.celery_app beat -l info
+    depends_on:
+      - redis
+    env_file: ../.env
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: companion
+      POSTGRES_USER: ${PG_USER:-companion}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-companion_secret}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-companion}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin_secret}
+    volumes:
+      - miniodata:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    restart: "no"
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 $${MINIO_ACCESS_KEY:-minioadmin} $${MINIO_SECRET_KEY:-minioadmin_secret};
+      mc mb local/archive --ignore-existing;
+      mc mb local/attachments --ignore-existing;
+      mc mb local/traces --ignore-existing;
+      echo 'MinIO buckets initialized';
+      "
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafdata:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:
+  grafdata:
