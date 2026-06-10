@@ -14,8 +14,10 @@ from app.engines.base import (
     MemorySnapshot, PersonalityConfig,
 )
 from app.runtime.stream_manager import StreamManager
+from app.observability.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
+_trace_svc = TraceService()
 
 
 def _load_harness_config() -> dict:
@@ -64,6 +66,17 @@ class AgentHarness:
         cancel_event: asyncio.Event,
     ) -> dict:
         """Execute the full pipeline. Returns metadata dict."""
+        import uuid as _uuid
+        # Convert string user_id to a deterministic UUID for DB storage
+        try:
+            db_user_id = str(_uuid.UUID(user_id))
+        except (ValueError, AttributeError):
+            db_user_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, user_id))
+        try:
+            db_session_id = str(_uuid.UUID(session_id))
+        except (ValueError, AttributeError):
+            db_session_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, session_id))
+
         start_time = time.monotonic()
         trace_id = self._generate_trace_id(user_id)
         step = 0
@@ -78,6 +91,24 @@ class AgentHarness:
             message=message, trace_id=trace_id,
         )
         intent, emotion, risk, memory = await self._run_analyzers(analyzer_input)
+
+        # Record analyzer results
+        analyzer_ms = int((time.monotonic() - start_time) * 1000)
+        asyncio.create_task(_trace_svc.add_event(
+            trace_id=trace_id, step_name="intent_detection", step_index=1,
+            user_id=db_user_id, session_id=db_session_id,
+            output_json=intent.model_dump(), status="success", latency_ms=analyzer_ms,
+        ))
+        asyncio.create_task(_trace_svc.add_event(
+            trace_id=trace_id, step_name="emotion_detection", step_index=2,
+            user_id=db_user_id, session_id=db_session_id,
+            output_json=emotion.model_dump(), status="success", latency_ms=analyzer_ms,
+        ))
+        asyncio.create_task(_trace_svc.add_event(
+            trace_id=trace_id, step_name="risk_detection", step_index=3,
+            user_id=db_user_id, session_id=db_session_id,
+            output_json=risk.model_dump(), status="success", latency_ms=analyzer_ms,
+        ))
 
         # Step 2: Risk check
         step += 1
@@ -165,6 +196,23 @@ class AgentHarness:
         # Step 5: Final
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
         tools_used = [t.get("tool_name", "") for t in tool_results if isinstance(t, dict)]
+
+        # Record model call
+        asyncio.create_task(_trace_svc.add_event(
+            trace_id=trace_id, step_name="model_stream", step_index=8,
+            user_id=db_user_id, session_id=db_session_id,
+            output_json={"response_length": len(response_text), "model_success": model_success},
+            status="success" if model_success else "failed",
+            latency_ms=total_latency_ms,
+        ))
+
+        # Record final
+        asyncio.create_task(_trace_svc.add_event(
+            trace_id=trace_id, step_name="response_final", step_index=10,
+            user_id=db_user_id, session_id=db_session_id,
+            output_json={"ttft_ms": ttft_ms, "total_latency_ms": total_latency_ms, "tools_used": tools_used},
+            status="success", latency_ms=total_latency_ms,
+        ))
 
         await stream_mgr.send_final(
             trace_id=trace_id,

@@ -8,47 +8,90 @@ export default function MessageBubble({ message }: Props) {
   const isUser = message.role === "user";
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
-      <div
-        className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-          isUser
-            ? "bg-blue-500 text-white rounded-br-md"
-            : "bg-gray-100 text-gray-900 rounded-bl-md"
-        }`}
-      >
-        {message.riskAlert && (
-          <div className="mb-2 rounded-lg bg-red-50 border border-red-200 p-2 text-sm text-red-700">
-            {message.riskAlert.message}
-          </div>
-        )}
+    <div className={`py-4 ${!isUser ? "bg-[#fafafa]" : ""}`}>
+      <div className="mx-auto flex max-w-3xl gap-3.5 px-4">
+        {/* Avatar */}
+        <div
+          className={`mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+            isUser
+              ? "bg-indigo-100 text-indigo-700"
+              : "bg-gradient-to-br from-indigo-500 to-purple-500 text-white"
+          }`}
+        >
+          {isUser ? "U" : "C"}
+        </div>
 
-        <p className="whitespace-pre-wrap text-sm leading-relaxed">
-          {message.content}
-          {message.status === "streaming" && (
-            <span className="inline-block w-1.5 h-4 ml-0.5 bg-gray-400 animate-pulse rounded-sm" />
+        {/* Body */}
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 text-[13px] font-semibold text-gray-800">
+            {isUser ? "你" : "AI Companion"}
+          </div>
+
+          {/* Risk Alert */}
+          {message.riskAlert && (
+            <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {message.riskAlert.message}
+            </div>
           )}
-        </p>
 
-        {message.status === "complete" && message.role === "assistant" && message.ttftMs !== undefined && (
-          <div className="mt-2 flex gap-3 text-xs text-gray-400">
-            <span>TTFT: {message.ttftMs}ms</span>
-            {message.totalLatencyMs !== undefined && (
-              <span>Total: {message.totalLatencyMs}ms</span>
-            )}
-            {message.traceId && (
-              <a
-                href={`/traces/${message.traceId}`}
-                className="underline hover:text-gray-600"
-              >
-                Trace
-              </a>
+          {/* Content */}
+          <div className="whitespace-pre-wrap text-sm leading-[1.7] text-gray-700">
+            {message.content}
+            {message.status === "streaming" && (
+              <span
+                className="ml-0.5 inline-block h-4 w-0.5 rounded-sm bg-indigo-500"
+                style={{ animation: "blink 1s infinite" }}
+              />
             )}
           </div>
-        )}
 
-        {message.status === "error" && (
-          <div className="mt-1 text-xs text-red-400">发送失败</div>
-        )}
+          {/* Tool badges */}
+          {message.toolsUsed && message.toolsUsed.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {message.toolsUsed.map((tool) => (
+                <span
+                  key={tool}
+                  className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2.5 py-1 text-[11px] text-green-700"
+                >
+                  🔧 {tool} ✓
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Meta bar */}
+          {message.status === "complete" && !isUser && message.ttftMs !== undefined && (
+            <div className="mt-2 flex items-center gap-3">
+              <button className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[13px] text-gray-400 transition hover:bg-gray-100 hover:text-gray-600">
+                📋
+              </button>
+              <button className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[13px] text-gray-400 transition hover:bg-gray-100 hover:text-gray-600">
+                🔄
+              </button>
+              <span className="text-[11px] text-gray-400">
+                TTFT: {message.ttftMs}ms
+              </span>
+              {message.totalLatencyMs !== undefined && (
+                <span className="text-[11px] text-gray-400">
+                  Total: {message.totalLatencyMs}ms
+                </span>
+              )}
+              {message.traceId && (
+                <a
+                  href={`/traces/${message.traceId}`}
+                  className="text-[11px] text-indigo-500 no-underline hover:underline"
+                >
+                  查看 Trace →
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* Error */}
+          {message.status === "error" && (
+            <div className="mt-1 text-xs text-red-400">发送失败</div>
+          )}
+        </div>
       </div>
     </div>
   );

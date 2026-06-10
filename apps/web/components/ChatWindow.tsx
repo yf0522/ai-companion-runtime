@@ -4,17 +4,19 @@ import { useEffect, useRef, useState } from "react";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import MessageBubble from "./MessageBubble";
+import Sidebar from "./Sidebar";
 
 export default function ChatWindow() {
   const [input, setInput] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const wsStatus = useWsStore((s) => s.status);
   const connect = useWsStore((s) => s.connect);
   const sendMessage = useWsStore((s) => s.sendMessage);
 
-  // Auto-connect on mount
   useEffect(() => {
     connect();
     return () => {
@@ -22,10 +24,18 @@ export default function ChatWindow() {
     };
   }, [connect]);
 
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  }, [input]);
 
   const handleSend = () => {
     const trimmed = input.trim();
@@ -41,69 +51,144 @@ export default function ChatWindow() {
     }
   };
 
-  const statusColor = {
-    connected: "bg-green-400",
-    connecting: "bg-yellow-400",
-    reconnecting: "bg-yellow-400",
-    disconnected: "bg-gray-400",
-    failed: "bg-red-400",
-  }[wsStatus];
+  const statusDot =
+    wsStatus === "connected"
+      ? "bg-green-400"
+      : wsStatus === "failed"
+      ? "bg-red-400"
+      : "bg-gray-400";
 
-  const statusText = {
+  const statusLabel: Record<string, string> = {
     connected: "已连接",
     connecting: "连接中...",
     reconnecting: "重连中...",
     disconnected: "未连接",
     failed: "连接失败",
-  }[wsStatus];
+  };
 
   return (
-    <div className="flex h-screen flex-col bg-white">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b px-6 py-3">
-        <h1 className="text-lg font-semibold text-gray-800">AI Companion</h1>
-        <div className="flex items-center gap-2">
-          <span className={`h-2 w-2 rounded-full ${statusColor}`} />
-          <span className="text-xs text-gray-500">{statusText}</span>
-        </div>
-      </div>
+    <div className="flex h-screen">
+      {/* Sidebar */}
+      <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        {messages.length === 0 && (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center text-gray-400">
-              <p className="text-4xl mb-4">👋</p>
-              <p className="text-lg">你好，我是你的 AI Companion</p>
-              <p className="text-sm mt-1">随便聊聊吧</p>
+      {/* Main */}
+      <div className="flex min-w-0 flex-1 flex-col bg-white">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-gray-200 bg-white px-5 py-3">
+          <div className="flex items-center gap-3">
+            {!sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100"
+              >
+                ☰
+              </button>
+            )}
+            {sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100"
+              >
+                ◧
+              </button>
+            )}
+            <div className="flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold text-gray-800 transition hover:bg-gray-100">
+              AI Companion
+              <span className="text-[10px] text-gray-400">▾</span>
             </div>
           </div>
-        )}
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
+          <div className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`} />
+            <span className="text-[11px] text-gray-500">
+              {statusLabel[wsStatus]}
+            </span>
+          </div>
+        </div>
 
-      {/* Input */}
-      <div className="border-t px-6 py-4">
-        <div className="flex gap-3">
-          <textarea
-            className="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-3 text-sm focus:border-blue-400 focus:outline-none"
-            rows={1}
-            placeholder={wsStatus === "connected" ? "输入消息..." : "等待连接..."}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={wsStatus !== "connected"}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isStreaming || wsStatus !== "connected"}
-            className="rounded-xl bg-blue-500 px-6 py-3 text-sm font-medium text-white transition hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            {isStreaming ? "生成中..." : "发送"}
-          </button>
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto">
+          {messages.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center px-4">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 text-[22px] font-bold text-white shadow-lg shadow-indigo-500/30">
+                C
+              </div>
+              <h2 className="mb-1.5 text-[22px] font-semibold text-gray-800">
+                你好，有什么可以帮你的？
+              </h2>
+              <p className="text-sm text-gray-400">
+                我是你的 AI Companion，随时准备聊天
+              </p>
+              <div className="mt-8 grid w-full max-w-[500px] grid-cols-2 gap-2.5">
+                {[
+                  { title: "聊聊心情", desc: "说说今天过得怎么样" },
+                  { title: "查天气", desc: "帮你看看明天的天气" },
+                  { title: "帮我计算", desc: "解决一道数学题" },
+                  { title: "搜索信息", desc: "帮你查找相关资料" },
+                ].map((item) => (
+                  <button
+                    key={item.title}
+                    onClick={() => {
+                      if (wsStatus === "connected") {
+                        sendMessage(item.desc);
+                      }
+                    }}
+                    className="rounded-xl border border-gray-200 bg-white p-3.5 text-left transition hover:border-indigo-200 hover:bg-indigo-50/50"
+                  >
+                    <div className="text-[13px] font-medium text-gray-700">
+                      {item.title}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-gray-400">
+                      {item.desc}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} message={msg} />
+              ))}
+              <div ref={messagesEndRef} />
+            </>
+          )}
+        </div>
+
+        {/* Input */}
+        <div className="bg-white px-4 pb-4 pt-3">
+          <div className="relative mx-auto max-w-3xl">
+            <textarea
+              ref={textareaRef}
+              className="w-full resize-none rounded-2xl border border-gray-300 bg-white py-3.5 pl-4.5 pr-14 text-sm leading-relaxed outline-none transition focus:border-indigo-500 focus:shadow-[0_0_0_2px_rgba(99,102,241,0.15)]"
+              rows={1}
+              placeholder={
+                wsStatus === "connected"
+                  ? "给 AI Companion 发消息..."
+                  : "等待连接..."
+              }
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={wsStatus !== "connected"}
+              style={{ minHeight: "52px", maxHeight: "200px" }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={
+                !input.trim() || isStreaming || wsStatus !== "connected"
+              }
+              className={`absolute bottom-2.5 right-2.5 flex h-8 w-8 items-center justify-center rounded-[10px] text-sm text-white transition active:scale-95 ${
+                input.trim() && !isStreaming && wsStatus === "connected"
+                  ? "bg-indigo-500 hover:bg-indigo-600"
+                  : "cursor-default bg-gray-300"
+              }`}
+            >
+              ↑
+            </button>
+          </div>
+          <p className="mt-2 text-center text-[11px] text-gray-400">
+            AI Companion 可能会犯错，重要信息请核实
+          </p>
         </div>
       </div>
     </div>

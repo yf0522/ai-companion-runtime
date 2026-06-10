@@ -3,7 +3,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pgvector.sqlalchemy import Vector
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    Vector = None
 from sqlalchemy import ForeignKey, Index, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -103,7 +106,7 @@ class MemoryEmbedding(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     memory_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("memories.id"), unique=True, nullable=False)
-    embedding = mapped_column(Vector(1536))
+    embedding = mapped_column(Vector(1536)) if Vector else mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

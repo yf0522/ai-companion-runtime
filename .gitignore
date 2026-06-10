@@ -33,3 +33,4 @@ data/
 pgdata/
 miniodata/
 grafdata/
+.superpowers/

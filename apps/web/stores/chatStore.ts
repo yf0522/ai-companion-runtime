@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 export interface Message {
   id: string;
@@ -35,7 +36,9 @@ interface ChatState {
   clearMessages: () => void;
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>()(
+  persist(
+    (set, get) => ({
   messages: [],
   currentTraceId: null,
   isStreaming: false,
@@ -128,4 +131,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearMessages: () => set({ messages: [], currentTraceId: null, isStreaming: false }),
-}));
+}),
+    {
+      name: "companion-chat",
+      partialize: (state) => ({ messages: state.messages.filter((m) => m.status === "complete") }),
+    }
+  )
+);

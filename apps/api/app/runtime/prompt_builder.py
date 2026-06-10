@@ -90,7 +90,7 @@ class PromptBuilder:
         # Response instructions
         messages.append({
             "role": "system",
-            "content": "要求：1. 先承接情绪 2. 再完成任务 3. 不像客服 4. 不过度心理咨询化 5. 结尾自然追问",
+            "content": "要求：1. 先承接情绪 2. 再完成任务 3. 不像客服 4. 不过度心理咨询化 5. 结尾自然追问 6. 绝对禁止用小括号写动作或旁白，如（笑）（递茶）（轻声说），直接用文字表达",
         })
 
         return messages
