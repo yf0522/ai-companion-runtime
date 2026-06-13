@@ -20,14 +20,47 @@ logger = logging.getLogger(__name__)
 _trace_svc = TraceService()
 
 
+_harness_config: dict | None = None
+
+
 def _load_harness_config() -> dict:
+    global _harness_config
+    if _harness_config is not None:
+        return _harness_config
     path = Path(__file__).parent.parent / "config" / "harness.yaml"
     try:
         with open(path) as f:
-            return yaml.safe_load(f).get("harness", {})
+            _harness_config = yaml.safe_load(f).get("harness", {})
     except Exception as e:
         logger.warning(f"Failed to load harness.yaml: {e}, using defaults")
-        return {}
+        _harness_config = {}
+    return _harness_config
+
+
+# Cached engine singletons
+_engine_cache: dict[str, object] = {}
+
+
+def _get_cached_engine(name: str):
+    """Return a cached engine instance, creating on first call."""
+    if name in _engine_cache:
+        return _engine_cache[name]
+    try:
+        if name == "intent":
+            from app.engines.intent_engine import IntentEngine
+            _engine_cache[name] = IntentEngine()
+        elif name == "emotion":
+            from app.engines.emotion_engine import EmotionEngine
+            _engine_cache[name] = EmotionEngine()
+        elif name == "risk":
+            from app.engines.risk_engine import RiskEngine
+            _engine_cache[name] = RiskEngine()
+        elif name == "memory":
+            from app.engines.memory_engine import MemoryEngine
+            _engine_cache[name] = MemoryEngine()
+    except ImportError:
+        return None
+    return _engine_cache.get(name)
 
 
 class AgentHarness:
@@ -116,9 +149,11 @@ class AgentHarness:
             await self._handle_risk(risk, stream_mgr, trace_id, start_time)
             return {"trace_id": trace_id, "blocked_by_risk": True}
 
-        # Step 3: Fast Reply Race
+        # Step 3: Personality + Fast Reply (non-blocking, first-sentence-first)
         step += 1
         personality = await self._get_personality(emotion, intent)
+
+        # Fast reply first — does NOT wait for tools
         fast_reply_sent = await self._fast_reply_race(
             message, emotion, personality, stream_mgr, start_time, cancel_event,
         )
@@ -126,14 +161,17 @@ class AgentHarness:
         if cancel_event.is_set():
             return {"trace_id": trace_id, "cancelled": True}
 
-        # Step 4: Main model stream + tool dispatch
+        # Step 4: Main model stream + tool dispatch in parallel
+        # Tools run concurrently with the main model.
+        # Tool results are sent to the client via tool_result messages.
+        # The main model prompt does NOT wait for tools (preserving TTFT).
         step += 1
         ttft_ms = None
         response_text = ""
         tool_results = []
         message_id = f"m_{nanoid(size=12)}"
 
-        # Build full prompt
+        # Build prompt (without tool results — they arrive via side-channel)
         from app.runtime.prompt_builder import PromptBuilder
         prompt_builder = PromptBuilder()
         messages = prompt_builder.build(
@@ -144,7 +182,15 @@ class AgentHarness:
             memory=memory,
         )
 
-        # Stream main model with retry
+        # Launch tool dispatch as a background task (non-blocking)
+        tool_task = None
+        if intent.tool_needs and not cancel_event.is_set():
+            tool_task = asyncio.create_task(
+                self._dispatch_tools(intent.tool_needs, message, trace_id, stream_mgr)
+            )
+
+        # Stream main model with retry + total timeout
+        model_total_timeout = self._timeout("model_total") / 1000  # seconds
         retries = 0
         model_success = False
         while retries <= self.max_retries and not cancel_event.is_set():
@@ -154,23 +200,31 @@ class AgentHarness:
                 model = await model_router.get_model(role)
                 first_token = True
 
-                async for token in model.stream_chat(messages):
-                    if cancel_event.is_set():
-                        break
-                    if first_token:
-                        if not fast_reply_sent:
-                            ttft_ms = int((time.monotonic() - start_time) * 1000)
-                            await stream_mgr.send_first_reply(token, ttft_ms)
+                async def _stream_model():
+                    nonlocal first_token, ttft_ms, fast_reply_sent, response_text
+                    async for token in model.stream_chat(messages):
+                        if cancel_event.is_set():
+                            break
+                        if first_token:
+                            if not fast_reply_sent:
+                                ttft_ms = int((time.monotonic() - start_time) * 1000)
+                                await stream_mgr.send_first_reply(token, ttft_ms)
+                            else:
+                                await stream_mgr.send_delta(token)
+                            first_token = False
                         else:
                             await stream_mgr.send_delta(token)
-                        first_token = False
-                    else:
-                        await stream_mgr.send_delta(token)
-                    response_text += token
+                        response_text += token
 
+                await asyncio.wait_for(_stream_model(), timeout=model_total_timeout)
                 model_success = True
                 break
 
+            except asyncio.TimeoutError:
+                logger.warning(f"Model stream timed out after {model_total_timeout}s")
+                retries += 1
+                if retries > self.max_retries:
+                    break
             except Exception as e:
                 retries += 1
                 logger.warning(f"Model attempt {retries} failed: {e}")
@@ -187,15 +241,25 @@ class AgentHarness:
                 await stream_mgr.send_delta(fallback_text)
             response_text = fallback_text
 
-        # Detect and dispatch tools (async, non-blocking for now)
-        if intent.tool_needs and not cancel_event.is_set():
-            tool_results = await self._dispatch_tools(
-                intent.tool_needs, message, trace_id, stream_mgr,
-            )
+        # Collect tool results (if any) — they've been streaming via tool_result already
+        if tool_task:
+            try:
+                tool_results = await asyncio.wait_for(tool_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                logger.warning("Tool dispatch did not finish in time after model stream")
+                tool_results = []
+            except Exception as e:
+                logger.warning(f"Tool dispatch failed: {e}")
+                tool_results = []
 
         # Step 5: Final
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
-        tools_used = [t.get("tool_name", "") for t in tool_results if isinstance(t, dict)]
+        tools_used = []
+        for t in tool_results or []:
+            if isinstance(t, dict):
+                tools_used.append(t.get("tool_name", ""))
+            elif hasattr(t, "tool_name"):
+                tools_used.append(t.tool_name)
 
         # Record model call
         asyncio.create_task(_trace_svc.add_event(
@@ -220,7 +284,12 @@ class AgentHarness:
             ttft_ms=ttft_ms or 0,
             total_latency_ms=total_latency_ms,
             tools_used=tools_used,
-            memory_updated=False,
+            memory_updated=True,
+        )
+
+        # Persist conversation to L0 working memory
+        await self._persist_conversation(
+            session_id, user_id, message, response_text,
         )
 
         return {
@@ -273,23 +342,8 @@ class AgentHarness:
         return MemorySnapshot()
 
     def _get_engine(self, name: str):
-        """Lazy load engines — returns None if not implemented yet."""
-        try:
-            if name == "intent":
-                from app.engines.intent_engine import IntentEngine
-                return IntentEngine()
-            elif name == "emotion":
-                from app.engines.emotion_engine import EmotionEngine
-                return EmotionEngine()
-            elif name == "risk":
-                from app.engines.risk_engine import RiskEngine
-                return RiskEngine()
-            elif name == "memory":
-                from app.engines.memory_engine import MemoryEngine
-                return MemoryEngine()
-        except ImportError:
-            pass
-        return None
+        """Get a cached engine singleton. Returns None if not implemented."""
+        return _get_cached_engine(name)
 
     async def _handle_risk(self, risk: RiskResult, stream_mgr: StreamManager, trace_id: str, start_time: float):
         """Handle high/critical risk: send alert and safe response."""
@@ -301,7 +355,8 @@ class AgentHarness:
             with open(path) as f:
                 rules = yaml.safe_load(f)
             safety_msg = rules.get("safety_messages", {}).get(risk.level, "")
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to load safety messages from risk_rules.yaml: {e}")
             safety_msg = "如果你正在经历困难，请拨打心理援助热线：400-161-9995"
 
         ttft_ms = int((time.monotonic() - start_time) * 1000)
@@ -321,20 +376,29 @@ class AgentHarness:
         self, message: str, emotion: EmotionResult, personality: PersonalityConfig,
         stream_mgr: StreamManager, start_time: float, cancel_event: asyncio.Event,
     ) -> bool:
-        """Race fast_model vs main_model first token. Returns True if fast reply was sent."""
+        """Use dedicated fast model for a quick first reply. Returns True if sent.
+
+        Uses the "fast" role model (a cheaper/faster model) instead of primary,
+        so we don't double-bill the same expensive model.
+        Skips entirely if no fast model is configured.
+        """
         timeout_ms = self._timeout("fast_reply")
 
         try:
             from app.models.router import model_router
 
-            # Try to get first token from main model within timeout
-            model = await model_router.get_model("primary")
+            # Try to get a dedicated fast model — skip if not configured
+            try:
+                model = await model_router.get_model("fast")
+            except Exception:
+                logger.debug("No fast model configured, skipping fast reply")
+                return False
+
             fast_prompt = [
                 {"role": "system", "content": f"你是一个{personality.tone}的 AI Companion。用户当前情绪：{emotion.emotion}(强度{emotion.intensity})。请用一句自然的话回应用户，不超过{personality.max_length or 80}字。"},
                 {"role": "user", "content": message},
             ]
 
-            # Race: wait for first token within fast_reply timeout
             first_token = None
             try:
                 async def get_first_token():
@@ -370,13 +434,39 @@ class AgentHarness:
             return []
 
     async def _get_personality(self, emotion: EmotionResult, intent=None) -> PersonalityConfig:
-        """Get personality config. Stub for Phase 2D."""
+        """Get personality config using cached engine."""
+        engine = _get_cached_engine("personality")
+        if engine is None:
+            try:
+                from app.engines.personality_engine import PersonalityEngine
+                _engine_cache["personality"] = PersonalityEngine()
+                engine = _engine_cache["personality"]
+            except ImportError:
+                return PersonalityConfig()
+        return await engine.adapt(emotion=emotion, intent=intent)
+
+    async def _persist_conversation(
+        self, session_id: str, user_id: str, user_message: str, ai_response: str,
+    ):
+        """Write user message and AI response to L0 working memory."""
         try:
-            from app.engines.personality_engine import PersonalityEngine
-            engine = PersonalityEngine()
-            return await engine.adapt(emotion=emotion, intent=intent)
-        except ImportError:
-            return PersonalityConfig()
+            from app.storage.working_memory import append_message
+            await append_message(session_id, "user", user_message)
+            if ai_response:
+                await append_message(session_id, "assistant", ai_response)
+        except Exception as e:
+            logger.warning(f"Failed to persist conversation to L0: {e}")
+
+        # Fire-and-forget Celery tasks for importance evaluation and summary
+        try:
+            from app.workers.memory_worker import (
+                evaluate_importance, update_session_summary,
+            )
+            evaluate_importance.delay(user_id, user_message, session_id)
+            if ai_response:
+                update_session_summary.delay(session_id)
+        except Exception as e:
+            logger.debug(f"Celery memory tasks skipped: {e}")
 
     def _generate_trace_id(self, user_id: str) -> str:
         from datetime import datetime

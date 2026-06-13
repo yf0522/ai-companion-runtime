@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging()
     setup_otel()
+    from app.config.settings import settings
+    settings.validate_security()
     logger.info("Companion Runtime started")
     yield
     logger.info("Companion Runtime shutting down")
@@ -27,13 +29,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Companion Runtime", version="0.1.0", lifespan=lifespan)
 
+from app.config.settings import settings as _settings
+_cors_origins = [o.strip() for o in _settings.cors_allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from app.api.rate_limiter import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
 
 # Mount Prometheus metrics
 metrics_app = make_asgi_app()

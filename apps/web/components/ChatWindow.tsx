@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
+import { useAuthStore } from "@/stores/authStore";
 import MessageBubble from "./MessageBubble";
 import Sidebar from "./Sidebar";
 
@@ -16,13 +18,20 @@ export default function ChatWindow() {
   const wsStatus = useWsStore((s) => s.status);
   const connect = useWsStore((s) => s.connect);
   const sendMessage = useWsStore((s) => s.sendMessage);
+  const token = useAuthStore((s) => s.token);
+  const clearAuth = useAuthStore((s) => s.clearAuth);
+  const router = useRouter();
 
   useEffect(() => {
-    connect();
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+    connect(token);
     return () => {
       useWsStore.getState().disconnect();
     };
-  }, [connect]);
+  }, [connect, token, router]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });

@@ -25,14 +25,17 @@ export class CompanionWsClient {
   }
 
   private _doConnect() {
-    let url = `${this.url}/ws/chat?token=${this.token}`;
-    if (this.sessionId) url += `&session_id=${this.sessionId}`;
-    if (this.lastMsgId) url += `&last_msg_id=${this.lastMsgId}`;
-
-    this.ws = new WebSocket(url);
+    // Connect without token in URL — auth happens via first message
+    this.ws = new WebSocket(`${this.url}/ws/chat`);
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
+      // Send auth as first message instead of URL query param
+      this._sendRaw({
+        type: "auth",
+        token: this.token,
+        session_id: this.sessionId,
+      });
       this._emit("_status", { status: "connected" });
     };
 
@@ -79,10 +82,14 @@ export class CompanionWsClient {
     this.ws = null;
   }
 
-  send(data: object) {
+  private _sendRaw(data: object) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     }
+  }
+
+  send(data: object) {
+    this._sendRaw(data);
   }
 
   sendMessage(message: string) {

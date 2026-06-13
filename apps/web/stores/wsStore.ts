@@ -21,7 +21,12 @@ export const useWsStore = create<WsState>((set, get) => ({
   sessionId: null,
   client: null,
 
-  connect: (token = "dev-token") => {
+  connect: (token?: string) => {
+    if (!token) {
+      console.error("WebSocket connect requires a valid auth token");
+      set({ status: "failed" });
+      return;
+    }
     const existing = get().client;
     if (existing) existing.disconnect();
 

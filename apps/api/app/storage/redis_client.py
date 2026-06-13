@@ -17,6 +17,7 @@ async def get_redis() -> redis.Redis:
     if _pool is None:
         _pool = redis.from_url(
             settings.redis_url,
+            password=settings.redis_password or None,
             decode_responses=True,
             max_connections=20,
         )

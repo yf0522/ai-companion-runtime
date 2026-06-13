@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -10,6 +11,7 @@ from app.config.settings import settings
 
 router = APIRouter(tags=["auth"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class RegisterRequest(BaseModel):
@@ -45,6 +47,37 @@ def decode_token(token: str) -> Optional[dict]:
         return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except JWTError:
         return None
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> dict:
+    """FastAPI dependency: extract and validate JWT from Authorization header.
+
+    Returns the decoded payload dict with at least {"sub": "<user_id>", "username": "..."}.
+    Raises 401 if missing or invalid.
+    """
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+    payload = decode_token(credentials.credentials)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload
+
+
+import uuid as _uuid
+
+async def get_current_user_uuid(
+    user: dict = Depends(get_current_user),
+) -> _uuid.UUID:
+    """FastAPI dependency: returns the authenticated user's ID as a validated uuid.UUID.
+
+    Raises 401 if the sub claim is not a valid UUID.
+    """
+    try:
+        return _uuid.UUID(user["sub"])
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid user identity in token")
 
 
 @router.post("/auth/register", response_model=TokenResponse)
