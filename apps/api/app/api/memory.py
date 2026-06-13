@@ -1,11 +1,14 @@
-from fastapi import APIRouter
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from app.api.auth import get_current_user_uuid
 
 router = APIRouter(tags=["memory"])
 
 
-@router.get("/memory/{user_id}/profile")
-async def get_user_profile(user_id: str):
-    """Get user profile."""
+@router.get("/memory/profile")
+async def get_user_profile(user_id: uuid.UUID = Depends(get_current_user_uuid)):
+    """Get authenticated user's profile."""
     try:
         from app.db.session import async_session
         from app.db.models import UserProfileModel
@@ -17,15 +20,18 @@ async def get_user_profile(user_id: str):
             )
             profile = result.scalar_one_or_none()
             if profile:
-                return {"user_id": user_id, "profile": profile.profile_json, "version": profile.version}
-    except Exception:
-        pass
-    return {"user_id": user_id, "profile": {}, "version": 0}
+                return {"user_id": str(user_id), "profile": profile.profile_json, "version": profile.version}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load profile: {e}")
+    return {"user_id": str(user_id), "profile": {}, "version": 0}
 
 
-@router.get("/memory/{user_id}/memories")
-async def get_memories(user_id: str, limit: int = 20):
-    """Get stored memories for a user."""
+@router.get("/memory/memories")
+async def get_memories(
+    limit: int = 20,
+    user_id: uuid.UUID = Depends(get_current_user_uuid),
+):
+    """Get authenticated user's stored memories."""
     try:
         from app.db.session import async_session
         from app.db.models import Memory
@@ -40,7 +46,7 @@ async def get_memories(user_id: str, limit: int = 20):
             )
             memories = result.scalars().all()
             return {
-                "user_id": user_id,
+                "user_id": str(user_id),
                 "memories": [
                     {
                         "id": str(m.id),
@@ -52,6 +58,5 @@ async def get_memories(user_id: str, limit: int = 20):
                     for m in memories
                 ],
             }
-    except Exception:
-        pass
-    return {"user_id": user_id, "memories": []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load memories: {e}")

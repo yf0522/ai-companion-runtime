@@ -51,6 +51,7 @@ def evaluate_importance(user_id: str, content: str, session_id: str = ""):
 
 async def _evaluate_and_store(user_id: str, content: str, session_id: str):
     import re
+    import uuid
     # Simple rule-based importance scoring
     score = 0.3  # base
 
@@ -70,13 +71,27 @@ async def _evaluate_and_store(user_id: str, content: str, session_id: str):
     score = min(1.0, score)
 
     if score >= 0.6:
-        # Store in memories table
+        # Convert string IDs to UUID for DB insertion
+        try:
+            db_user_id = uuid.UUID(user_id)
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid user_id for memory storage: {user_id}")
+            return
+
+        db_session_id = None
+        if session_id:
+            try:
+                db_session_id = uuid.UUID(session_id)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid session_id for memory storage: {session_id}")
+                db_session_id = None
+
         from app.db.session import async_session
         from app.db.models import Memory
         async with async_session() as db:
             memory = Memory(
-                user_id=user_id,
-                session_id=session_id if session_id else None,
+                user_id=db_user_id,
+                session_id=db_session_id,
                 content=content[:500],
                 memory_type="fact",
                 importance_score=score,

@@ -14,6 +14,10 @@ venv/
 dist/
 build/
 *.egg-info/
+*.tsbuildinfo
+
+# Test
+.pytest_cache/
 
 # IDE
 .vscode/

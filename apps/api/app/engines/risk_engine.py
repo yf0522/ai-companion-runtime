@@ -22,18 +22,66 @@ def _load_risk_rules() -> dict:
         return {}
 
 
+def _normalize_text(text: str) -> str:
+    """Normalize text to improve keyword matching.
+
+    Removes spaces/special chars between Chinese characters,
+    lowercases, and strips common evasion tricks.
+    """
+    # Lowercase for English
+    text = text.lower()
+    # Remove spaces/dots/dashes between CJK characters (anti-splitting bypass)
+    text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
+    # Repeat for adjacent pairs missed on first pass
+    text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
+    # Remove zero-width and invisible unicode chars
+    text = re.sub(r'[\u200b-\u200f\u2028-\u202f\ufeff]', '', text)
+    return text
+
+
 class RiskEngine(BaseEngine):
     def __init__(self):
         self._rules = _load_risk_rules()
+        self._safe_patterns = self._rules.get("safe_context_patterns", [])
+        self._negation_words = self._rules.get("negation_words", [])
+
+    def _is_safe_context(self, message: str) -> bool:
+        """Check if the message matches a known safe context (false positive)."""
+        for safe in self._safe_patterns:
+            if safe in message:
+                return True
+        return False
+
+    def _is_negated(self, message: str, keyword: str) -> bool:
+        """Check if a keyword is preceded by a negation word.
+
+        e.g. "我没有想死" → "想死" is negated → not a real risk signal.
+        But "我不想活了" → "不想活了" itself is a risk keyword, handled at YAML level.
+        """
+        idx = message.find(keyword)
+        if idx < 0:
+            return False
+        # Look at the 6 chars before the keyword for negation
+        prefix_start = max(0, idx - 6)
+        prefix = message[prefix_start:idx]
+        for neg in self._negation_words:
+            if neg in prefix:
+                return True
+        return False
 
     async def analyze(self, input: AnalyzerInput) -> RiskResult:
-        message = input.message
+        raw_message = input.message
+        message = _normalize_text(raw_message)
         rules = self._rules.get("rules", {})
 
-        # Check critical (highest priority, fastest path)
+        # Fast path: safe context suppresses common false positives
+        if self._is_safe_context(message):
+            return RiskResult(level="low", category="none", confidence=0.9)
+
+        # Check critical (highest priority)
         critical = rules.get("critical", {})
         for kw in critical.get("keywords", []):
-            if kw in message:
+            if kw in message and not self._is_negated(message, kw):
                 return RiskResult(
                     level="critical",
                     category="self_harm",
@@ -44,7 +92,7 @@ class RiskEngine(BaseEngine):
         # Check high
         high = rules.get("high", {})
         for kw in high.get("keywords", []):
-            if kw in message:
+            if kw in message and not self._is_negated(message, kw):
                 return RiskResult(
                     level="high",
                     category="self_harm",
@@ -52,7 +100,8 @@ class RiskEngine(BaseEngine):
                     triggered_rules=[f"keyword:{kw}"],
                 )
         for pattern in high.get("patterns", []):
-            if re.search(pattern, message):
+            m = re.search(pattern, message)
+            if m and not self._is_negated(message, m.group()):
                 return RiskResult(
                     level="high",
                     category="self_harm",
@@ -60,15 +109,10 @@ class RiskEngine(BaseEngine):
                     triggered_rules=[f"pattern:{pattern}"],
                 )
 
-        # Check medium (rule: emotion_intensity > 0.85 AND valence < -0.7)
-        # Medium check requires emotion data which we don't have here directly.
-        # We approximate with keyword heuristics for very negative language.
-        medium_keywords = [
-            "绝望", "无助", "没有希望", "看不到未来", "太痛苦",
-            "活着好累", "人生没意义",
-        ]
-        for kw in medium_keywords:
-            if kw in message:
+        # Check medium (now loaded from YAML)
+        medium = rules.get("medium", {})
+        for kw in medium.get("keywords", []):
+            if kw in message and not self._is_negated(message, kw):
                 return RiskResult(
                     level="medium",
                     category="sensitive",

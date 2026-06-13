@@ -16,11 +16,19 @@ def run_reflection(user_id: str, session_id: str):
 
 async def _reflect(user_id: str, session_id: str):
     """V1: Simple extraction of facts from recent messages."""
+    import uuid
     from app.storage.working_memory import get_working_memory
     from app.db.session import async_session
     from app.db.models import UserProfileModel
     from sqlalchemy import select
     import re
+
+    # Convert string user_id to UUID for DB queries
+    try:
+        db_user_id = uuid.UUID(user_id)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid user_id for reflection: {user_id}")
+        return
 
     messages = await get_working_memory(session_id)
     if not messages:
@@ -48,7 +56,7 @@ async def _reflect(user_id: str, session_id: str):
     # Update profile
     async with async_session() as db:
         result = await db.execute(
-            select(UserProfileModel).where(UserProfileModel.user_id == user_id)
+            select(UserProfileModel).where(UserProfileModel.user_id == db_user_id)
         )
         profile = result.scalar_one_or_none()
 
@@ -59,7 +67,7 @@ async def _reflect(user_id: str, session_id: str):
             profile.version += 1
         else:
             profile = UserProfileModel(
-                user_id=user_id,
+                user_id=db_user_id,
                 profile_json=extracted,
             )
             db.add(profile)

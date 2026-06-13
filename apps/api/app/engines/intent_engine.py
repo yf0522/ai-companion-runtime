@@ -7,12 +7,25 @@ from app.engines.base import AnalyzerInput, BaseEngine, IntentResult
 
 logger = logging.getLogger(__name__)
 
-# Tool keyword mappings
-TOOL_PATTERNS: dict[str, list[str]] = {
-    "weather": [r"天气", r"气温", r"下雨", r"下雪", r"晴", r"多云", r"温度"],
-    "search": [r"搜索", r"搜一下", r"查一下", r"百度", r"谷歌", r"帮我找"],
-    "calculator": [r"计算", r"算一下", r"\d+\s*[+\-*/]\s*\d+", r"等于多少"],
-    "reminder": [r"提醒我", r"别忘了", r"记得.*点", r"闹钟", r"定时"],
+# Tool keyword mappings — each entry has patterns and negative contexts
+# A tool is only triggered if a pattern matches AND no negative context matches.
+TOOL_RULES: dict[str, dict] = {
+    "weather": {
+        "patterns": [r"天气(?:怎么样|如何|预报|情况)", r"气温多少", r"会不会下雨", r"会不会下雪", r"温度多少"],
+        "negative": [r"天气真好", r"天气不错", r"天气好"],  # describing weather, not querying
+    },
+    "search": {
+        "patterns": [r"搜索一下", r"搜一下", r"查一下", r"帮我[找查搜]", r"百度一下", r"谷歌一下"],
+        "negative": [],
+    },
+    "calculator": {
+        "patterns": [r"计算一下", r"算一下", r"帮我算", r"\d+\s*[+\-*/×÷]\s*\d+", r"等于多少"],
+        "negative": [],
+    },
+    "reminder": {
+        "patterns": [r"提醒我", r"别忘了.{2,}", r"记得.{2,}点", r"定个闹钟", r"定时提醒"],
+        "negative": [],
+    },
 }
 
 # Emotional keywords
@@ -28,7 +41,7 @@ EMOTIONAL_PATTERNS = [
 
 # Task intent keywords
 TASK_PATTERNS = [
-    r"帮我|帮忙|麻烦你",
+    r"帮我[^\s]{1,10}",  # "帮我" followed by an action
     r"怎么做|怎么弄|如何",
     r"请问|问一下|想知道",
 ]
@@ -40,9 +53,13 @@ class IntentEngine(BaseEngine):
         tool_needs = []
         secondary_intents = []
 
-        # Detect tool needs
-        for tool, patterns in TOOL_PATTERNS.items():
-            for pattern in patterns:
+        # Detect tool needs with context-aware matching
+        for tool, rule in TOOL_RULES.items():
+            # Check if any negative context matches first
+            if any(re.search(neg, message) for neg in rule.get("negative", [])):
+                continue
+            # Then check positive patterns
+            for pattern in rule["patterns"]:
                 if re.search(pattern, message):
                     tool_needs.append(tool)
                     secondary_intents.append(tool)
@@ -57,13 +74,14 @@ class IntentEngine(BaseEngine):
         )
 
         if has_emotion and has_task:
-            primary_intent = "emotional_support"
-            # Emotion is primary, task is secondary
+            # When both present: if there are tool_needs, task takes priority
+            # (user wants something done AND is emotional about it)
+            primary_intent = "task" if tool_needs else "emotional_support"
         elif has_emotion:
             primary_intent = "emotional_support"
         elif has_task:
             primary_intent = "task"
-        elif "?" in message or "？" in message:
+        elif re.search(r"[?？]", message) and len(message) > 3:
             primary_intent = "question"
         else:
             primary_intent = "chitchat"
