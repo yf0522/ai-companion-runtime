@@ -61,6 +61,41 @@ _wait_http() {
   return 1
 }
 
+_seed_demo_user() {
+  local user="${DEMO_USER:-demo_elder}"
+  local pass="${DEMO_PASS:-demo1234}"
+  local role="${DEMO_ROLE:-elder}"
+  local out code
+  out="$RUN_DIR/demo-auth.json"
+
+  code="$(curl -s -o "$out" -w '%{http_code}' \
+    -X POST "$API_URL/api/auth/register" \
+    -H 'Content-Type: application/json' \
+    --data "{\"username\":\"$user\",\"password\":\"$pass\",\"role\":\"$role\"}" \
+    2>/dev/null || echo 000)"
+  if [[ "$code" =~ ^20[0-9]$ ]]; then
+    echo "  ok  demo user seeded ($user / $pass)"
+    return 0
+  fi
+
+  if [[ "$code" == "409" ]]; then
+    code="$(curl -s -o "$out" -w '%{http_code}' \
+      -X POST "$API_URL/api/auth/login" \
+      -H 'Content-Type: application/json' \
+      --data "{\"username\":\"$user\",\"password\":\"$pass\"}" \
+      2>/dev/null || echo 000)"
+    if [[ "$code" =~ ^20[0-9]$ ]]; then
+      echo "  ok  demo user exists ($user / $pass)"
+      return 0
+    fi
+    echo "  WARN demo user exists but login failed with provided password ($user)" >&2
+    return 1
+  fi
+
+  echo "  WARN demo user seed failed — HTTP $code — see $out" >&2
+  return 1
+}
+
 _load_env() {
   set -a
   [[ -f "$ROOT/.env" ]] && . "$ROOT/.env"
@@ -193,6 +228,10 @@ cmd_start() {
   _wait_http "$API_URL/health" "api" || ok=1
   _wait_http "$PI_URL/health" "pi" || ok=1
   _wait_http "$WEB_URL/chat" "web" || ok=1
+  local demo_hint="create/login manually"
+  if [[ "$ok" -eq 0 ]] && _seed_demo_user; then
+    demo_hint="${DEMO_USER:-demo_elder} / ${DEMO_PASS:-demo1234}"
+  fi
 
   if [[ "$ok" -ne 0 ]]; then
     echo "Start incomplete. Logs:" >&2
@@ -202,7 +241,7 @@ cmd_start() {
     exit 1
   fi
 
-  echo "READY — open $WEB_URL/chat  (demo_elder / demo1234)"
+  echo "READY — open $WEB_URL/chat  ($demo_hint)"
 }
 
 cmd_restart() {

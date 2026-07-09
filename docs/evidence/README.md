@@ -31,9 +31,10 @@ Use them to explain the product thesis, interaction model, and value loop. Do no
 Update after intentional harness changes:
 
 ```bash
-cd apps/api && pip install -e ".[dev]"
+cd <repo-root>
+python -m pip install -e "apps/api[dev]"
 python scripts/latency_bench.py --iterations 5 --update-baseline docs/evidence/latency-baseline.json
-pytest -q tests/test_latency_bench.py
+cd apps/api && pytest -q tests/test_latency_bench.py
 git add docs/evidence/latency-baseline.json
 ```
 

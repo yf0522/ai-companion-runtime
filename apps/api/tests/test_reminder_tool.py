@@ -1,6 +1,4 @@
 """Tests for reminder tool — schedule type detection and time parsing."""
-import pytest
-from datetime import time
 from app.tools.reminder_tool import detect_schedule_type, parse_time_from_text
 
 

@@ -78,10 +78,16 @@ async def test_run_benchmark_mocked_passes():
     assert scam.blocked_by_risk_count == 2
 
 
-def test_main_exit_zero_with_baseline(tmp_path):
+def test_main_exit_zero_with_baseline(tmp_path, monkeypatch):
     mod = _load_latency_bench()
     report = __import__("asyncio").run(mod.run_benchmark(iterations=+2))
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps(mod.baseline_from_report(report)), encoding="utf-8")
+
+    async def stable_benchmark(iterations):
+        assert iterations == 2
+        return report
+
+    monkeypatch.setattr(mod, "run_benchmark", stable_benchmark)
     code = mod.main(["--iterations", "2", "--baseline", str(baseline_path)])
     assert code == 0
