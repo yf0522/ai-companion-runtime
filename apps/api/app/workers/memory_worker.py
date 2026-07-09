@@ -49,42 +49,51 @@ def evaluate_importance(user_id: str, content: str, session_id: str = ""):
     asyncio.run(_evaluate_and_store(user_id, content, session_id))
 
 
-async def _evaluate_and_store(user_id: str, content: str, session_id: str):
+IMPORTANT_PATTERNS: list[tuple[str, float]] = [
+    (r"我叫|我的名字", 0.3),
+    (r"生日|纪念日", 0.3),
+    (r"家人|爸爸|妈妈|老公|老婆|孩子|女朋友|男朋友", 0.25),
+    (r"工作|公司|职业|辞职|入职", 0.2),
+    (r"搬家|搬到|住在", 0.2),
+    (r"喜欢|讨厌|最爱|害怕", 0.15),
+    # Eldercare-critical facts
+    (r"降压药|胰岛素|二甲双胍|吃药|用药|药物", 0.35),
+    (r"医院|医生|挂号|复诊|体检|预约", 0.3),
+    (r"紧急联系人|儿子|女儿|孙子|孙女", 0.25),
+    (r"诈骗|骗子|验证码|转账|可疑电话|可疑来电", 0.35),
+    (r"高血压|糖尿病|心脏病|头晕|胸口疼|慢性", 0.3),
+]
+
+
+def score_importance(content: str) -> float:
+    """Rule-based importance scoring for memory storage threshold."""
     import re
-    import uuid
-    # Simple rule-based importance scoring
-    score = 0.3  # base
 
-    important_patterns = [
-        (r"我叫|我的名字", 0.3),
-        (r"生日|纪念日", 0.3),
-        (r"家人|爸爸|妈妈|老公|老婆|孩子|女朋友|男朋友", 0.25),
-        (r"工作|公司|职业|辞职|入职", 0.2),
-        (r"搬家|搬到|住在", 0.2),
-        (r"喜欢|讨厌|最爱|害怕", 0.15),
-    ]
-
-    for pattern, boost in important_patterns:
+    score = 0.3
+    for pattern, boost in IMPORTANT_PATTERNS:
         if re.search(pattern, content):
             score += boost
+    return min(1.0, score)
 
-    score = min(1.0, score)
+
+async def _evaluate_and_store(user_id: str, content: str, session_id: str):
+    import uuid
+
+    score = score_importance(content)
 
     if score >= 0.6:
         # Convert string IDs to UUID for DB insertion
         try:
             db_user_id = uuid.UUID(user_id)
         except (ValueError, TypeError):
-            logger.warning(f"Invalid user_id for memory storage: {user_id}")
-            return
+            db_user_id = uuid.uuid5(uuid.NAMESPACE_DNS, str(user_id))
 
         db_session_id = None
         if session_id:
             try:
                 db_session_id = uuid.UUID(session_id)
             except (ValueError, TypeError):
-                logger.warning(f"Invalid session_id for memory storage: {session_id}")
-                db_session_id = None
+                db_session_id = uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id))
 
         from app.db.session import async_session
         from app.db.models import Memory
@@ -98,7 +107,16 @@ async def _evaluate_and_store(user_id: str, content: str, session_id: str):
             )
             db.add(memory)
             await db.commit()
+            await db.refresh(memory)
             logger.info(f"Memory stored: score={score:.2f}, content={content[:50]}")
+
+            try:
+                from app.config.settings import settings
+                if settings.enable_celery_tasks:
+                    from app.workers.embedding_worker import generate_embedding
+                    generate_embedding.delay(str(memory.id))
+            except Exception as e:
+                logger.debug(f"Embedding enqueue skipped: {e}")
 
 
 @app.task(name="app.workers.memory_worker.daily_archive")
