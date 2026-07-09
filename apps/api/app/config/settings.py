@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     openai_api_key: str = ""
     gemini_api_key: str = ""
+    google_api_key: str = ""
 
     # App environment
     app_env: str = "development"  # development | production

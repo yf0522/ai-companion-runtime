@@ -1,44 +1,24 @@
 models:
   primary:
-    provider: "qwen"
-    model: "qwen-plus"
-    api_key_env: "QWEN_API_KEY"
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    provider: "gemini"
+    model: "gemini-2.5-flash"
+    api_key_env: "GOOGLE_API_KEY"
     max_tokens: 2048
     temperature: 0.8
     stream: true
 
   fallback:
-    provider: "deepseek"
-    model: "deepseek-chat"
-    api_key_env: "DEEPSEEK_API_KEY"
-    base_url: "https://api.deepseek.com/v1"
+    provider: "gemini"
+    model: "gemini-2.5-flash"
+    api_key_env: "GOOGLE_API_KEY"
     max_tokens: 2048
     temperature: 0.8
     stream: true
 
   fast:
-    provider: "qwen"
-    model: "qwen-turbo"
-    api_key_env: "QWEN_API_KEY"
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    provider: "gemini"
+    model: "gemini-2.5-flash-lite"
+    api_key_env: "GOOGLE_API_KEY"
     max_tokens: 100
     temperature: 0.9
     stream: true
-
-  # Uncomment to enable
-  # openai:
-  #   provider: "openai"
-  #   model: "gpt-4o"
-  #   api_key_env: "OPENAI_API_KEY"
-  #   base_url: "https://api.openai.com/v1"
-  #
-  # gemini:
-  #   provider: "gemini"
-  #   model: "gemini-2.0-flash"
-  #   api_key_env: "GEMINI_API_KEY"
-  #
-  # local:
-  #   provider: "local"
-  #   model: "qwen2.5-7b"
-  #   base_url: "http://localhost:8080/v1"
