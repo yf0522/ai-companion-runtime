@@ -16,7 +16,7 @@ interface WsState {
   sendMessage: (message: string) => void;
 }
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
 
 export const useWsStore = create<WsState>((set, get) => ({
   status: "disconnected",

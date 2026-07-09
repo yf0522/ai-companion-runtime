@@ -34,8 +34,11 @@ export class CompanionWsClient {
   }
 
   private _doConnect() {
-    // Connect without token in URL — auth happens via first message
-    this.ws = new WebSocket(`${this.url}/ws/chat`);
+    // Connect without token in URL — auth happens via first message.
+    // Accept base origin (ws://host:port) or a full path already ending in /ws/chat.
+    const base = this.url.replace(/\/+$/, "");
+    const endpoint = base.endsWith("/ws/chat") ? base : `${base}/ws/chat`;
+    this.ws = new WebSocket(endpoint);
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
