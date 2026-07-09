@@ -146,4 +146,4 @@ Closing:
 - Risk-aware output behavior in backend: `risk_engine` + `risk_rules.yaml`
 - Family path: `/api/notifications`, `/api/reminders`
 - Auditability: trace timeline and tool/result events in `/api/traces`
-- Repeatable smoke (when PR `#11` lands): `python scripts/demo_smoke.py --dry-run`
+- Repeatable smoke (when scripts are present): `python scripts/demo_smoke.py --dry-run`

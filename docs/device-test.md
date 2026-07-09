@@ -35,14 +35,14 @@ The hardware diagnosis referenced in legacy notes records a prior ESP32-S3 devic
 - Backend tests passed at that time.
 - Follow-up manual two-turn validation with serial logs was recommended.
 
-Because the firmware project and serial logs historically lived outside this repo, older notes treated hardware as historical reference. Open PR `#10` adds protocol-aligned firmware source plus annotated evidence under `docs/evidence/`; replace annotated logs with live `idf.py monitor` captures before claiming a full hardware closed loop.
+Because the firmware project and serial logs historically lived outside this repo, older notes treated hardware as historical reference. Protocol-aligned firmware source plus an **expected** (annotated) sequence doc may land under `docs/evidence/`; replace annotated sequences with live `idf.py monitor` captures before claiming a full hardware closed loop.
 
 ## Not Yet Fully Verified
 
 | Area | Current status |
 |---|---|
-| End-to-end hardware loop in this repo | Protocol alignment in open PR `#10`; live flash + real serial still required. |
-| Reminder local trigger on ESP32 | Firmware NVS consume lands with PR `#10`; need real serial fire logs for diligence. |
+| End-to-end hardware loop in this repo | Protocol alignment may be in source; live flash + real serial still required. |
+| Reminder local trigger on ESP32 | Firmware NVS consume may land with protocol work; need real serial fire logs for diligence. |
 | Fraud detection full demo path | Risk/rule detection exists; investor demo flow should be run against a scripted scenario and captured in Trace. |
 | Family notification delivery | `NotificationLog` 事件已落库；推送 provider 与真实回执/送达链路仍在 roadmap。 |
 | Production device auth for ASR/TTS HTTP endpoints | Needs hardening: token checks, request size limits, per-device quota, and audit logs. |

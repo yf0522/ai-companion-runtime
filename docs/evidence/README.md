@@ -19,10 +19,11 @@ Use them to explain the product thesis, interaction model, and value loop. Do no
 
 | Artifact | Meaning |
 |---|---|
-| `device-serial-log-*.txt` (when present via firmware PR) | Protocol / serial evidence — check file header for “annotated expected” vs live board capture |
-| `demo-run-*.md` (when present via smoke PR) | Smoke checklist output; dry-run ≠ live API proof |
+| `device-protocol-expected-sequence-*.txt` | Annotated expected protocol sequence — **not** a live ESP32 serial capture |
+| `device-serial-log-*.txt` (if present) | Only treat as live board evidence if the file header says so |
+| `demo-run-*.md` | Smoke checklist output; dry-run ≠ live API proof |
 
-The software runtime loop is verified for chat (and, once merged, device-routed transcripts). Hardware execution evidence remains separate from Mock UI.
+The software runtime loop is verified for chat. Device-routed transcripts and firmware protocol alignment land as separate workstreams. Hardware execution evidence remains separate from Mock UI.
 
 ## 01. Voice profile and trust reminder
 

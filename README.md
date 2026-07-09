@@ -8,7 +8,7 @@ Last updated: 2026-07-09
 
 This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` is being consolidated here; application follow-up material should point reviewers to this repo and mention that consolidation explicitly.
 
-**Pitch boundary (safe):** a working eldercare companion **software** runtime with realtime chat, risk gating, reminder/action structures, family alert event persistence, and Trace observability. Device-routed transcripts and firmware protocol alignment are in open PRs / source trees — treat live ESP32 closed-loop hardware as separately evidenced.
+**Pitch boundary (safe):** a working eldercare companion **software** runtime with realtime chat, risk gating, reminder/action structures, family alert event persistence, and Trace observability. Treat live ESP32 closed-loop hardware, voice clone enrollment, and phone-OS intercept as separately evidenced roadmap items — not as shipped claims.
 
 | Area | Current status |
 |---|---|
@@ -16,25 +16,25 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Analyzer pipeline | Implemented: intent, emotion, risk, personality, memory, prompt builder, and timeout-oriented harness flow. |
 | Risk detection | 已对接老龄场景类别：`health_emergency`、`scam_alert`、`emotional_low`；关键字/正则 + 否定词 + 安全上下文已由测试覆盖。 |
 | Model routing | Implemented: configurable model registry with primary/fallback/fast roles and OpenAI-compatible adapters. |
-| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. Tool→Trace persistence is in open PR `#4` (`fix/trace-tool-calls`). |
-| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields. Chat→DB persistence is in open PR `#8`. |
-| Long-term memory (L2/L3) | L0/L1 Redis recall is in main; DB profile + important-memory recall is in open PR `#9`. |
-| Device realtime WebSocket | Route exists with JWT/PCM/ASR/TTS protocol tests. Routing transcripts through `AgentHarness` (risk/tools/trace/notify) is open PR `#6`. |
-| Audio HTTP endpoints | ASR/TTS routes exist; JWT + size/rate limits are open PR `#5`. |
-| Family notification | `/api/notifications` 已接入持久化通知事件（`notification_log`）；awaited escalation + Trace visibility is open PR `#7`；手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
-| Firmware protocol | Source under `firmware/` aligned in open PR `#10` (`audio_start`/`audio_end` + event parse + NVS reminders). Live board serial capture still required before claiming hardware closed loop. |
-| Demo / CI | Repeatable smoke scripts: open PR `#11`. Backend/web CI workflows: open PR `#12`. |
+| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. Tool-call rows in Trace are landing with the Trace persistence workstream. |
+| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields. Chat→DB reminder persistence is landing with the reminder persistence workstream. |
+| Long-term memory (L2/L3) | L0/L1 Redis recall is in main. DB profile + importance-ranked memory recall is landing (importance top-N; not full vector search yet). |
+| Device realtime WebSocket | Route exists with JWT/PCM/ASR/TTS protocol tests. Routing transcripts through `AgentHarness` (risk/tools/trace/notify) is landing with the device harness workstream. |
+| Audio HTTP endpoints | ASR/TTS routes exist. JWT + size/rate limits are landing with the audio hardening workstream. |
+| Family notification | `/api/notifications` 已接入持久化通知事件（`notification_log`）。Awaited escalation + Trace visibility is landing; 手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
+| Firmware protocol | `firmware/` source aligns to `audio_start`/`audio_end` + backend event parse + NVS reminders. Expected protocol sequence docs are annotated harness text — live board serial capture still required before claiming hardware closed loop. |
+| Demo / CI | Repeatable smoke scripts and backend/web CI workflows are landing as independent workstreams. |
 | Investor demo material | [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单 [docs/device-test.md](docs/device-test.md)；Mock 场景图 [docs/evidence/README.md](docs/evidence/README.md)。 |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
 ### Verified now vs roadmap
 
-| Verified now (main + tests) | Roadmap / open PR / not claimed |
+| Verified now (main + tests) | Roadmap / not claimed |
 |---|---|
 | Chat WS + risk categories + Trace events | Production voice clone / enrollment |
 | Reminder structured device payload | Phone OS call intercept |
 | NotificationLog persistence API | Multi-channel push provider + delivery receipts |
-| Device WS protocol tests (stubbed ASR/TTS) | Flashed ESP32 two-turn serial evidence as “fully verified” |
+| Device WS protocol tests (stubbed ASR/TTS) | Flashed ESP32 two-turn serial as “fully verified” |
 | Investor Mock UI under `docs/evidence/` | Treating Mock UI as production screenshots |
 
 ## Demo evidence
