@@ -16,6 +16,22 @@ from app.runtime.stream_manager import StreamManager
 logger = logging.getLogger(__name__)
 
 
+def _load_safety_messages() -> dict[str, str]:
+    """Load safety copy once so risk blocking never performs request-time I/O."""
+    try:
+        path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
+        with open(path, encoding="utf-8") as config_file:
+            rules = yaml.safe_load(config_file) or {}
+        configured = rules.get("safety_messages", {}) or {}
+        return {str(key): str(value) for key, value in configured.items() if value}
+    except Exception as exc:
+        logger.error("Failed to load safety messages: %s", exc)
+        return {}
+
+
+_SAFETY_MESSAGES = _load_safety_messages()
+
+
 def _stable_uuid(value: str) -> str:
     try:
         return str(uuid.UUID(value))
@@ -124,22 +140,13 @@ async def _emit_risk_block(
 
 
 def load_safety_message(level: str, category: str | None = None) -> str:
-    """Load CN-safe template; prefer category-specific copy for emotional crisis."""
-    try:
-        path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
-        with open(path) as f:
-            rules = yaml.safe_load(f) or {}
-        messages = rules.get("safety_messages", {}) or {}
-        if category:
-            for key in (f"{level}_{category}", category):
-                msg = messages.get(key)
-                if msg:
-                    return str(msg)
-        msg = messages.get(level)
-        if msg:
-            return str(msg)
-    except Exception as exc:
-        logger.error("Failed to load safety messages: %s", exc)
+    """Return CN-safe copy, preferring category-specific crisis guidance."""
+    if category:
+        for key in (f"{level}_{category}", category):
+            if message := _SAFETY_MESSAGES.get(key):
+                return message
+    if message := _SAFETY_MESSAGES.get(level):
+        return message
     return _default_safety_message()
 
 

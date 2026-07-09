@@ -40,6 +40,67 @@ def _load_harness_config() -> dict:
 _engine_cache: dict[str, object] = {}
 
 
+async def _record_analysis_events(
+    *,
+    trace_id: str,
+    user_id: str,
+    session_id: str,
+    intent: IntentResult,
+    emotion: EmotionResult,
+    risk: RiskResult,
+    memory: MemorySnapshot,
+    latency_ms: int,
+) -> None:
+    await asyncio.gather(
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="intent_detection",
+            step_index=1,
+            user_id=user_id,
+            session_id=session_id,
+            output_json=intent.model_dump(),
+            status="success",
+            latency_ms=latency_ms,
+        ),
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="emotion_detection",
+            step_index=2,
+            user_id=user_id,
+            session_id=session_id,
+            output_json=emotion.model_dump(),
+            status="success",
+            latency_ms=latency_ms,
+        ),
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="risk_detection",
+            step_index=3,
+            user_id=user_id,
+            session_id=session_id,
+            output_json=risk.model_dump(),
+            status="success",
+            latency_ms=latency_ms,
+        ),
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="memory_recall",
+            step_index=4,
+            user_id=user_id,
+            session_id=session_id,
+            output_json={
+                "working_count": len(memory.working or []),
+                "vector_count": len(memory.vectors or []),
+                "has_summary": bool(memory.summary),
+                "has_profile": bool(memory.profile),
+                "profile_keys": list((memory.profile or {}).keys())[:12],
+            },
+            status="success",
+            latency_ms=latency_ms,
+        ),
+    )
+
+
 def _stable_uuid(value: str) -> str:
     try:
         return str(uuid.UUID(value))
@@ -116,38 +177,35 @@ class AgentHarness:
         intent, emotion, risk, memory = await self._run_analyzers(analyzer_input)
 
         analyzer_ms = int((time.monotonic() - start_time) * 1000)
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="intent_detection", step_index=1,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json=intent.model_dump(), status="success", latency_ms=analyzer_ms,
-        ))
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="emotion_detection", step_index=2,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json=emotion.model_dump(), status="success", latency_ms=analyzer_ms,
-        ))
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="risk_detection", step_index=3,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json=risk.model_dump(), status="success", latency_ms=analyzer_ms,
-        ))
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="memory_recall", step_index=4,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json={
-                "working_count": len(memory.working or []),
-                "vector_count": len(memory.vectors or []),
-                "has_summary": bool(memory.summary),
-                "has_profile": bool(memory.profile),
-                "profile_keys": list((memory.profile or {}).keys())[:12],
-            },
-            status="success",
-            latency_ms=analyzer_ms,
-        ))
 
         if risk.level in ("critical", "high"):
             await self._handle_risk(risk, stream_mgr, trace_id, start_time, user_id)
+            asyncio.create_task(
+                _record_analysis_events(
+                    trace_id=trace_id,
+                    user_id=db_user_id,
+                    session_id=db_session_id,
+                    intent=intent,
+                    emotion=emotion,
+                    risk=risk,
+                    memory=memory,
+                    latency_ms=analyzer_ms,
+                )
+            )
             return {"trace_id": trace_id, "blocked_by_risk": True}
+
+        asyncio.create_task(
+            _record_analysis_events(
+                trace_id=trace_id,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                intent=intent,
+                emotion=emotion,
+                risk=risk,
+                memory=memory,
+                latency_ms=analyzer_ms,
+            )
+        )
 
         if risk.level == "medium":
             await self._dispatch_risk_notification(
