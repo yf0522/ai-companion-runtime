@@ -70,6 +70,27 @@ def _infer_action_from_query(query: str) -> str:
     return "create"
 
 
+def _format_candidates(candidates: list[dict[str, Any]]) -> str:
+    lines = []
+    for i, t in enumerate(candidates[:8], start=1):
+        due = f"（{t['due_at']}）" if t.get("due_at") else ""
+        lines.append(f"（{i}）{t['title']}{due} [{t.get('status', '')}] id={t['id'][:8]}")
+    return "\n".join(lines)
+
+
+def _candidate_payload(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": c["id"],
+            "title": c["title"],
+            "status": c.get("status"),
+            "due_at": c.get("due_at"),
+            "task_type": c.get("task_type"),
+        }
+        for c in candidates
+    ]
+
+
 class CareTaskTool(ToolBase):
     name = "caretask"
     description = (
@@ -109,9 +130,6 @@ class CareTaskTool(ToolBase):
         action = _ACTION_ALIASES.get(action, action)
 
         user_id = params.get("user_id")
-        if not user_id and action != "list":
-            # list also needs user; fail consistently
-            pass
         if not user_id:
             return ToolResult(
                 tool_name=self.name,
@@ -126,11 +144,11 @@ class CareTaskTool(ToolBase):
             if action == "list":
                 return await self._list(params, user_id)
             if action == "complete":
-                return await self._complete(params, user_id)
+                return await self._complete(params, user_id, query)
             if action == "snooze":
                 return await self._snooze(params, user_id, query)
             if action == "cancel":
-                return await self._cancel(params, user_id)
+                return await self._cancel(params, user_id, query)
             if action == "missed":
                 return await self._missed(params, user_id)
             return ToolResult(
@@ -170,7 +188,9 @@ class CareTaskTool(ToolBase):
         due_at = None
         if params.get("due_at"):
             try:
-                due_at = datetime.fromisoformat(str(params["due_at"]).replace("Z", "+00:00")).replace(tzinfo=None)
+                due_at = datetime.fromisoformat(str(params["due_at"]).replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
             except ValueError:
                 due_at = None
         if due_at is None and query:
@@ -185,6 +205,30 @@ class CareTaskTool(ToolBase):
             created_by="chat",
             link_reminder=due_at is not None,
         )
+        action = row.pop("_action", "caretask_create")
+        if action == "caretask_reuse":
+            due_txt = f"（{row['due_at']}）" if row.get("due_at") else ""
+            return ToolResult(
+                tool_name=self.name,
+                status="success",
+                display_text=f"已有相同照护任务：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）",
+                data={"action": "caretask_reuse", "task": row},
+            )
+        if action == "caretask_clarify_create":
+            candidates = row.get("candidates") or []
+            return ToolResult(
+                tool_name=self.name,
+                status="needs_clarification",
+                display_text=(
+                    "发现相似的照护任务，请确认是沿用已有任务还是新建：\n"
+                    + _format_candidates(candidates)
+                ),
+                data={
+                    "action": "caretask_clarify_create",
+                    "candidates": _candidate_payload(candidates),
+                    "proposed": row.get("proposed"),
+                },
+            )
         due_txt = f"（{row['due_at']}）" if row.get("due_at") else ""
         return ToolResult(
             tool_name=self.name,
@@ -214,19 +258,57 @@ class CareTaskTool(ToolBase):
             data={"action": "caretask_list", "tasks": rows},
         )
 
-    async def _complete(self, params: dict, user_id: str) -> ToolResult:
-        task_id = params.get("task_id")
-        if not task_id:
-            rows = await svc.list_care_tasks(user_id=str(user_id), limit=1)
-            if not rows:
-                return ToolResult(
-                    tool_name=self.name,
-                    status="failed",
-                    display_text="没有可完成的照护任务",
-                    data={"reason": "no_active_care_task", "action": "complete"},
-                )
-            task_id = rows[0]["id"]
-        row = await svc.complete_care_task(user_id=str(user_id), task_id=str(task_id))
+    async def _resolve_or_clarify(
+        self,
+        *,
+        user_id: str,
+        params: dict,
+        query: str,
+        action: str,
+        verb_cn: str,
+    ) -> ToolResult | dict[str, Any]:
+        resolved = await svc.resolve_task_ref(
+            user_id=str(user_id),
+            task_id=str(params["task_id"]) if params.get("task_id") else None,
+            title_hint=str(params.get("title") or "") or None,
+            query=query or None,
+        )
+        if resolved.kind == "none":
+            return ToolResult(
+                tool_name=self.name,
+                status="failed",
+                display_text=f"没有可{verb_cn}的照护任务",
+                data={"reason": "no_active_care_task", "action": action},
+            )
+        if resolved.kind == "many":
+            candidates = resolved.candidates or []
+            return ToolResult(
+                tool_name=self.name,
+                status="needs_clarification",
+                display_text=(
+                    f"找到多个照护任务，请告诉我要{verb_cn}哪一个：\n"
+                    + _format_candidates(candidates)
+                ),
+                data={
+                    "action": f"caretask_{action}",
+                    "reason": "ambiguous_task_ref",
+                    "candidates": _candidate_payload(candidates),
+                },
+            )
+        assert resolved.task is not None
+        return resolved.task
+
+    async def _complete(self, params: dict, user_id: str, query: str) -> ToolResult:
+        resolved = await self._resolve_or_clarify(
+            user_id=user_id,
+            params=params,
+            query=query,
+            action="complete",
+            verb_cn="完成",
+        )
+        if isinstance(resolved, ToolResult):
+            return resolved
+        row = await svc.complete_care_task(user_id=str(user_id), task_id=str(resolved["id"]))
         return ToolResult(
             tool_name=self.name,
             status="success",
@@ -243,9 +325,18 @@ class CareTaskTool(ToolBase):
                 minutes = detect_snooze(query) or 30
             except Exception:
                 minutes = 30
+        resolved = await self._resolve_or_clarify(
+            user_id=user_id,
+            params=params,
+            query=query,
+            action="snooze",
+            verb_cn="推迟",
+        )
+        if isinstance(resolved, ToolResult):
+            return resolved
         row = await svc.snooze_care_task(
             user_id=str(user_id),
-            task_id=str(params["task_id"]) if params.get("task_id") else None,
+            task_id=str(resolved["id"]),
             minutes=int(minutes),
         )
         return ToolResult(
@@ -255,16 +346,17 @@ class CareTaskTool(ToolBase):
             data={"action": "caretask_snooze", "task": row},
         )
 
-    async def _cancel(self, params: dict, user_id: str) -> ToolResult:
-        task_id = params.get("task_id")
-        if not task_id:
-            return ToolResult(
-                tool_name=self.name,
-                status="failed",
-                display_text="取消任务需要指定 task_id",
-                data={"reason": "missing_task_id", "action": "cancel"},
-            )
-        row = await svc.cancel_care_task(user_id=str(user_id), task_id=str(task_id))
+    async def _cancel(self, params: dict, user_id: str, query: str) -> ToolResult:
+        resolved = await self._resolve_or_clarify(
+            user_id=user_id,
+            params=params,
+            query=query,
+            action="cancel",
+            verb_cn="取消",
+        )
+        if isinstance(resolved, ToolResult):
+            return resolved
+        row = await svc.cancel_care_task(user_id=str(user_id), task_id=str(resolved["id"]))
         return ToolResult(
             tool_name=self.name,
             status="success",

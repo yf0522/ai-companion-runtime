@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class ToolResult(BaseModel):
     tool_name: str
-    status: str              # success / failed / timeout
+    status: str              # success / failed / timeout / needs_clarification
     data: dict | None = None
     display_text: str = ""
     latency_ms: int = 0

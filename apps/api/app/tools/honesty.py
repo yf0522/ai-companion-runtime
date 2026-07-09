@@ -23,7 +23,7 @@ def response_claims_tool_success(text: str) -> bool:
 def failed_tool_results(results: list[ToolResult] | None) -> list[ToolResult]:
     out: list[ToolResult] = []
     for r in results or []:
-        if getattr(r, "status", None) in {"failed", "timeout"}:
+        if getattr(r, "status", None) in {"failed", "timeout", "needs_clarification"}:
             out.append(r)
     return out
 
@@ -32,7 +32,7 @@ def enforce_no_verbal_promise(
     response_text: str,
     tool_results: list[ToolResult] | None,
 ) -> str:
-    """If any tool failed and the model claimed success, replace with honest text."""
+    """If any tool failed/needs clarification and the model claimed success, rewrite."""
     failed = failed_tool_results(tool_results)
     if not failed:
         return response_text
@@ -45,6 +45,11 @@ def enforce_no_verbal_promise(
             return response_text
         # If model said nothing about tools, leave text but ensure honesty when it claimed success only.
         return response_text
+
+    clarify = [r for r in failed if getattr(r, "status", None) == "needs_clarification"]
+    if clarify and all(getattr(r, "status", None) == "needs_clarification" for r in failed):
+        parts = [r.display_text or f"{r.tool_name} 需要确认" for r in clarify]
+        return "；".join(parts)
 
     parts = []
     for r in failed:

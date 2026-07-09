@@ -44,6 +44,20 @@ rules:
           - "连着好几天不舒服"
         action: alert_and_notify
         notify: family
+      emotional_crisis:
+        keywords:
+          - "我想死"
+          - "想死"
+          - "不想活了"
+          - "不想活"
+          - "自杀"
+          - "结束生命"
+          - "了结自己"
+          - "活不下去"
+          - "不如死了"
+          - "去死吧我"
+        action: alert_and_notify
+        notify: family
     action: alert_and_notify
     notify: family
     block_tools: true
@@ -83,11 +97,14 @@ safe_context_patterns:
   - "饿死"
   - "无聊死"
   - "去死皮赖脸"
+  - "不想死"
 
 safety_hotline:
-  text: "如果你正在经历困难，可以拨打 24 小时心理援助热线：400-161-9995"
+  text: "如果你正在经历困难，可以拨打全国统一心理援助热线 12356，或希望24小时热线 400-161-9995"
 
 safety_messages:
   critical: "先别动，坐下来慢慢呼吸。我已经通知您的家人了，他们马上会联系您。如果情况紧急，请让身边的人帮忙拨打120。"
   high: "这个听起来可能是骗人的，千万不要转钱或者告诉对方密码！我帮您通知家人确认一下。"
+  high_emotional_crisis: "我听到你很痛苦。请马上拨打全国统一心理援助热线 12356，或希望24小时热线 400-161-9995。若有紧急危险，请拨打 110 或 120。我正在通知您的家人。"
+  emotional_crisis: "我听到你很痛苦。请马上拨打全国统一心理援助热线 12356，或希望24小时热线 400-161-9995。若有紧急危险，请拨打 110 或 120。我正在通知您的家人。"
   medium: "我听到你了。今天你可能有点低落，我们先慢慢聊。"

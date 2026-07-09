@@ -140,8 +140,14 @@ class ToolDispatcher:
             if result.status == "success":
                 await stream_mgr.send_tool_status(name, "success")
                 await stream_mgr.send_tool_result(name, result.display_text)
+            elif result.status == "needs_clarification":
+                await stream_mgr.send_tool_status(name, "needs_clarification")
+                if result.display_text:
+                    await stream_mgr.send_tool_result(name, result.display_text)
             else:
-                await stream_mgr.send_tool_status(name, "failed")
+                await stream_mgr.send_tool_status(name, result.status or "failed")
+                if result.display_text:
+                    await stream_mgr.send_tool_result(name, result.display_text)
 
             await self._record_tool_call(
                 trace_id=trace_id,

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +15,12 @@ CARE_TASK_STATUSES = frozenset(
 )
 ACTIVE_STATUSES = frozenset({"pending", "due", "snoozed"})
 TERMINAL_STATUSES = frozenset({"done", "missed", "cancelled"})
+
+_TITLE_NOISE = re.compile(
+    r"^(?:提醒我|记得|帮我|请|麻烦|给我)?(?:每天|明天|今天|晚上|早上|下午|中午)?"
+)
+_TITLE_TRAIL = re.compile(r"(?:吧|啊|哦|呀|呢|了)+$")
+_WHITESPACE = re.compile(r"\s+")
 
 # Allowed transitions: from -> to
 _TRANSITIONS: dict[str, frozenset[str]] = {
@@ -90,6 +98,172 @@ def task_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
+def normalize_title(title: str) -> str:
+    """Normalize CareTask title for fingerprint / near-dup matching."""
+    text = (title or "").strip()
+    text = _WHITESPACE.sub("", text)
+    text = _TITLE_NOISE.sub("", text)
+    text = _TITLE_TRAIL.sub("", text)
+    # Strip common create prefixes that survive inference
+    for prefix in ("提醒我", "记得", "帮我", "请帮我", "给我"):
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+    text = text.lower()
+    return text.strip() or (title or "").strip()[:80]
+
+
+def due_bucket(due_at: datetime | None) -> str | None:
+    if due_at is None:
+        return None
+    return due_at.strftime("%Y-%m-%d")
+
+
+def title_fingerprint(title: str, task_type: str, due_at: datetime | None = None) -> str:
+    return f"{task_type}|{normalize_title(title)}|{due_bucket(due_at) or 'undated'}"
+
+
+def _token_overlap(a: str, b: str) -> float:
+    """Simple CJK/latin token overlap for near-duplicate detection."""
+    na, nb = normalize_title(a), normalize_title(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    if na in nb or nb in na:
+        return 0.9
+    # Character bigram Jaccard for short Chinese titles
+    def bigrams(s: str) -> set[str]:
+        if len(s) < 2:
+            return {s}
+        return {s[i : i + 2] for i in range(len(s) - 1)}
+
+    ba, bb = bigrams(na), bigrams(nb)
+    if not ba or not bb:
+        return 0.0
+    return len(ba & bb) / len(ba | bb)
+
+
+@dataclass
+class ResolveResult:
+    kind: Literal["one", "many", "none"]
+    task: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] | None = None
+
+
+async def find_active_by_fingerprint(
+    *,
+    user_id: str,
+    title: str,
+    task_type: str,
+    due_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Exact active fingerprint match (same type + normalized title + due day)."""
+    rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
+    target = title_fingerprint(title, task_type, due_at)
+    for row in rows:
+        if row.get("status") not in ACTIVE_STATUSES:
+            continue
+        row_due = None
+        if row.get("due_at"):
+            try:
+                row_due = datetime.fromisoformat(str(row["due_at"]).replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
+            except ValueError:
+                row_due = None
+        if title_fingerprint(row["title"], row.get("task_type") or task_type, row_due) == target:
+            return row
+    return None
+
+
+async def find_near_duplicate_candidates(
+    *,
+    user_id: str,
+    title: str,
+    task_type: str,
+    due_at: datetime | None = None,
+    threshold: float = 0.55,
+) -> list[dict[str, Any]]:
+    """Near-dup active tasks with different due buckets (clarify before create)."""
+    rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
+    out: list[dict[str, Any]] = []
+    new_bucket = due_bucket(due_at)
+    for row in rows:
+        if row.get("status") not in ACTIVE_STATUSES:
+            continue
+        if (row.get("task_type") or task_type) != task_type:
+            continue
+        row_due = None
+        if row.get("due_at"):
+            try:
+                row_due = datetime.fromisoformat(str(row["due_at"]).replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
+            except ValueError:
+                row_due = None
+        # Exact fingerprint already handled by reuse path
+        if title_fingerprint(row["title"], task_type, row_due) == title_fingerprint(
+            title, task_type, due_at
+        ):
+            continue
+        overlap = _token_overlap(title, row["title"])
+        if overlap < threshold:
+            continue
+        # Same title-ish but different due day → clarify
+        if due_bucket(row_due) != new_bucket or normalize_title(title) != normalize_title(
+            row["title"]
+        ):
+            if overlap >= threshold:
+                out.append(row)
+    return out
+
+
+async def resolve_task_ref(
+    *,
+    user_id: str,
+    task_id: str | None = None,
+    title_hint: str | None = None,
+    query: str | None = None,
+) -> ResolveResult:
+    """Resolve a mutate referent: 0→none, 1→one, ≥2→many (no silent limit=1)."""
+    if task_id:
+        rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
+        for row in rows:
+            if row["id"] == str(task_id):
+                return ResolveResult(kind="one", task=row)
+        # Allow resolving terminal by id via direct get path later; treat as none for active
+        return ResolveResult(kind="none")
+
+    rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
+    active = [r for r in rows if r.get("status") in ACTIVE_STATUSES]
+    hint = normalize_title(title_hint or query or "")
+    if hint:
+        matched = [
+            r
+            for r in active
+            if hint in normalize_title(r["title"])
+            or normalize_title(r["title"]) in hint
+            or _token_overlap(hint, r["title"]) >= 0.55
+        ]
+        if len(matched) == 1:
+            return ResolveResult(kind="one", task=matched[0])
+        if len(matched) >= 2:
+            return ResolveResult(kind="many", candidates=matched)
+        if not matched and len(active) == 0:
+            return ResolveResult(kind="none")
+        if not matched and len(active) == 1:
+            return ResolveResult(kind="one", task=active[0])
+        if not matched and len(active) >= 2:
+            return ResolveResult(kind="many", candidates=active)
+        return ResolveResult(kind="none")
+
+    if len(active) == 0:
+        return ResolveResult(kind="none")
+    if len(active) == 1:
+        return ResolveResult(kind="one", task=active[0])
+    return ResolveResult(kind="many", candidates=active)
+
+
 async def create_care_task(
     *,
     user_id: str,
@@ -100,8 +274,36 @@ async def create_care_task(
     created_by: str = "chat",
     link_reminder: bool = True,
 ) -> dict[str, Any]:
+    """Create or reuse an active CareTask with the same fingerprint.
+
+    Returns task dict plus optional ``_action``:
+    ``caretask_create`` | ``caretask_reuse`` | ``caretask_clarify_create``.
+    """
     from app.db.models import CareTask, Reminder
     from app.db.session import async_session
+
+    title = (title or "").strip() or "吃药"
+    existing = await find_active_by_fingerprint(
+        user_id=user_id, title=title, task_type=task_type, due_at=due_at
+    )
+    if existing is not None:
+        data = dict(existing)
+        data["_action"] = "caretask_reuse"
+        return data
+
+    near = await find_near_duplicate_candidates(
+        user_id=user_id, title=title, task_type=task_type, due_at=due_at
+    )
+    if near:
+        return {
+            "_action": "caretask_clarify_create",
+            "candidates": near,
+            "proposed": {
+                "title": title,
+                "task_type": task_type,
+                "due_at": due_at.isoformat() if due_at else None,
+            },
+        }
 
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
@@ -137,7 +339,9 @@ async def create_care_task(
         db.add(row)
         await db.commit()
         await db.refresh(row)
-        return task_to_dict(row)
+        data = task_to_dict(row)
+        data["_action"] = "caretask_create"
+        return data
 
 
 async def list_care_tasks(

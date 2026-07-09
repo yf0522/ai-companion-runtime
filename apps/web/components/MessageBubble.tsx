@@ -1,7 +1,38 @@
-import type { Message } from "@/stores/chatStore";
+import type { Message, ToolChip, ToolChipStatus } from "@/stores/chatStore";
 
 interface Props {
   message: Message;
+}
+
+function chipStyle(status: ToolChipStatus): string {
+  switch (status) {
+    case "success":
+      return "border-green-200 bg-green-50 text-green-700";
+    case "needs_clarification":
+      return "border-amber-300 bg-amber-50 text-amber-800";
+    case "failed":
+    case "timeout":
+      return "border-rose-200 bg-rose-50 text-rose-700";
+    case "calling":
+    default:
+      return "border-gray-200 bg-gray-50 text-gray-600";
+  }
+}
+
+function chipLabel(chip: ToolChip): string {
+  switch (chip.status) {
+    case "success":
+      return `${chip.tool} ✓`;
+    case "needs_clarification":
+      return `${chip.tool} 需要确认`;
+    case "failed":
+      return `${chip.tool} ×`;
+    case "timeout":
+      return `${chip.tool} 超时`;
+    case "calling":
+    default:
+      return `${chip.tool} 处理中…`;
+  }
 }
 
 export default function MessageBubble({ message }: Props) {
@@ -30,7 +61,7 @@ export default function MessageBubble({ message }: Props) {
           {/* Risk Alert */}
           {message.riskAlert && (
             <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {message.riskAlert.message}
+              {message.riskAlert.message || `风险等级：${message.riskAlert.level}`}
             </div>
           )}
 
@@ -45,15 +76,15 @@ export default function MessageBubble({ message }: Props) {
             )}
           </div>
 
-          {/* Tool badges */}
+          {/* Tool badges — honest states; never green ✓ on clarification/failure */}
           {message.toolsUsed && message.toolsUsed.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
-              {message.toolsUsed.map((tool) => (
+              {message.toolsUsed.map((chip) => (
                 <span
-                  key={tool}
-                  className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2.5 py-1 text-[11px] text-green-700"
+                  key={`${chip.tool}-${chip.status}`}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] ${chipStyle(chip.status)}`}
                 >
-                  🔧 {tool} ✓
+                  {chipLabel(chip)}
                 </span>
               ))}
             </div>

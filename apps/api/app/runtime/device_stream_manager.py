@@ -41,7 +41,7 @@ class DeviceStreamManager(StreamManager):
         message_id: str,
         ttft_ms: int,
         total_latency_ms: int,
-        tools_used: list[str],
+        tools_used: list,
         memory_updated: bool,
     ):
         await super().send_final(

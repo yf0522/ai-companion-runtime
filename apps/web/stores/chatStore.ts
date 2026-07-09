@@ -1,6 +1,19 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export type ToolChipStatus =
+  | "calling"
+  | "success"
+  | "failed"
+  | "timeout"
+  | "needs_clarification";
+
+export interface ToolChip {
+  tool: string;
+  status: ToolChipStatus;
+  action?: string;
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
@@ -8,9 +21,48 @@ export interface Message {
   traceId?: string;
   ttftMs?: number;
   totalLatencyMs?: number;
-  toolsUsed?: string[];
+  toolsUsed?: ToolChip[];
   riskAlert?: { level: string; message: string };
   status: "sending" | "streaming" | "complete" | "error";
+}
+
+function normalizeToolChip(raw: unknown): ToolChip | null {
+  if (typeof raw === "string" && raw.trim()) {
+    // Legacy string[] — never auto-✓; treat as neutral calling until known.
+    return { tool: raw, status: "calling" };
+  }
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    const tool = String(obj.tool || obj.tool_name || "").trim();
+    if (!tool) return null;
+    const statusRaw = String(obj.status || "calling");
+    const allowed: ToolChipStatus[] = [
+      "calling",
+      "success",
+      "failed",
+      "timeout",
+      "needs_clarification",
+    ];
+    const status = (allowed.includes(statusRaw as ToolChipStatus)
+      ? statusRaw
+      : "calling") as ToolChipStatus;
+    const action = obj.action ? String(obj.action) : undefined;
+    return action ? { tool, status, action } : { tool, status };
+  }
+  return null;
+}
+
+function upsertToolChip(chips: ToolChip[], tool: string, status: string): ToolChip[] {
+  const chip = normalizeToolChip({ tool, status });
+  if (!chip) return chips;
+  const next = [...chips];
+  const idx = next.findIndex((c) => c.tool === tool);
+  if (idx >= 0) {
+    next[idx] = { ...next[idx], ...chip };
+  } else {
+    next.push(chip);
+  }
+  return next;
 }
 
 interface ChatState {
@@ -29,7 +81,7 @@ interface ChatState {
     messageId: string;
     ttftMs: number;
     totalLatencyMs: number;
-    toolsUsed: string[];
+    toolsUsed: unknown[];
     memoryUpdated: boolean;
   }) => void;
   setError: (message: string) => void;
@@ -58,7 +110,14 @@ export const useChatStore = create<ChatState>()(
       isStreaming: true,
       messages: [
         ...s.messages,
-        { id: `ast_${Date.now()}`, role: "assistant", content: "", traceId, status: "streaming" },
+        {
+          id: `ast_${Date.now()}`,
+          role: "assistant",
+          content: "",
+          traceId,
+          status: "streaming",
+          toolsUsed: [],
+        },
       ],
     }));
   },
@@ -86,8 +145,17 @@ export const useChatStore = create<ChatState>()(
   },
 
   setToolStatus: (tool, status) => {
-    // For now just log, Phase 3 will render tool badges
-    console.log(`Tool ${tool}: ${status}`);
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "assistant") {
+        msgs[msgs.length - 1] = {
+          ...last,
+          toolsUsed: upsertToolChip(last.toolsUsed || [], tool, status),
+        };
+      }
+      return { messages: msgs };
+    });
   },
 
   setRiskAlert: (level, message) => {
@@ -106,13 +174,25 @@ export const useChatStore = create<ChatState>()(
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant" && last.status === "streaming") {
+        const fromFinal = (data.toolsUsed || [])
+          .map(normalizeToolChip)
+          .filter((c): c is ToolChip => c !== null);
+        // Prefer live chip statuses; merge final outcomes by tool name.
+        let chips = [...(last.toolsUsed || [])];
+        for (const chip of fromFinal) {
+          chips = upsertToolChip(chips, chip.tool, chip.status);
+          const idx = chips.findIndex((c) => c.tool === chip.tool);
+          if (idx >= 0 && chip.action) {
+            chips[idx] = { ...chips[idx], action: chip.action };
+          }
+        }
         msgs[msgs.length - 1] = {
           ...last,
           id: data.messageId,
           traceId: data.traceId,
           ttftMs: data.ttftMs,
           totalLatencyMs: data.totalLatencyMs,
-          toolsUsed: data.toolsUsed,
+          toolsUsed: chips,
           status: "complete",
         };
       }

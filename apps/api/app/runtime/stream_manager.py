@@ -54,9 +54,10 @@ class StreamManager:
         message_id: str,
         ttft_ms: int,
         total_latency_ms: int,
-        tools_used: list[str],
+        tools_used: list,
         memory_updated: bool,
     ):
+        # tools_used: string[] (legacy) or {tool, status, action?}[] (honest chips)
         await self._send({
             "type": "final",
             "trace_id": trace_id,
