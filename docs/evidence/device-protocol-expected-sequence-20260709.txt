@@ -1,4 +1,4 @@
-# Device protocol evidence (annotated expected serial)
+# Expected device protocol sequence (NOT a live ESP32 serial capture)
 
 Date: 2026-07-09
 Source: firmware protocol alignment harness (not a live ESP32-S3 capture)

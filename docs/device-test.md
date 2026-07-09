@@ -26,7 +26,7 @@ The runtime now treats `https://github.com/yf0522/ai-companion-runtime` as the c
 | Reminder structured output | 已实现 | `apps/api/app/tools/reminder_tool.py` 输出 `reminder_create` 结构体，用于设备侧闹钟/倒计时消费。 |
 | Firmware protocol messages | 已对齐（源码级） | `firmware/main/main.c` 发送 `audio_start`/`audio_end`，解析 `connected`…`tts_done`/`reminder_create`/`risk_alert`。 |
 | Local reminder NVS consume | 已实现（源码级） | `local_reminder_add_structured` 支持 alarm/daily/countdown + `reminder_id`。 |
-| Annotated protocol evidence | 已入库 | `docs/evidence/device-serial-log-20260709.txt`（标注为 expected harness log，非实机串口）。 |
+| Expected protocol sequence (NOT live serial) | 已入库 | `docs/evidence/device-protocol-expected-sequence-20260709.txt`（标注为 expected harness log，非实机串口）。 |
 
 ## Hardware Work Previously Verified
 

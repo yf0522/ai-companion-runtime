@@ -47,7 +47,7 @@ Do not claim a full hardware closed loop until serial evidence is captured.
 
 ## Evidence
 
-See `docs/evidence/device-serial-log-20260709.txt` for the expected two-turn
+See `docs/evidence/device-protocol-expected-sequence-20260709.txt` for the expected two-turn
 protocol sequence (host harness / annotated expected log). Real board serial
 captures should replace that file when available.
 
