@@ -30,17 +30,25 @@ Mock UI · scenario demo. These visuals illustrate intended eldercare flows and 
 
 ![Voice profile and trust reminder demo](docs/evidence/01-voice-clone-trust.png)
 
+This mock shows a two-sided reminder flow: the child records a short voice profile once, and the elder receives a more familiar reminder on a large-text device surface. The product claim is higher daily medication compliance with fewer manual reminder calls from family.
+
 ### 2. Daily memory and family summary
 
 ![Daily memory and family summary demo](docs/evidence/02-daily-memory-summary.png)
+
+This mock shows how casual elder conversation can be turned into structured family summaries. The intended value is not more chat, but fewer repeated check-in calls and faster visibility into medication, mood, and symptom trends.
 
 ### 3. Hardware-assisted phone intercept
 
 ![Hardware-assisted phone intercept demo](docs/evidence/03-hardware-phone-intercept.png)
 
+This mock illustrates the strongest safety thesis in the set: a companion device intervenes around a suspicious call before the elder completes the risky action. It should be read as a concept for upstream anti-fraud assistance, not as proof of production phone OS interception.
+
 ### 4. Labor saved overview
 
 ![Labor saved overview demo](docs/evidence/04-labor-saved-overview.png)
+
+This summary mock ties the three pillars together: voice-profile reminders, long-term memory summaries, and hardware-assisted fraud prevention. The business framing is simple: elders do small daily actions, and children spend less time chasing reminders, re-asking status, or cleaning up after scams.
 
 ## 架构总览
 
