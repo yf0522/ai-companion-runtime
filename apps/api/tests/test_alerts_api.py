@@ -16,7 +16,7 @@ def test_alerts_requires_authentication():
     assert client.get("/api/notifications").status_code == 401
 
 
-def test_list_notifications_returns_demo_item():
+def test_list_notifications_returns_empty_when_unavailable():
     app = FastAPI()
     app.include_router(alerts.router, prefix="/api")
     client = TestClient(app)
@@ -27,12 +27,9 @@ def test_list_notifications_returns_demo_item():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "demo_placeholder"
-    items = payload["items"]
-    assert len(items) == 1
-    item = items[0]
-    assert item["category"] == "scam_alert"
-    assert item["status"] == "roadmap"
+    assert payload["status"] == "unavailable"
+    assert payload["items"] == []
+    assert payload["total"] == 0
 
 
 def test_reminders_router_requires_authentication():

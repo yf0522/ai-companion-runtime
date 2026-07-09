@@ -400,7 +400,11 @@ class AgentHarness:
             from app.config.settings import settings
 
             if not settings.enable_celery_tasks:
+                from app.workers.notification_worker import process_risk_notification
+
+                asyncio.create_task(process_risk_notification(user_id, risk_level, risk_category or "", summary))
                 return
+
             from app.workers.notification_worker import send_risk_notification
 
             send_risk_notification.delay(user_id, risk_level, risk_category or "", summary)

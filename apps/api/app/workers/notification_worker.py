@@ -12,17 +12,16 @@ logger = logging.getLogger(__name__)
 @app.task(name="app.workers.notification_worker.send_risk_notification")
 def send_risk_notification(user_id: str, risk_level: str, risk_category: str, message_summary: str):
     import asyncio
-    asyncio.run(_send_notifications(user_id, risk_level, risk_category, message_summary))
+    asyncio.run(process_risk_notification(user_id, risk_level, risk_category, message_summary))
 
 
-async def _send_notifications(user_id: str, risk_level: str, risk_category: str, summary: str):
-    import json
+async def process_risk_notification(user_id: str, risk_level: str, risk_category: str, summary: str) -> None:
+    """Persist risk events and notify emergency contacts if configured."""
+    db_user_id = uuid.UUID(user_id)
     from datetime import datetime
     from app.db.session import async_session
     from app.db.models import EmergencyContact, NotificationLog, User
     from sqlalchemy import select
-
-    db_user_id = uuid.UUID(user_id)
 
     async with async_session() as db:
         user_result = await db.execute(select(User.username).where(User.id == db_user_id))
@@ -36,26 +35,49 @@ async def _send_notifications(user_id: str, risk_level: str, risk_category: str,
         )
         contacts = result.scalars().all()
 
-        for contact in contacts:
-            levels = contact.notify_on_levels or ["critical", "high"]
-            if risk_level not in levels:
-                continue
+        matched_contacts = [
+            contact
+            for contact in contacts
+            if risk_level in (contact.notify_on_levels or ["critical", "high"])
+        ]
 
+        if not matched_contacts:
+            db.add(
+                NotificationLog(
+                    user_id=db_user_id,
+                    contact_id=None,
+                    risk_level=risk_level,
+                    risk_category=risk_category,
+                    summary=summary,
+                    webhook_status="no_contact",
+                )
+            )
+            await db.commit()
+            return
+
+        for contact in matched_contacts:
             status = "skipped"
             if contact.webhook_url:
                 status = await _send_webhook(contact.webhook_url, {
-                    "elder_name": elder_name, "user_id": user_id,
-                    "risk_level": risk_level, "category": risk_category,
-                    "summary": summary, "timestamp": datetime.utcnow().isoformat(),
+                    "elder_name": elder_name,
+                    "user_id": user_id,
+                    "risk_level": risk_level,
+                    "category": risk_category,
+                    "summary": summary,
+                    "timestamp": datetime.utcnow().isoformat(),
                     "contact_name": contact.name,
                 })
 
-            log = NotificationLog(
-                user_id=db_user_id, contact_id=contact.id,
-                risk_level=risk_level, risk_category=risk_category,
-                summary=summary, webhook_status=status,
+            db.add(
+                NotificationLog(
+                    user_id=db_user_id,
+                    contact_id=contact.id,
+                    risk_level=risk_level,
+                    risk_category=risk_category,
+                    summary=summary,
+                    webhook_status=status,
+                )
             )
-            db.add(log)
 
         await db.commit()
 
