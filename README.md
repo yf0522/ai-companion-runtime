@@ -19,7 +19,7 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Device realtime WebSocket | 已落地，并在单测中验证关键行为（JWT、PCM 收发、ASR 回退、模型/TTS 流转）。依赖如 DashScope 的集成验证需补充完整运行环境。 |
 | Hardware device validation | 先前仓库中有 ESP32-S3 构建与二次唤醒验证记录；当前仓未包含可复现硬件日志文件，需补充后再标为完全通过。 |
 | Family notification | `/api/notifications` 已接入持久化通知事件（`notification_log`）；手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
-| Investor demo material | 已补充在 `docs/investor-demo.md`；设备验证清单在 `docs/device-test.md`，按当前依赖条件区分“协议验证”和“真实链路验证”。 |
+| Investor demo material | 已补充在 [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单见 [docs/device-test.md](docs/device-test.md)；公开演示图片与 Mock 免责声明见 [docs/evidence/README.md](docs/evidence/README.md)。 |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
 ## 架构总览
