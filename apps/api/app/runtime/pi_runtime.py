@@ -101,7 +101,7 @@ class PiExperimentalRuntime:
         sidecar_error: str | None = None
         seen_done = False
         tools_used: list[dict[str, str]] = []
-        failed_tool_results: list = []
+        honesty_tool_results: list = []
         sidecar_start = time.monotonic()
 
         def _upsert_tool(tool: str, status: str, action: str | None = None) -> None:
@@ -115,6 +115,24 @@ class PiExperimentalRuntime:
                     tools_used[i] = entry
                     return
             tools_used.append(entry)
+
+        def _record_honesty_result(
+            tool: str,
+            status: str,
+            display_text: str = "",
+            action: str | None = None,
+        ) -> None:
+            from app.tools.base import ToolResult
+
+            data = {"action": action} if action else None
+            honesty_tool_results.append(
+                ToolResult(
+                    tool_name=tool,
+                    status=status,
+                    display_text=display_text,
+                    data=data,
+                )
+            )
 
         async with httpx.AsyncClient(timeout=_SIDECAR_TIMEOUT_S) as client:
             async with client.stream("POST", url, json=payload) as response:
@@ -155,35 +173,46 @@ class PiExperimentalRuntime:
                         await stream_mgr.send_tool_status(tool, status)
                         _upsert_tool(tool, status)
                         if status in {"failed", "timeout", "needs_clarification"}:
-                            from app.tools.base import ToolResult
-
-                            failed_tool_results.append(
-                                ToolResult(
-                                    tool_name=tool,
-                                    status=status,
-                                    display_text=(
-                                        "需要确认具体任务"
-                                        if status == "needs_clarification"
-                                        else f"{tool} 未能完成"
-                                    ),
-                                )
+                            _record_honesty_result(
+                                tool,
+                                status,
+                                display_text=(
+                                    "需要确认具体任务"
+                                    if status == "needs_clarification"
+                                    else f"{tool} 未能完成"
+                                ),
                             )
                     elif event_type == "tool_result":
                         tool = str(event.get("tool", "caretask"))
                         text = str(event.get("text", ""))
                         status = str(event.get("status", "success"))
+                        action = event.get("action")
                         if text:
                             await stream_mgr.send_tool_result(tool, text)
-                        _upsert_tool(tool, status)
+                        _upsert_tool(
+                            tool,
+                            status,
+                            str(action) if action else None,
+                        )
                         if status in {"failed", "timeout", "needs_clarification"}:
-                            from app.tools.base import ToolResult
-
-                            failed_tool_results.append(
-                                ToolResult(
-                                    tool_name=tool,
-                                    status=status,
-                                    display_text=text or f"{tool} 未能完成",
-                                )
+                            _record_honesty_result(
+                                tool,
+                                status,
+                                display_text=text or f"{tool} 未能完成",
+                                action=str(action) if action else None,
+                            )
+                        elif status == "success" and (
+                            action in {"caretask_reuse", "caretask_schedule_updated"}
+                            or "未重复创建" in text
+                            or "已有相同" in text
+                        ):
+                            _record_honesty_result(
+                                tool,
+                                status,
+                                display_text=text,
+                                action=str(action)
+                                if action
+                                else ("caretask_reuse" if "未重复创建" in text else None),
                             )
                     elif event_type == "error":
                         sidecar_error = str(event.get("message", "pi sidecar error"))
@@ -222,10 +251,10 @@ class PiExperimentalRuntime:
             ttft_ms = int((time.monotonic() - start) * 1000)
             await stream_mgr.send_first_reply(response_text, ttft_ms)
 
-        if failed_tool_results:
+        if honesty_tool_results:
             from app.tools.honesty import enforce_no_verbal_promise
 
-            honest = enforce_no_verbal_promise(response_text, failed_tool_results)
+            honest = enforce_no_verbal_promise(response_text, honesty_tool_results)
             if honest != response_text:
                 await stream_mgr.send_delta("\n" + honest)
                 response_text = honest

@@ -31,6 +31,27 @@ _SCHEDULE_NOISE = re.compile(
     r"[零一二三四五六七八九十两]+\s*[点时](?:\s*[零一二三四五六七八九十]+\s*分?)?)?"
 )
 _REMINDER_FILLER = re.compile(r"(?:提醒我|记得|帮我记一下|帮我记下|帮我|请帮我|给我|记一下|记下|请|麻烦)")
+# Mutate verbs / category noise — strip before resolve matching so
+# 「取消吃药提醒」 does not silently bind to a single generic 「吃药」 title.
+_RESOLVE_ACTION_PREFIX = re.compile(
+    r"^(?:请|麻烦|帮我|给我)?(?:取消|不要了|不要|删掉|删除|完成|打卡|推迟|延后)"
+)
+_RESOLVE_ACTION_SUFFIX = re.compile(r"(?:的)?(?:提醒|任务|闹钟)+$")
+_GENERIC_MED_HINTS = frozenset(
+    {
+        "",
+        "药",
+        "吃药",
+        "服药",
+        "用药",
+        "吃药提醒",
+        "服药提醒",
+        "用药提醒",
+        "提醒",
+        "那个",
+        "这个",
+    }
+)
 
 # Allowed transitions: from -> to
 _TRANSITIONS: dict[str, frozenset[str]] = {
@@ -174,6 +195,33 @@ def _token_overlap(a: str, b: str) -> float:
     if not ba or not bb:
         return 0.0
     return len(ba & bb) / len(ba | bb)
+
+
+def extract_resolve_hint(title_hint: str | None, query: str | None) -> str:
+    """Normalize a mutate utterance into a title/category hint.
+
+    Strips cancel/complete verbs and trailing 「提醒」 so category phrases
+    like 「取消吃药提醒」 become the generic med hint 「吃药」.
+    """
+    text = normalize_title(title_hint or query or "")
+    text = _RESOLVE_ACTION_PREFIX.sub("", text)
+    text = _RESOLVE_ACTION_SUFFIX.sub("", text)
+    text = text.strip()
+    # Second pass: leftover filler after verb strip (e.g. 取消提醒我吃药)
+    text = normalize_title(text)
+    text = _RESOLVE_ACTION_SUFFIX.sub("", text)
+    return text.strip()
+
+
+def is_generic_med_hint(hint: str) -> bool:
+    """True when the referent is category-level, not a specific med title."""
+    h = (hint or "").strip()
+    if h in _GENERIC_MED_HINTS:
+        return True
+    # Very short / only 「吃…药」 without a drug name → still category.
+    if h in {"吃药", "服药", "用药"}:
+        return True
+    return False
 
 
 @dataclass
@@ -322,7 +370,11 @@ async def resolve_task_ref(
     title_hint: str | None = None,
     query: str | None = None,
 ) -> ResolveResult:
-    """Resolve a mutate referent: 0→none, 1→one, ≥2→many (no silent limit=1)."""
+    """Resolve a mutate referent: 0→none, 1→one, ≥2→many (no silent pick).
+
+    Category-level cancel/complete (「取消吃药提醒」) with ≥2 active tasks
+    always returns ``many`` — never bind to a single generic 「吃药」 title.
+    """
     if task_id:
         rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
         for row in rows:
@@ -333,31 +385,32 @@ async def resolve_task_ref(
 
     rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
     active = [r for r in rows if r.get("status") in ACTIVE_STATUSES]
-    hint = normalize_title(title_hint or query or "")
-    if hint:
-        matched = [
-            r
-            for r in active
-            if hint in normalize_title(r["title"])
-            or normalize_title(r["title"]) in hint
-            or _token_overlap(hint, r["title"]) >= 0.55
-        ]
-        if len(matched) == 1:
-            return ResolveResult(kind="one", task=matched[0])
-        if len(matched) >= 2:
-            return ResolveResult(kind="many", candidates=matched)
-        if not matched and len(active) == 0:
-            return ResolveResult(kind="none")
-        if not matched and len(active) == 1:
-            return ResolveResult(kind="one", task=active[0])
-        if not matched and len(active) >= 2:
-            return ResolveResult(kind="many", candidates=active)
-        return ResolveResult(kind="none")
+    hint = extract_resolve_hint(title_hint, query)
 
+    # No clear referent / category-level med phrasing → clarify when ≥2.
+    if not hint or is_generic_med_hint(hint):
+        if len(active) == 0:
+            return ResolveResult(kind="none")
+        if len(active) == 1:
+            return ResolveResult(kind="one", task=active[0])
+        return ResolveResult(kind="many", candidates=active)
+
+    matched = [
+        r
+        for r in active
+        if hint in normalize_title(r["title"])
+        or normalize_title(r["title"]) in hint
+        or _token_overlap(hint, r["title"]) >= 0.55
+    ]
+    if len(matched) == 1:
+        return ResolveResult(kind="one", task=matched[0])
+    if len(matched) >= 2:
+        return ResolveResult(kind="many", candidates=matched)
     if len(active) == 0:
         return ResolveResult(kind="none")
     if len(active) == 1:
         return ResolveResult(kind="one", task=active[0])
+    # Specific hint matched nothing among ≥2 actives — ask, never silent pick.
     return ResolveResult(kind="many", candidates=active)
 
 

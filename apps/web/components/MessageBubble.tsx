@@ -36,34 +36,26 @@ function chipLabel(chip: ToolChip): string {
 }
 
 function RiskAlertBanner({
-  level,
   message,
   content,
 }: {
-  level: string;
   message?: string;
   content: string;
 }) {
   const alertMsg = (message || "").trim();
   const body = (content || "").trim();
-  // Avoid rendering the same safety paragraph twice in one bubble.
-  if (alertMsg && alertMsg === body) {
-    return (
-      <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">
-        风险等级：{level}
-      </div>
-    );
+  // Elder UI: never show raw "风险等级：high". Prefer hotline body only;
+  // empty risk_alert.message means safety copy already went via first_reply.
+  if (!alertMsg) {
+    return null;
   }
-  if (alertMsg) {
-    return (
-      <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-        {alertMsg}
-      </div>
-    );
+  // Avoid rendering the same safety paragraph twice in one bubble.
+  if (alertMsg === body) {
+    return null;
   }
   return (
-    <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">
-      风险等级：{level}
+    <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+      {alertMsg}
     </div>
   );
 }
@@ -93,7 +85,6 @@ export default function MessageBubble({ message }: Props) {
 
           {message.riskAlert && (
             <RiskAlertBanner
-              level={message.riskAlert.level}
               message={message.riskAlert.message}
               content={message.content}
             />
