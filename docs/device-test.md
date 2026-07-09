@@ -24,6 +24,9 @@ The runtime now treats `https://github.com/yf0522/ai-companion-runtime` as the c
 | Risk detection engine | 协议行为已验证（测试桩/替身） | `apps/api/tests/test_risk_engine.py` 覆盖 fraud / health / emotional 的分类、否定词与安全上下文。 |
 | Prompt-injection wrapper | 已验证（测试桩/替身） | `apps/api/tests/test_prompt_injection.py` 覆盖指令注入与优先级。 |
 | Reminder structured output | 已实现 | `apps/api/app/tools/reminder_tool.py` 输出 `reminder_create` 结构体，用于设备侧闹钟/倒计时消费。 |
+| Firmware protocol messages | 已对齐（源码级） | `firmware/main/main.c` 发送 `audio_start`/`audio_end`，解析 `connected`…`tts_done`/`reminder_create`/`risk_alert`。 |
+| Local reminder NVS consume | 已实现（源码级） | `local_reminder_add_structured` 支持 alarm/daily/countdown + `reminder_id`。 |
+| Expected protocol sequence (NOT live serial) | 已入库 | `docs/evidence/device-protocol-expected-sequence-20260709.txt`（标注为 expected harness log，非实机串口）。 |
 
 ## Hardware Work Previously Verified
 
@@ -35,14 +38,14 @@ The hardware diagnosis referenced in legacy notes records a prior ESP32-S3 devic
 - Backend tests passed at that time.
 - Follow-up manual two-turn validation with serial logs was recommended.
 
-Because the firmware project and serial logs historically lived outside this repo, older notes treated hardware as historical reference. Protocol-aligned firmware source plus an **expected** (annotated) sequence doc may land under `docs/evidence/`; replace annotated sequences with live `idf.py monitor` captures before claiming a full hardware closed loop.
+This repo now includes a protocol-aligned firmware skeleton under `firmware/`. Treat live board flash + real serial capture as still required before claiming a full hardware closed loop.
 
 ## Not Yet Fully Verified
 
 | Area | Current status |
 |---|---|
-| End-to-end hardware loop in this repo | Protocol alignment may be in source; live flash + real serial still required. |
-| Reminder local trigger on ESP32 | Firmware NVS consume may land with protocol work; need real serial fire logs for diligence. |
+| End-to-end hardware loop in this repo | Protocol aligned in source; live ESP-IDF flash + real serial capture still required. |
+| Reminder local trigger on ESP32 | Firmware persists `reminder_create` to NVS; replace annotated evidence with real serial fire logs. |
 | Fraud detection full demo path | Risk/rule detection exists; investor demo flow should be run against a scripted scenario and captured in Trace. |
 | Family notification delivery | `NotificationLog` 事件已落库；推送 provider 与真实回执/送达链路仍在 roadmap。 |
 | Production device auth for ASR/TTS HTTP endpoints | Needs hardening: token checks, request size limits, per-device quota, and audit logs. |

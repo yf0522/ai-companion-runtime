@@ -5,6 +5,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "cJSON.h"
 
 #include "config.h"
 #include "state_machine.h"
@@ -13,23 +14,25 @@
 #include "local_reminder.h"
 
 static const char *TAG = "main";
+static bool audio_turn_active = false;
 
-// Forward declarations
 static void wifi_init(void);
 static void on_ws_text(const char *data, int len);
 static void on_ws_binary(const uint8_t *data, int len);
 static void main_loop_task(void *arg);
 static void reminder_check_task(void *arg);
+static void send_audio_start(void);
+static void send_audio_end(void);
+static void handle_reminder_create(cJSON *root);
+static void begin_listen_turn(void);
 
 void app_main(void) {
-    // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
 
-    // Initialize subsystems
     state_machine_init();
     audio_pipeline_init();
     local_reminder_init();
@@ -37,11 +40,46 @@ void app_main(void) {
     ws_client_init(on_ws_text, on_ws_binary);
 
     ESP_LOGI(TAG, "Elder Companion device started");
+    ESP_LOGI(TAG, "Protocol: audio_start/audio_end + JSON events from /ws/device/realtime");
     ESP_LOGI(TAG, "Say '%s' to wake me up", WAKE_WORD);
 
-    // Start main loop
     xTaskCreate(main_loop_task, "main_loop", 8192, NULL, 5, NULL);
     xTaskCreate(reminder_check_task, "reminder_check", 4096, NULL, 3, NULL);
+}
+
+static void begin_listen_turn(void) {
+    if (!ws_client_is_connected()) {
+        ws_client_connect();
+    }
+    audio_pipeline_start();
+    state_machine_set(STATE_LISTENING);
+    state_machine_reset_timeout();
+    send_audio_start();
+    audio_turn_active = true;
+    ESP_LOGI(TAG, "listen turn started -> audio_start");
+}
+
+static void send_audio_start(void) {
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "audio_start");
+    cJSON_AddNumberToObject(msg, "sample_rate", SAMPLE_RATE);
+    char *payload = cJSON_PrintUnformatted(msg);
+    if (payload) {
+        ws_client_send_text(payload);
+        free(payload);
+    }
+    cJSON_Delete(msg);
+}
+
+static void send_audio_end(void) {
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "audio_end");
+    char *payload = cJSON_PrintUnformatted(msg);
+    if (payload) {
+        ws_client_send_text(payload);
+        free(payload);
+    }
+    cJSON_Delete(msg);
 }
 
 static void main_loop_task(void *arg) {
@@ -52,46 +90,46 @@ static void main_loop_task(void *arg) {
 
         switch (state) {
         case STATE_STANDBY:
-            // Only wake word detection runs here
-            // ESP-SR WakeNet processes audio in background
-            // When wake word detected, transition to LISTENING
-            // (In production: register wakenet callback that calls state_machine_set)
+            // Production: WakeNet callback should call begin_listen_turn().
+            // Host/protocol harness can force LISTENING via state_machine_set.
             vTaskDelay(pdMS_TO_TICKS(100));
             break;
 
         case STATE_LISTENING:
-            // Check standby timeout
             if (state_machine_check_timeout()) {
                 ESP_LOGI(TAG, "Standby timeout, going to sleep");
+                if (audio_turn_active) {
+                    send_audio_end();
+                    audio_turn_active = false;
+                }
                 ws_client_disconnect();
                 audio_pipeline_stop();
                 state_machine_set(STATE_STANDBY);
                 break;
             }
 
-            // Read processed audio (after AEC + NS)
-            audio_pipeline_read(audio_buf, FRAME_SIZE_SAMPLES);
+            if (!audio_turn_active) {
+                begin_listen_turn();
+            }
 
-            // If VAD detected speech end, send to server
+            audio_pipeline_read(audio_buf, FRAME_SIZE_SAMPLES);
+            ws_client_send_binary((uint8_t *)audio_buf, FRAME_SIZE_SAMPLES * sizeof(int16_t));
+
             if (audio_pipeline_vad_detected()) {
+                send_audio_end();
+                audio_turn_active = false;
                 state_machine_set(STATE_PROCESSING);
-                // Send audio via WebSocket
-                ws_client_send_binary((uint8_t *)audio_buf,
-                                     FRAME_SIZE_SAMPLES * sizeof(int16_t));
+                ESP_LOGI(TAG, "VAD end -> audio_end, waiting for server");
             }
             break;
 
         case STATE_PROCESSING:
-            // Waiting for server response
-            // Handled by ws_client callbacks
             vTaskDelay(pdMS_TO_TICKS(50));
             break;
 
         case STATE_SPEAKING:
-            // Audio playback handled by audio_pipeline_play()
-            // When done, return to LISTENING
-            state_machine_set(STATE_LISTENING);
-            state_machine_reset_timeout();
+            // Stay in SPEAKING until tts_done (handled in on_ws_text).
+            vTaskDelay(pdMS_TO_TICKS(20));
             break;
         }
 
@@ -106,27 +144,98 @@ static void reminder_check_task(void *arg) {
     }
 }
 
+static void handle_reminder_create(cJSON *root) {
+    cJSON *id = cJSON_GetObjectItem(root, "reminder_id");
+    cJSON *label = cJSON_GetObjectItem(root, "label");
+    cJSON *timer_type = cJSON_GetObjectItem(root, "timer_type");
+    cJSON *repeat_mode = cJSON_GetObjectItem(root, "repeat_mode");
+    cJSON *hour = cJSON_GetObjectItem(root, "hour");
+    cJSON *minute = cJSON_GetObjectItem(root, "minute");
+    cJSON *duration = cJSON_GetObjectItem(root, "duration_sec");
+
+    local_reminder_add_structured(
+        cJSON_IsString(id) ? id->valuestring : NULL,
+        cJSON_IsString(label) ? label->valuestring : "reminder",
+        cJSON_IsString(timer_type) ? timer_type->valuestring : "alarm",
+        cJSON_IsString(repeat_mode) ? repeat_mode->valuestring : "once",
+        cJSON_IsNumber(hour) ? hour->valueint : 0,
+        cJSON_IsNumber(minute) ? minute->valueint : 0,
+        cJSON_IsNumber(duration) ? duration->valueint : 0
+    );
+}
+
 static void on_ws_text(const char *data, int len) {
     ESP_LOGI(TAG, "WS text: %.*s", len, data);
     state_machine_reset_timeout();
 
-    // Parse JSON and handle message types:
-    // "connected" -> log
-    // "first_reply" / "delta" / "final" -> TTS and play
-    // "reminder" -> play reminder audio
-    // "error" -> log
+    cJSON *root = cJSON_ParseWithLength(data, len);
+    if (!root) {
+        ESP_LOGW(TAG, "Invalid JSON from server");
+        return;
+    }
+
+    cJSON *type = cJSON_GetObjectItem(root, "type");
+    if (!cJSON_IsString(type)) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    const char *t = type->valuestring;
+    if (strcmp(t, "connected") == 0) {
+        ESP_LOGI(TAG, "server connected");
+    } else if (strcmp(t, "listening") == 0) {
+        ESP_LOGI(TAG, "server listening");
+    } else if (strcmp(t, "trace") == 0) {
+        cJSON *tid = cJSON_GetObjectItem(root, "trace_id");
+        ESP_LOGI(TAG, "trace_id=%s", cJSON_IsString(tid) ? tid->valuestring : "");
+    } else if (strcmp(t, "asr_partial") == 0 || strcmp(t, "asr_final") == 0) {
+        cJSON *text = cJSON_GetObjectItem(root, "text");
+        ESP_LOGI(TAG, "%s: %s", t, cJSON_IsString(text) ? text->valuestring : "");
+    } else if (strcmp(t, "risk_alert") == 0) {
+        cJSON *level = cJSON_GetObjectItem(root, "level");
+        ESP_LOGW(TAG, "risk_alert level=%s", cJSON_IsString(level) ? level->valuestring : "");
+        state_machine_set(STATE_SPEAKING);
+    } else if (strcmp(t, "first_reply") == 0 || strcmp(t, "delta") == 0) {
+        // Text is informational; spoken audio arrives as binary PCM frames.
+        state_machine_set(STATE_SPEAKING);
+    } else if (strcmp(t, "reminder_create") == 0) {
+        handle_reminder_create(root);
+    } else if (strcmp(t, "tool_status") == 0 || strcmp(t, "tool_result") == 0) {
+        ESP_LOGI(TAG, "tool event: %s", t);
+    } else if (strcmp(t, "final") == 0) {
+        ESP_LOGI(TAG, "final received");
+    } else if (strcmp(t, "tts_done") == 0) {
+        ESP_LOGI(TAG, "tts_done -> return to listening");
+        state_machine_set(STATE_LISTENING);
+        state_machine_reset_timeout();
+        audio_turn_active = false;
+    } else if (strcmp(t, "no_speech") == 0) {
+        ESP_LOGI(TAG, "no_speech -> listen again");
+        state_machine_set(STATE_LISTENING);
+        audio_turn_active = false;
+    } else if (strcmp(t, "error") == 0) {
+        cJSON *code = cJSON_GetObjectItem(root, "code");
+        ESP_LOGE(TAG, "server error: %s", cJSON_IsString(code) ? code->valuestring : "unknown");
+        state_machine_set(STATE_LISTENING);
+        audio_turn_active = false;
+    } else {
+        ESP_LOGW(TAG, "unhandled type: %s", t);
+    }
+
+    cJSON_Delete(root);
 }
 
 static void on_ws_binary(const uint8_t *data, int len) {
-    // Receive audio from server (TTS output)
     audio_pipeline_play(data, len);
     state_machine_set(STATE_SPEAKING);
 }
 
 static void wifi_init(void) {
+#if CONFIG_COMPANION_ENABLE_WIFI
     ESP_LOGI(TAG, "Connecting to WiFi: %s", WIFI_SSID);
-    // Standard ESP-IDF WiFi initialization:
-    // esp_netif_init() -> esp_event_loop_create_default()
-    // -> esp_netif_create_default_wifi_sta() -> esp_wifi_init()
-    // -> esp_wifi_set_config() -> esp_wifi_start() -> esp_wifi_connect()
+    // Standard ESP-IDF WiFi STA bring-up lives behind this flag.
+    // Without ADF/board support, keep the stub so protocol code still compiles.
+#else
+    ESP_LOGW(TAG, "WiFi bring-up gated (CONFIG_COMPANION_ENABLE_WIFI=0); protocol code still active");
+#endif
 }
