@@ -373,6 +373,78 @@ async def test_cancel_without_id_lists_candidates(monkeypatch):
     assert len(result.data["candidates"]) == 2
 
 
+@pytest.mark.asyncio
+async def test_cancel_generic_med_with_multiple_tasks_clarifies(monkeypatch):
+    """P0 regression: 「取消吃药提醒」 must not silent-cancel when ≥2 actives.
+
+    Previously substring match bound to a lone generic 「吃药」 / 「九点吃药」 title.
+    """
+    from app.tools import caretask_service as svc
+
+    tasks = [
+        {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "title": "吃降压药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+        {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "title": "吃降糖药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+        {
+            "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "title": "九点吃药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+    ]
+
+    async def fake_list(**kwargs):
+        return tasks
+
+    monkeypatch.setattr(svc, "list_care_tasks", fake_list)
+    resolved = await svc.resolve_task_ref(
+        user_id=str(uuid.uuid4()),
+        query="取消吃药提醒",
+    )
+    assert resolved.kind == "many"
+    assert len(resolved.candidates or []) >= 2
+
+    tool = CareTaskTool()
+    mutated = {"called": False}
+
+    async def fake_cancel(**kwargs):
+        mutated["called"] = True
+        raise AssertionError("must not cancel on ambiguous generic med ref")
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.cancel_care_task", fake_cancel)
+    result = await tool.execute(
+        {
+            "action": "cancel",
+            "query": "取消吃药提醒",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+    assert result.status == "needs_clarification"
+    assert mutated["called"] is False
+    assert "多个" in result.display_text or "哪一个" in result.display_text
+
+
+def test_extract_resolve_hint_strips_cancel_verb():
+    from app.tools.caretask_service import extract_resolve_hint, is_generic_med_hint
+
+    assert extract_resolve_hint(None, "取消吃药提醒") == "吃药"
+    assert is_generic_med_hint(extract_resolve_hint(None, "取消吃药提醒"))
+    assert extract_resolve_hint(None, "取消降压药") == "降压药"
+    assert not is_generic_med_hint(extract_resolve_hint(None, "取消降压药"))
+
+
 def test_honesty_does_not_claim_success_on_clarification():
     clarify = [
         ToolResult(
@@ -387,6 +459,36 @@ def test_honesty_does_not_claim_success_on_clarification():
     assert out != text
     assert "已帮你取消" not in out
     assert "多个" in out or "确认" in out or "取消" in out
+
+
+def test_honesty_rewrites_reuse_as_already_recorded():
+    reuse = [
+        ToolResult(
+            tool_name="caretask",
+            status="success",
+            display_text="已有相同照护任务：吃降压药，状态 pending（未重复创建）",
+            data={"action": "caretask_reuse"},
+        )
+    ]
+    claimed = "好的，已经为您记录了吃降压药"
+    out = enforce_no_verbal_promise(claimed, reuse)
+    assert "未重复创建" in out
+    assert "已经为您记录了" not in out
+
+
+def test_honesty_rewrites_false_reminded_now_on_reuse():
+    reuse = [
+        ToolResult(
+            tool_name="caretask",
+            status="success",
+            display_text="已有相同照护任务：吃降糖药，状态 pending（未重复创建）",
+            data={"action": "caretask_reuse"},
+        )
+    ]
+    claimed = "我已经提醒你吃降糖药了"
+    out = enforce_no_verbal_promise(claimed, reuse)
+    assert "未重复创建" in out
+    assert "我已经提醒你" not in out
 
 
 @pytest.mark.asyncio

@@ -287,12 +287,13 @@ class AgentHarness:
                 logger.warning(f"Tool dispatch failed: {e}")
                 tool_results = []
 
-        # Contract: never let the model verbally promise success after a failed tool.
+        # Contract: never let the model verbally promise success after a failed tool,
+        # or invent "created / reminded now" when CareTask only reused.
         from app.tools.honesty import enforce_no_verbal_promise
 
         honest_text = enforce_no_verbal_promise(response_text, tool_results)
         if honest_text != response_text:
-            logger.info("Rewrote response to avoid verbal promise after tool failure")
+            logger.info("Rewrote response for tool honesty (fail/clarify/reuse)")
             await stream_mgr.send_delta("\n" + honest_text)
             response_text = honest_text
 

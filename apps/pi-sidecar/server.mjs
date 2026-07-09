@@ -264,6 +264,7 @@ async function streamAgentChat({ res, body }) {
           tool: toolCall.name,
           text: details.display_text,
           status,
+          ...(action ? { action } : {}),
         });
       }
       // Clarification: not a hard error — model should ask user to pick, not invent success.
