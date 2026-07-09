@@ -26,8 +26,12 @@ build/
 *.swo
 .DS_Store
 
-# Docs (design docs not tracked)
+# Docs (design docs not tracked by default)
 docs/
+!docs/
+docs/*
+!docs/device-test.md
+!docs/investor-demo.md
 *.html
 
 # Data

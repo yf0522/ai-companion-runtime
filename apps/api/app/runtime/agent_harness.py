@@ -203,7 +203,7 @@ class AgentHarness:
                 async def _stream_model():
                     nonlocal first_token, ttft_ms, fast_reply_sent, response_text
                     async for token in model.stream_chat(messages):
-                        if cancel_event.is_set():
+                        if cancel_event.is_set() or stream_mgr.dead:
                             break
                         if first_token:
                             if not fast_reply_sent:
@@ -458,6 +458,10 @@ class AgentHarness:
             logger.warning(f"Failed to persist conversation to L0: {e}")
 
         # Fire-and-forget Celery tasks for importance evaluation and summary
+        from app.config.settings import settings
+        if not settings.enable_celery_tasks:
+            return
+
         try:
             from app.workers.memory_worker import (
                 evaluate_importance, update_session_summary,

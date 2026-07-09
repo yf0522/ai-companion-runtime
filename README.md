@@ -2,6 +2,26 @@
 
 实时 AI 情绪陪伴 + 通用助手系统。基于 WebSocket 的流式对话，支持情绪识别、风险分级、工具调用、长期记忆、模型热插拔、全链路 Trace 观测。
 
+## Current verified status
+
+Last updated: 2026-07-09
+
+This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` is being consolidated here; application follow-up material should point reviewers to this repo and mention that consolidation explicitly.
+
+| Area | Current status |
+|---|---|
+| WebSocket companion runtime | Implemented: `/ws/chat` protocol, trace IDs, first reply, deltas, tool status/results, and final messages. |
+| Analyzer pipeline | Implemented: intent, emotion, risk, personality, memory, prompt builder, and timeout-oriented harness flow. |
+| Risk detection | Implemented and covered by tests for critical language, bypass variants, negation, and safe-context false positives. |
+| Model routing | Implemented: configurable model registry with primary/fallback/fast roles and OpenAI-compatible adapters. |
+| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. |
+| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; full ESP32 local trigger evidence still needs a captured hardware test pass. |
+| Device realtime WebSocket | Implemented and covered by automated tests: JWT auth, PCM receive, ASR fallback, model text streaming, TTS PCM bytes, and empty-speech handling. |
+| Hardware device validation | Partially verified: prior ESP32-S3 build/flash and second-turn diagnosis are documented in `docs/hardware-second-turn-diagnosis.md`; repeatable in-repo hardware evidence should be added before claiming full production readiness. |
+| Family notification | Roadmap/adapter boundary unless a notification provider is configured and tested. |
+| Investor demo material | Added in `docs/investor-demo.md`; device evidence checklist added in `docs/device-test.md`. |
+| License | MIT, with a root `LICENSE` file so GitHub can detect it. |
+
 ## 架构总览
 
 ```

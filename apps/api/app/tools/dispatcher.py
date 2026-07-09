@@ -69,6 +69,16 @@ class ToolDispatcher:
             latency = int((time.monotonic() - start) * 1000)
             result.latency_ms = latency
 
+            # Check for WS actions embedded in tool result data.
+            # Tools can request the dispatcher send structured messages to the
+            # ESP32 without knowing about WebSocket themselves.
+            if result.data and result.data.get("action"):
+                action = result.data["action"]
+                if action == "reminder_create":
+                    ws_data = {k: v for k, v in result.data.items()
+                               if k not in ("action", "display_time")}
+                    await stream_mgr.send_reminder_create(ws_data)
+
             if result.status == "success":
                 await stream_mgr.send_tool_status(name, "success")
                 await stream_mgr.send_tool_result(name, result.display_text)

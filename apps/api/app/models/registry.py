@@ -31,6 +31,15 @@ _DEFAULT_BASE_URLS = {
 }
 
 
+def _resolve_api_key(provider: str, api_key_env: str) -> str:
+    if api_key_env:
+        value = os.environ.get(api_key_env, "")
+        if value:
+            return value
+    key_fn = _API_KEY_MAP.get(provider, lambda: "")
+    return key_fn()
+
+
 class ModelRegistry:
     """Loads model configs from YAML and creates adapters. Supports hot-reload."""
 
@@ -79,12 +88,7 @@ class ModelRegistry:
                 model_name = model_cfg.get("model", "")
 
                 # Resolve API key
-                api_key_env = model_cfg.get("api_key_env", "")
-                if api_key_env:
-                    api_key = os.environ.get(api_key_env, "")
-                else:
-                    key_fn = _API_KEY_MAP.get(provider, lambda: "")
-                    api_key = key_fn()
+                api_key = _resolve_api_key(provider, model_cfg.get("api_key_env", ""))
 
                 base_url = model_cfg.get("base_url", _DEFAULT_BASE_URLS.get(provider, ""))
                 max_tokens = model_cfg.get("max_tokens", 2048)

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     redis_password: str = "companion_redis_secret"  # Matches docker-compose default
     celery_broker_url: str = "redis://redis:6379/1"
+    enable_celery_tasks: bool = False
 
     # MinIO
     minio_endpoint: str = "minio:9000"
@@ -41,7 +42,7 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://jaeger:4317"
     otel_service_name: str = "companion-runtime"
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 
     def validate_security(self):
         """Check for insecure defaults. In production, fail fast on any."""

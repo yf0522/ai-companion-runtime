@@ -6,10 +6,21 @@ logger = logging.getLogger(__name__)
 
 
 class StreamManager:
-    """Manages sending structured WebSocket messages to the client."""
+    """Manages sending structured WebSocket messages to the client.
+
+    Tracks connection health via `dead` — when a send fails, the connection
+    is marked dead so the harness can abort streaming instead of generating
+    tokens into the void.
+    """
 
     def __init__(self, websocket: WebSocket):
         self._ws = websocket
+        self._dead = False
+
+    @property
+    def dead(self) -> bool:
+        """True after the first send failure — the WebSocket is unreachable."""
+        return self._dead
 
     async def send_trace(self, trace_id: str):
         await self._send({"type": "trace", "trace_id": trace_id})
@@ -28,6 +39,10 @@ class StreamManager:
 
     async def send_risk_alert(self, level: str, message: str):
         await self._send({"type": "risk_alert", "level": level, "message": message})
+
+    async def send_reminder_create(self, data: dict):
+        """Send a reminder_create message to the ESP32 to persist a timer locally."""
+        await self._send({"type": "reminder_create", **data})
 
     async def send_final(
         self,
@@ -52,7 +67,10 @@ class StreamManager:
         await self._send({"type": "error", "code": code, "message": message, "retry": retry})
 
     async def _send(self, data: dict):
+        if self._dead:
+            return
         try:
             await self._ws.send_json(data)
         except Exception as e:
-            logger.error(f"Failed to send WebSocket message: {e}")
+            self._dead = True
+            logger.error(f"WebSocket send failed, marking connection dead: {e}")
