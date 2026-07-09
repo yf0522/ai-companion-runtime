@@ -14,19 +14,35 @@ logger = logging.getLogger(__name__)
 _mem_store: dict[str, list[float]] = {}
 
 
-class RateLimiter:
-    """Simple sliding-window rate limiter using Redis or in-memory fallback."""
+class RateLimitBackendUnavailable(RuntimeError):
+    """The shared limiter is unavailable and policy forbids local fallback."""
 
-    def __init__(self, max_requests: int, window_seconds: int):
+
+class RateLimiter:
+    """Sliding-window limiter with an explicit dependency-failure policy."""
+
+    def __init__(
+        self,
+        max_requests: int,
+        window_seconds: int,
+        failure_mode: str | None = None,
+    ):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
+        self.failure_mode = failure_mode
 
     async def check(self, key: str) -> bool:
         """Returns True if the request is allowed, False if rate limited."""
         try:
             return await self._check_redis(key)
-        except Exception:
-            return self._check_memory(key)
+        except Exception as exc:
+            from app.config.settings import settings
+
+            mode = self.failure_mode or settings.rate_limit_failure_mode
+            if mode == "memory" and settings.app_env.lower() != "production":
+                logger.warning("Redis rate limiter unavailable; using development fallback")
+                return self._check_memory(key)
+            raise RateLimitBackendUnavailable("Shared rate limiter unavailable") from exc
 
     async def _check_redis(self, key: str) -> bool:
         from app.storage.redis_client import get_redis
@@ -86,17 +102,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """Apply rate limiting to auth endpoints via middleware."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        path = request.url.path
-
-        # Rate limit auth endpoints
-        if path in ("/api/auth/login", "/api/auth/register"):
-            client_ip = request.client.host if request.client else "unknown"
-            key = f"auth:{client_ip}:{path}"
-            allowed = await auth_limiter.check(key)
-            if not allowed:
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many requests. Please try again later.",
-                )
-
-        return await call_next(request)
+        try:
+            path = request.url.path
+            if path in ("/api/auth/login", "/api/auth/register"):
+                client_ip = request.client.host if request.client else "unknown"
+                key = f"auth:{client_ip}:{path}"
+                allowed = await auth_limiter.check(key)
+                if not allowed:
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Too many requests. Please try again later.",
+                    )
+            return await call_next(request)
+        except RateLimitBackendUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Rate limiting unavailable") from exc

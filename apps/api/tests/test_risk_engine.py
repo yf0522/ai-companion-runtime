@@ -93,6 +93,18 @@ async def test_safety_message_emotional_crisis_has_cn_hotlines():
     assert "111" not in msg
 
 
+def test_safety_message_lookup_does_not_read_config_on_request(monkeypatch):
+    import builtins
+
+    from app.runtime.risk_gate import load_safety_message
+
+    def fail_open(*_args, **_kwargs):
+        raise AssertionError("risk response performed request-time file I/O")
+
+    monkeypatch.setattr(builtins, "open", fail_open)
+    assert load_safety_message("high", "emotional_crisis")
+
+
 @pytest.mark.asyncio
 async def test_risk_gate_blocks_before_pi_sidecar(monkeypatch):
     from unittest.mock import AsyncMock

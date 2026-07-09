@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,29 @@ from app.engines.base import AnalyzerInput, RiskResult
 from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
+
+
+def _load_safety_messages() -> dict[str, str]:
+    """Load safety copy once so risk blocking never performs request-time I/O."""
+    try:
+        path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
+        with open(path, encoding="utf-8") as config_file:
+            rules = yaml.safe_load(config_file) or {}
+        configured = rules.get("safety_messages", {}) or {}
+        return {str(key): str(value) for key, value in configured.items() if value}
+    except Exception as exc:
+        logger.error("Failed to load safety messages: %s", exc)
+        return {}
+
+
+_SAFETY_MESSAGES = _load_safety_messages()
+
+
+def _stable_uuid(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, value))
 
 
 @dataclass
@@ -79,9 +103,14 @@ async def _analyze_risk(
         return await asyncio.wait_for(engine.analyze(payload), timeout=timeout_ms / 1000.0)
     except asyncio.TimeoutError:
         logger.warning("Risk gate timed out (%sms)", timeout_ms)
-    except Exception as e:
-        logger.warning("Risk gate failed: %s", e)
-    return RiskResult()
+    except Exception as exc:
+        logger.warning("Risk gate failed: %s", exc)
+    return RiskResult(
+        level="critical",
+        category="safety_unavailable",
+        confidence=1.0,
+        triggered_rules=["risk_engine_unavailable"],
+    )
 
 
 async def _emit_risk_block(
@@ -111,22 +140,13 @@ async def _emit_risk_block(
 
 
 def load_safety_message(level: str, category: str | None = None) -> str:
-    """Load CN-safe template; prefer category-specific copy for emotional crisis."""
-    try:
-        path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
-        with open(path) as f:
-            rules = yaml.safe_load(f) or {}
-        messages = rules.get("safety_messages", {}) or {}
-        if category:
-            for key in (f"{level}_{category}", category):
-                msg = messages.get(key)
-                if msg:
-                    return str(msg)
-        msg = messages.get(level)
-        if msg:
-            return str(msg)
-    except Exception as e:
-        logger.error("Failed to load safety messages: %s", e)
+    """Return CN-safe copy, preferring category-specific crisis guidance."""
+    if category:
+        for key in (f"{level}_{category}", category):
+            if message := _SAFETY_MESSAGES.get(key):
+                return message
+    if message := _SAFETY_MESSAGES.get(level):
+        return message
     return _default_safety_message()
 
 
@@ -138,40 +158,25 @@ def _default_safety_message() -> str:
 
 
 async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str) -> None:
-    """Best-effort family notify for high/critical (Pi path shares gate with harness)."""
+    """Persist the shared safety/outbox pipeline before any provider delivery."""
     try:
         from app.config.settings import settings
-        import uuid as _uuid_mod
-
-        try:
-            normalized_user_id = str(_uuid_mod.UUID(user_id))
-        except (ValueError, AttributeError):
-            normalized_user_id = str(_uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, user_id))
-
-        summary = _family_summary(risk)
-        if not settings.enable_celery_tasks:
-            from app.workers.notification_worker import process_risk_notification
-
-            await process_risk_notification(
-                normalized_user_id,
-                risk.level,
-                risk.category or "",
-                summary,
-                trace_id,
-            )
-            return
-
-        from app.workers.notification_worker import send_risk_notification
-
-        send_risk_notification.delay(
-            normalized_user_id,
-            risk.level,
-            risk.category or "",
-            summary,
-            trace_id,
+        from app.workers.notification_outbox_worker import (
+            create_safety_notification_pipeline,
+            deliver_notification_outbox,
         )
-    except Exception as e:
-        logger.warning("Risk gate family notify failed: %s", e)
+        summary = _family_summary(risk)
+        result = await create_safety_notification_pipeline(
+            user_id=_stable_uuid(user_id),
+            risk_level=risk.level,
+            risk_category=risk.category or "unknown",
+            summary=summary,
+            trace_id=trace_id,
+        )
+        if settings.enable_celery_tasks and result.get("outbox_ids"):
+            deliver_notification_outbox.delay()
+    except Exception as exc:
+        logger.warning("Risk gate family notify failed: %s", exc)
 
 
 def _family_summary(risk: RiskResult) -> str:

@@ -1,5 +1,4 @@
 from celery import Celery
-from celery.schedules import crontab
 
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -45,21 +44,13 @@ app.config_from_object({
 })
 
 app.conf.beat_schedule = {
-    "daily-archive": {
-        "task": "app.workers.memory_worker.daily_archive",
-        "schedule": crontab(hour=3, minute=0),
-    },
-    "weekly-vector-cleanup": {
-        "task": "app.workers.memory_worker.vector_cleanup",
-        "schedule": crontab(hour=4, minute=0, day_of_week=0),
-    },
-    "monthly-trace-archive": {
-        "task": "app.workers.memory_worker.trace_cold_archive",
-        "schedule": crontab(hour=2, minute=0, day_of_month=1),
-    },
     "check-due-reminders": {
         "task": "app.workers.reminder_scheduler.check_due_reminders",
         "schedule": 60.0,
+    },
+    "deliver-notification-outbox": {
+        "task": "app.workers.notification_outbox_worker.deliver_notification_outbox",
+        "schedule": 30.0,
     },
 }
 
@@ -68,5 +59,5 @@ app.autodiscover_tasks([
     "app.workers.embedding_worker",
     "app.workers.reflection_worker",
     "app.workers.reminder_scheduler",
-    "app.workers.notification_worker",
+    "app.workers.notification_outbox_worker",
 ])

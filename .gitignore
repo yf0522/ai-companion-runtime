@@ -8,6 +8,7 @@ venv/
 # Environment
 .env
 .env.local
+.env.production
 
 # Build
 .next/
@@ -32,6 +33,9 @@ docs/
 docs/*
 !docs/device-test.md
 !docs/investor-demo.md
+!docs/production-development-plan.md
+!docs/runbooks/
+!docs/runbooks/*.md
 !docs/evidence/
 !docs/evidence/README.md
 !docs/evidence/latency-baseline.json

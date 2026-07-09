@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # App environment
     app_env: str = "development"  # development | production
     cors_allowed_origins: str = "http://localhost:3000"  # comma-separated list
+    notification_provider: str = "sandbox"  # sandbox | unconfigured
+    public_base_url: str = "http://localhost:8000"
+    require_tls: bool = False
+    expected_migration_heads: str = ""
+    backup_bucket: str = ""
+    backup_kms_key_id: str = ""
+    evidence_manifest_required: bool = False
 
     # OpenTelemetry
     otel_exporter_otlp_endpoint: str = "http://jaeger:4317"
@@ -49,6 +56,8 @@ class Settings(BaseSettings):
     audio_endpoint_auth_required: bool = True
     asr_rate_limit_per_minute: int = 20
     tts_rate_limit_per_minute: int = 30
+    rate_limit_failure_mode: str = "memory"  # memory (development only) | deny
+    allow_ephemeral_sessions: bool = True  # development-only availability aid
 
     # Experimental Pi agent runtime (TypeScript sidecar — off by default)
     enable_pi_runtime: bool = False
@@ -88,6 +97,32 @@ class Settings(BaseSettings):
             msg = "DATABASE_URL contains the default password 'companion_secret'."
             errors.append(msg)
             _logger.warning(msg)
+
+        if self.rate_limit_failure_mode not in {"memory", "deny"}:
+            errors.append("RATE_LIMIT_FAILURE_MODE must be 'memory' or 'deny'.")
+        elif is_prod and self.rate_limit_failure_mode != "deny":
+            errors.append("RATE_LIMIT_FAILURE_MODE must be 'deny' in production.")
+
+        if is_prod and self.allow_ephemeral_sessions:
+            errors.append("ALLOW_EPHEMERAL_SESSIONS must be false in production.")
+
+        if is_prod:
+            if not self.require_tls:
+                errors.append("REQUIRE_TLS must be true in production.")
+            elif not self.public_base_url.startswith("https://"):
+                errors.append("PUBLIC_BASE_URL must use https when REQUIRE_TLS is true.")
+
+            if not self.expected_migration_heads.strip():
+                errors.append("EXPECTED_MIGRATION_HEADS must be set in production.")
+
+            if not self.backup_bucket.strip():
+                errors.append("BACKUP_BUCKET must be set in production.")
+
+            if not self.backup_kms_key_id.strip():
+                errors.append("BACKUP_KMS_KEY_ID must be set in production.")
+
+            if not self.evidence_manifest_required:
+                errors.append("EVIDENCE_MANIFEST_REQUIRED must be true in production.")
 
         if is_prod and errors:
             raise RuntimeError(

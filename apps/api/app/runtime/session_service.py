@@ -9,11 +9,15 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class SessionPersistenceError(RuntimeError):
+    """A durable session could not be created."""
+
+
 async def create_session(user_id: str) -> str:
     """Create a new session row and return its UUID string.
 
-    If the DB is unavailable, fall back to an ephemeral UUID so device/chat
-    demos can still proceed without a hard dependency on Postgres.
+    Development may opt into an explicit ephemeral session. Production must
+    never imply durable ownership or audit after a failed database write.
     """
     from app.db.session import async_session
     from app.db.models import Session as SessionModel
@@ -36,8 +40,12 @@ async def create_session(user_id: str) -> str:
             await db.commit()
         return session_id
     except Exception as e:
-        logger.warning(f"Session DB create failed, using ephemeral session: {e}")
-        return session_id
+        from app.config.settings import settings
+
+        if settings.app_env.lower() != "production" and settings.allow_ephemeral_sessions:
+            logger.warning("Session DB create failed; using explicit development fallback: %s", e)
+            return session_id
+        raise SessionPersistenceError("Failed to persist session") from e
 
 
 async def get_session_owner(session_id: str) -> Optional[str]:

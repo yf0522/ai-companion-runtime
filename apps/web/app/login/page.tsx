@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/authStore";
+import { defaultRouteForRole } from "@/lib/role-routes.mjs";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isRegister, setIsRegister] = useState(false);
+  const [role, setRole] = useState<"elder" | "family">("elder");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
@@ -20,11 +22,11 @@ export default function LoginPage() {
     setLoading(true);
     try {
       if (isRegister) {
-        await register(username.trim(), password);
+        await register(username.trim(), password, role);
       } else {
         await login(username.trim(), password);
       }
-      router.push("/chat");
+      router.push(defaultRouteForRole(useAuthStore.getState().role));
     } catch (err: any) {
       setError(err.message || "Something went wrong");
     } finally {
@@ -33,43 +35,81 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-lg">
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-8">
+      <main className="w-full max-w-md rounded-md border border-border bg-surface p-6 sm:p-8">
         <div className="mb-6 flex flex-col items-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 text-xl font-bold text-white shadow-lg shadow-indigo-500/30">
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-md bg-primary text-xl font-bold text-white">
             C
           </div>
-          <h1 className="text-xl font-semibold text-gray-800">
-            {isRegister ? "Create Account" : "Welcome Back"}
+          <h1 className="text-2xl font-semibold text-ink">
+            {isRegister ? "创建账号" : "登录智慧陪伴"}
           </h1>
-          <p className="mt-1 text-sm text-gray-400">
-            {isRegister ? "Register to get started" : "Sign in to AI Companion"}
+          <p className="mt-2 text-center text-base leading-7 text-muted">
+            {isRegister ? "选择使用身份，进入对应的照护界面。" : "登录后继续处理陪伴、提醒和照护事项。"}
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
+            <label htmlFor="username" className="mb-2 block text-base font-medium text-ink">
+              用户名
+            </label>
             <input
+              id="username"
               type="text"
-              placeholder="Username"
+              autoComplete="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:shadow-[0_0_0_2px_rgba(99,102,241,0.15)]"
+              className="min-h-11 w-full rounded-md border border-border bg-surface px-4 py-3 text-base text-ink"
               autoFocus
             />
           </div>
           <div>
+            <label htmlFor="password" className="mb-2 block text-base font-medium text-ink">
+              密码
+            </label>
             <input
+              id="password"
               type="password"
-              placeholder="Password"
+              autoComplete={isRegister ? "new-password" : "current-password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:shadow-[0_0_0_2px_rgba(99,102,241,0.15)]"
+              className="min-h-11 w-full rounded-md border border-border bg-surface px-4 py-3 text-base text-ink"
             />
           </div>
 
+          {isRegister && (
+            <fieldset>
+              <legend className="mb-2 text-base font-medium text-ink">使用身份</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[
+                  { value: "elder", label: "长者本人", description: "陪伴和今日事项" },
+                  { value: "family", label: "家属", description: "任务和告警管理" },
+                ].map((option) => (
+                  <label
+                    key={option.value}
+                    className={`min-h-11 cursor-pointer rounded-md border p-3 ${
+                      role === option.value ? "border-primary bg-primary-soft" : "border-border"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="role"
+                      value={option.value}
+                      checked={role === option.value}
+                      onChange={() => setRole(option.value as "elder" | "family")}
+                      className="mr-2"
+                    />
+                    <span className="font-medium text-ink">{option.label}</span>
+                    <span className="mt-1 block pl-6 text-sm text-muted">{option.description}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
+
           {error && (
-            <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+            <p role="alert" className="rounded-md border border-status-critical bg-status-critical-soft px-3 py-2 text-base text-ink">
               {error}
             </p>
           )}
@@ -77,9 +117,9 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading || !username.trim() || !password.trim()}
-            className="w-full rounded-lg bg-indigo-500 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-gray-300"
+            className="btn-primary w-full"
           >
-            {loading ? "..." : isRegister ? "Register" : "Sign In"}
+            {loading ? "处理中" : isRegister ? "创建账号" : "登录"}
           </button>
         </form>
 
@@ -89,14 +129,15 @@ export default function LoginPage() {
               setIsRegister(!isRegister);
               setError(null);
             }}
-            className="text-sm text-indigo-500 hover:underline"
+            type="button"
+            className="btn-secondary w-full"
           >
             {isRegister
-              ? "Already have an account? Sign in"
-              : "Don't have an account? Register"}
+              ? "已有账号，返回登录"
+              : "没有账号，创建一个"}
           </button>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

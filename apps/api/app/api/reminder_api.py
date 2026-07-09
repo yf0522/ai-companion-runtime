@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -33,11 +33,17 @@ class ReminderUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class ReminderAttemptReceipt(BaseModel):
+    state: Literal["device_received", "played", "acknowledged", "failed", "expired"]
+    provider_message_id: str | None = None
+    error_message: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get_managed_elder_id(user: dict) -> uuid.UUID:
+async def _get_managed_elder_id(user: dict, *, permission: str) -> uuid.UUID:
     """Resolve the elder user_id this user manages.
 
     - elder role -> own user_id
@@ -55,15 +61,17 @@ async def _get_managed_elder_id(user: dict) -> uuid.UUID:
 
         async with async_session() as db:
             result = await db.execute(
-                select(FamilyBinding.elder_user_id)
+                select(FamilyBinding)
                 .where(FamilyBinding.family_user_id == user_id)
                 .order_by(FamilyBinding.created_at.desc())
                 .limit(1)
             )
-            elder_id = result.scalar_one_or_none()
-            if not elder_id:
+            binding = result.scalar_one_or_none()
+            if not binding:
                 raise HTTPException(status_code=403, detail="No elder binding found for this family account")
-            return elder_id
+            if permission not in set(binding.permissions or []):
+                raise HTTPException(status_code=403, detail="Family account lacks reminder permission")
+            return binding.elder_user_id
 
     raise HTTPException(status_code=403, detail="Unknown role")
 
@@ -82,7 +90,7 @@ def _parse_time_of_day(value: str) -> datetime:
 
 @router.get("/reminders")
 async def list_reminders(user: dict = Depends(get_current_user)):
-    elder_id = await _get_managed_elder_id(user)
+    elder_id = await _get_managed_elder_id(user, permission="view_reminders")
 
     from app.db.session import async_session
     from app.db.models import Reminder
@@ -110,7 +118,7 @@ async def list_reminders(user: dict = Depends(get_current_user)):
 
 @router.post("/reminders")
 async def create_reminder(body: ReminderCreate, user: dict = Depends(get_current_user)):
-    elder_id = await _get_managed_elder_id(user)
+    elder_id = await _get_managed_elder_id(user, permission="manage_reminders")
     role = user.get("role", "elder")
 
     from app.db.session import async_session
@@ -145,7 +153,7 @@ async def create_reminder(body: ReminderCreate, user: dict = Depends(get_current
 
 @router.put("/reminders/{reminder_id}")
 async def update_reminder(reminder_id: str, body: ReminderUpdate, user: dict = Depends(get_current_user)):
-    elder_id = await _get_managed_elder_id(user)
+    elder_id = await _get_managed_elder_id(user, permission="manage_reminders")
 
     from app.db.session import async_session
     from app.db.models import Reminder
@@ -182,7 +190,7 @@ async def update_reminder(reminder_id: str, body: ReminderUpdate, user: dict = D
 
 @router.delete("/reminders/{reminder_id}")
 async def delete_reminder(reminder_id: str, user: dict = Depends(get_current_user)):
-    elder_id = await _get_managed_elder_id(user)
+    elder_id = await _get_managed_elder_id(user, permission="manage_reminders")
 
     from app.db.session import async_session
     from app.db.models import Reminder
@@ -202,7 +210,7 @@ async def delete_reminder(reminder_id: str, user: dict = Depends(get_current_use
 
 @router.get("/reminders/{reminder_id}/history")
 async def get_reminder_history(reminder_id: str, user: dict = Depends(get_current_user)):
-    elder_id = await _get_managed_elder_id(user)
+    elder_id = await _get_managed_elder_id(user, permission="manage_reminders")
 
     from app.db.session import async_session
     from app.db.models import Reminder, ReminderHistory
@@ -232,10 +240,108 @@ async def get_reminder_history(reminder_id: str, user: dict = Depends(get_curren
         ]
 
 
+@router.get("/reminders/{reminder_id}/attempts")
+async def get_reminder_attempts(reminder_id: str, user: dict = Depends(get_current_user)):
+    elder_id = await _get_managed_elder_id(user, permission="view_reminders")
+
+    try:
+        rid = uuid.UUID(reminder_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Reminder not found")
+
+    from app.db.session import async_session
+    from app.db.models import Reminder, ReminderDeliveryAttempt
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(Reminder).where(Reminder.id == rid, Reminder.user_id == elder_id)
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Reminder not found")
+
+        attempts = (
+            await db.execute(
+                select(ReminderDeliveryAttempt)
+                .where(ReminderDeliveryAttempt.reminder_id == rid)
+                .order_by(ReminderDeliveryAttempt.created_at.desc())
+                .limit(50)
+            )
+        ).scalars().all()
+        return [
+            {
+                "id": str(attempt.id),
+                "reminder_id": str(attempt.reminder_id),
+                "state": attempt.state,
+                "attempt_number": attempt.attempt_number,
+                "due_at": attempt.due_at.isoformat() if attempt.due_at else None,
+                "sent_at": attempt.sent_at.isoformat() if attempt.sent_at else None,
+                "device_received_at": attempt.device_received_at.isoformat() if attempt.device_received_at else None,
+                "played_at": attempt.played_at.isoformat() if attempt.played_at else None,
+                "acknowledged_at": attempt.acknowledged_at.isoformat() if attempt.acknowledged_at else None,
+                "failed_at": attempt.failed_at.isoformat() if attempt.failed_at else None,
+                "expired_at": attempt.expired_at.isoformat() if attempt.expired_at else None,
+                "error_message": attempt.error_message,
+            }
+            for attempt in attempts
+        ]
+
+
+@router.post("/reminder-attempts/{attempt_id}/receipt")
+async def record_reminder_attempt_receipt(
+    attempt_id: str,
+    body: ReminderAttemptReceipt,
+    user: dict = Depends(get_current_user),
+):
+    elder_id = await _get_managed_elder_id(user, permission="manage_reminders")
+
+    try:
+        aid = uuid.UUID(attempt_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Reminder attempt not found")
+
+    from app.db.session import async_session
+    from app.db.models import ReminderDeliveryAttempt
+
+    now = datetime.utcnow()
+    async with async_session() as db:
+        attempt = (
+            await db.execute(
+                select(ReminderDeliveryAttempt).where(
+                    ReminderDeliveryAttempt.id == aid,
+                    ReminderDeliveryAttempt.user_id == elder_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not attempt:
+            raise HTTPException(status_code=404, detail="Reminder attempt not found")
+
+        attempt.provider_message_id = body.provider_message_id or attempt.provider_message_id
+        attempt.error_message = body.error_message
+        attempt.state = body.state
+        attempt.updated_at = now
+        if body.state == "device_received":
+            attempt.device_received_at = now
+        elif body.state == "played":
+            attempt.played_at = now
+        elif body.state == "acknowledged":
+            attempt.acknowledged_at = now
+        elif body.state == "failed":
+            attempt.failed_at = now
+        elif body.state == "expired":
+            attempt.expired_at = now
+        await db.commit()
+        await db.refresh(attempt)
+        return {
+            "id": str(attempt.id),
+            "state": attempt.state,
+            "provider_message_id": attempt.provider_message_id,
+        }
+
+
 @router.post("/reminders/{reminder_id}/ack")
 async def acknowledge_reminder(reminder_id: str, user: dict = Depends(get_current_user)):
     """Confirm a reminder was handled (e.g. medicine taken)."""
-    elder_id = await _get_managed_elder_id(user)
+    elder_id = await _get_managed_elder_id(user, permission="manage_reminders")
 
     try:
         rid = uuid.UUID(reminder_id)
@@ -283,4 +389,3 @@ async def acknowledge_reminder(reminder_id: str, user: dict = Depends(get_curren
             "history_id": str(history.id),
             "acknowledged": True,
         }
-

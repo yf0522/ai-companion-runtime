@@ -1,0 +1,94 @@
+name: Production Contracts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "infra/**"
+      - "scripts/**"
+      - "docs/runbooks/**"
+      - ".github/workflows/production-contracts.yml"
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "infra/**"
+      - "scripts/**"
+      - "docs/runbooks/**"
+      - ".github/workflows/production-contracts.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff full lint
+        run: ruff check app tests
+      - name: Migration heads import check
+        run: |
+          test "$(alembic heads | awk '{print $1}')" = "e1f2a3b4c5d6"
+      - name: Full backend tests
+        run: pytest -q
+      - name: Device contract tests
+        run: pytest -q tests/test_firmware_protocol_contract.py tests/test_device_identity.py
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Frontend tests
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  operations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Evidence manifest dry run
+        run: |
+          python scripts/evidence_manifest.py \
+            --environment ci \
+            --account-role ci \
+            --migration-heads e1f2a3b4c5d6 \
+            --trace-ids trace-ci \
+            --receipt-ids receipt-ci \
+            --output /tmp/evidence-manifest.json
+          grep -q pending_unconfigured /tmp/evidence-manifest.json
+      - name: Backup restore dry run
+        run: |
+          python scripts/backup_restore_check.py \
+            --mode dry-run \
+            --environment ci \
+            --database-url postgresql://ci/companion \
+            --output /tmp/backup-restore.json
+          grep -q dry_run_ready /tmp/backup-restore.json

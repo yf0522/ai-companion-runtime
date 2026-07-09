@@ -13,6 +13,7 @@ function parseJwtRole(token: string): string {
 }
 
 interface AuthState {
+  hydrated: boolean;
   token: string | null;
   userId: string | null;
   username: string | null;
@@ -23,15 +24,19 @@ interface AuthState {
   isAuthenticated: () => boolean;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string, role?: string) => Promise<void>;
+  setHydrated: () => void;
 }
 
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
+      hydrated: false,
       token: null,
       userId: null,
       username: null,
       role: null,
+
+      setHydrated: () => set({ hydrated: true }),
 
       setAuth: (token, userId, username, role) => set({ token, userId, username, role }),
       clearAuth: () => set({ token: null, userId: null, username: null, role: null }),
@@ -77,6 +82,9 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: "companion-auth",
+      onRehydrateStorage: () => (state) => {
+        state?.setHydrated?.();
+      },
       partialize: (state) => ({
         token: state.token,
         userId: state.userId,

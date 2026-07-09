@@ -3,12 +3,28 @@
 @tailwind utilities;
 
 :root {
-  --sidebar-bg: #171717;
-  --sidebar-hover: rgba(255,255,255,0.08);
-  --sidebar-active: rgba(255,255,255,0.12);
-  --sidebar-border: rgba(255,255,255,0.08);
-  --primary: #6366f1;
-  --primary-hover: #4f46e5;
+  --canvas: #f7f7f4;
+  --surface: #ffffff;
+  --ink: #1f2933;
+  --muted: #5f6b7a;
+  --border: #d8ded8;
+  --focus: #1d6f6f;
+  --primary: #245c5a;
+  --primary-hover: #1d4d4b;
+  --primary-soft: #e7f1ef;
+  --primary-strong: #123d3b;
+  --status-info: #3b6f9f;
+  --status-info-soft: #e8f1f8;
+  --status-success: #2f7d51;
+  --status-success-soft: #e8f5ed;
+  --status-warning: #9a6a12;
+  --status-warning-soft: #fff4d8;
+  --status-critical: #b42318;
+  --status-critical-soft: #fde8e5;
+  --status-offline: #6b7280;
+  --status-offline-soft: #eceff3;
+  --status-unknown: #7b6f62;
+  --status-unknown-soft: #f0ece7;
 }
 
 * { box-sizing: border-box; }
@@ -17,6 +33,100 @@ body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans SC", sans-serif;
   -webkit-font-smoothing: antialiased;
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  outline-color: var(--focus);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button,
+a[role="button"] {
+  min-height: 44px;
+}
+
+@layer utilities {
+  .bg-canvas { background-color: var(--canvas); }
+  .bg-surface { background-color: var(--surface); }
+  .bg-primary { background-color: var(--primary); }
+  .bg-primary-soft { background-color: var(--primary-soft); }
+  .bg-status-info { background-color: var(--status-info); }
+  .bg-status-success { background-color: var(--status-success); }
+  .bg-status-warning { background-color: var(--status-warning); }
+  .bg-status-critical { background-color: var(--status-critical); }
+  .bg-status-offline { background-color: var(--status-offline); }
+  .bg-status-unknown { background-color: var(--status-unknown); }
+  .bg-status-info-soft { background-color: var(--status-info-soft); }
+  .bg-status-success-soft { background-color: var(--status-success-soft); }
+  .bg-status-warning-soft { background-color: var(--status-warning-soft); }
+  .bg-status-critical-soft { background-color: var(--status-critical-soft); }
+  .bg-status-offline-soft { background-color: var(--status-offline-soft); }
+  .bg-status-unknown-soft { background-color: var(--status-unknown-soft); }
+  .border-border { border-color: var(--border); }
+  .border-primary { border-color: var(--primary); }
+  .border-status-info { border-color: var(--status-info); }
+  .border-status-success { border-color: var(--status-success); }
+  .border-status-warning { border-color: var(--status-warning); }
+  .border-status-critical { border-color: var(--status-critical); }
+  .border-status-offline { border-color: var(--status-offline); }
+  .border-status-unknown { border-color: var(--status-unknown); }
+  .text-ink { color: var(--ink); }
+  .text-muted { color: var(--muted); }
+  .text-primary-strong { color: var(--primary-strong); }
+  .ring-focus { --tw-ring-color: var(--focus); }
+  .hover\:bg-primary-hover:hover { background-color: var(--primary-hover); }
+  .hover\:bg-primary-soft:hover { background-color: var(--primary-soft); }
+}
+
+@layer components {
+  .btn-primary {
+    min-height: 44px;
+    border-radius: 6px;
+    background-color: var(--primary);
+    padding: 0.625rem 1rem;
+    font-weight: 600;
+    color: white;
+    transition: background-color 120ms ease, opacity 120ms ease;
+  }
+
+  .btn-primary:hover {
+    background-color: var(--primary-hover);
+  }
+
+  .btn-primary:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .btn-secondary {
+    min-height: 44px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background-color: var(--surface);
+    padding: 0.625rem 1rem;
+    font-weight: 600;
+    color: var(--ink);
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+
+  .btn-secondary:hover {
+    background-color: var(--canvas);
+    border-color: var(--primary);
+  }
 }
 
 /* Scrollbar */

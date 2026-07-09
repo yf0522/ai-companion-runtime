@@ -1,7 +1,7 @@
 import secrets
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,7 +20,7 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     email: Optional[str] = None
-    role: str = "elder"
+    role: Literal["elder", "family"] = "elder"
 
 
 class LoginRequest(BaseModel):

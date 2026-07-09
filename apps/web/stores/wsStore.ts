@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { CompanionWsClient } from "@/lib/ws-client";
 import { useChatStore } from "./chatStore";
-import { AgentRuntimeId, useAgentRuntimeStore } from "./agentRuntimeStore";
+import type { AgentRuntimeId } from "./agentRuntimeStore";
 
 type WsStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
 
@@ -33,7 +33,7 @@ export const useWsStore = create<WsState>((set, get) => ({
     const existing = get().client;
     if (existing) existing.disconnect();
 
-    const agentRuntime = useAgentRuntimeStore.getState().runtime;
+    const agentRuntime: AgentRuntimeId = "harness";
     const client = new CompanionWsClient(WS_URL);
 
     // Status changes

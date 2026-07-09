@@ -80,6 +80,17 @@ class CareTaskTransitionError(ValueError):
     """Invalid CareTask state transition."""
 
 
+class StaleCareTaskVersionError(ValueError):
+    """CareTask version no longer matches the caller's expected version."""
+
+    def __init__(self, *, expected_version: int, current_version: int) -> None:
+        self.expected_version = expected_version
+        self.current_version = current_version
+        super().__init__(
+            f"stale CareTask version: expected {expected_version}, current {current_version}"
+        )
+
+
 def normalize_user_id(user_id: str) -> uuid.UUID:
     try:
         return uuid.UUID(user_id)
@@ -137,6 +148,7 @@ def task_to_dict(row: Any) -> dict[str, Any]:
         "notes": row.notes,
         "created_by": row.created_by,
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "version": getattr(row, "version", 1),
         "created_at": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
     }
 
@@ -475,6 +487,7 @@ async def create_care_task(
     link_reminder: bool = True,
     schedule_type: str | None = None,
     query: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Create or reuse an active CareTask with the same identity.
 
@@ -579,6 +592,7 @@ async def create_care_task(
             reminder_id=reminder_id,
             notes=notes,
             created_by=created_by,
+            idempotency_key=idempotency_key,
         )
         db.add(row)
         await db.commit()
@@ -640,13 +654,96 @@ async def _get_task(db: Any, user_id: uuid.UUID, task_id: str) -> Any:
     return row
 
 
-async def complete_care_task(*, user_id: str, task_id: str) -> dict[str, Any]:
+async def _get_versioned_task_for_update(
+    db: Any,
+    user_id: uuid.UUID,
+    task_id: str,
+    expected_version: int | None,
+) -> Any:
+    from sqlalchemy import select
+
+    from app.db.models import CareTask
+
+    if expected_version is None:
+        return await _get_task(db, user_id, task_id)
+
+    task_uuid = uuid.UUID(task_id)
+    row = (
+        await db.execute(
+            select(CareTask)
+            .where(
+                CareTask.id == task_uuid,
+                CareTask.user_id == user_id,
+                CareTask.version == expected_version,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        return row
+
+    current = (
+        await db.execute(
+            select(CareTask.version).where(CareTask.id == task_uuid, CareTask.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if current is None:
+        raise LookupError("care_task_not_found")
+    raise StaleCareTaskVersionError(
+        expected_version=expected_version,
+        current_version=current or 1,
+    )
+
+
+async def update_care_task(
+    *,
+    user_id: str,
+    task_id: str,
+    expected_version: int,
+    title: str | None = None,
+    due_at: datetime | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    from app.db.models import Reminder
     from app.db.session import async_session
 
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     async with async_session() as db:
-        row = await _get_task(db, db_user_id, task_id)
+        row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
+        if title is not None:
+            row.title = title.strip() or row.title
+        if notes is not None:
+            row.notes = notes
+        if due_at is not None:
+            row.due_at = due_at
+            row.status = infer_initial_status(due_at, now)
+            if row.reminder_id:
+                reminder = await db.get(Reminder, row.reminder_id)
+                if reminder is not None:
+                    reminder.title = row.title
+                    reminder.time_of_day = due_at
+                    reminder.next_fire_at = due_at
+                    reminder.is_active = True
+        row.version = (row.version or 1) + 1
+        row.updated_at = now
+        await db.commit()
+        await db.refresh(row)
+        return task_to_dict(row)
+
+
+async def complete_care_task(
+    *,
+    user_id: str,
+    task_id: str,
+    expected_version: int | None = None,
+) -> dict[str, Any]:
+    from app.db.session import async_session
+
+    db_user_id = normalize_user_id(user_id)
+    now = datetime.utcnow()
+    async with async_session() as db:
+        row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
         current = refresh_status(row.status, row.due_at, row.snooze_until, now)
         if current != row.status and can_transition(row.status, current):
             row.status = current
@@ -654,6 +751,7 @@ async def complete_care_task(*, user_id: str, task_id: str) -> dict[str, Any]:
         row.status = "done"
         row.completed_at = now
         row.updated_at = now
+        row.version = (getattr(row, "version", 1) or 1) + 1
         row.snooze_until = None
         if row.reminder_id:
             from app.db.models import Reminder
@@ -671,6 +769,7 @@ async def snooze_care_task(
     user_id: str,
     task_id: str | None = None,
     minutes: int = 30,
+    expected_version: int | None = None,
 ) -> dict[str, Any]:
     from sqlalchemy import select
 
@@ -684,7 +783,7 @@ async def snooze_care_task(
 
     async with async_session() as db:
         if task_id:
-            row = await _get_task(db, db_user_id, task_id)
+            row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
         else:
             row = (
                 await db.execute(
@@ -708,6 +807,7 @@ async def snooze_care_task(
         row.snooze_until = snooze_until
         row.due_at = snooze_until
         row.updated_at = now
+        row.version = (getattr(row, "version", 1) or 1) + 1
         if row.reminder_id:
             rem = await db.get(Reminder, row.reminder_id)
             if rem is not None:
@@ -720,17 +820,23 @@ async def snooze_care_task(
         return data
 
 
-async def cancel_care_task(*, user_id: str, task_id: str) -> dict[str, Any]:
+async def cancel_care_task(
+    *,
+    user_id: str,
+    task_id: str,
+    expected_version: int | None = None,
+) -> dict[str, Any]:
     from app.db.models import Reminder
     from app.db.session import async_session
 
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     async with async_session() as db:
-        row = await _get_task(db, db_user_id, task_id)
+        row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
         assert_transition(row.status, "cancelled")
         row.status = "cancelled"
         row.updated_at = now
+        row.version = (getattr(row, "version", 1) or 1) + 1
         row.snooze_until = None
         if row.reminder_id:
             rem = await db.get(Reminder, row.reminder_id)
@@ -754,6 +860,7 @@ async def mark_missed(*, user_id: str, task_id: str) -> dict[str, Any]:
         assert_transition(row.status, "missed")
         row.status = "missed"
         row.updated_at = now
+        row.version = (getattr(row, "version", 1) or 1) + 1
         await db.commit()
         await db.refresh(row)
         return task_to_dict(row)

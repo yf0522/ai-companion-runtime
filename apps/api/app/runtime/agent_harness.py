@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from pathlib import Path
 
 import yaml
@@ -30,18 +31,84 @@ def _load_harness_config() -> dict:
     try:
         with open(path) as f:
             _harness_config = yaml.safe_load(f).get("harness", {})
-    except Exception as e:
-        logger.warning(f"Failed to load harness.yaml: {e}, using defaults")
+    except Exception as exc:
+        logger.warning("Failed to load harness.yaml: %s, using defaults", exc)
         _harness_config = {}
     return _harness_config
 
 
-# Cached engine singletons
 _engine_cache: dict[str, object] = {}
 
 
+async def _record_analysis_events(
+    *,
+    trace_id: str,
+    user_id: str,
+    session_id: str,
+    intent: IntentResult,
+    emotion: EmotionResult,
+    risk: RiskResult,
+    memory: MemorySnapshot,
+    latency_ms: int,
+) -> None:
+    await asyncio.gather(
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="intent_detection",
+            step_index=1,
+            user_id=user_id,
+            session_id=session_id,
+            output_json=intent.model_dump(),
+            status="success",
+            latency_ms=latency_ms,
+        ),
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="emotion_detection",
+            step_index=2,
+            user_id=user_id,
+            session_id=session_id,
+            output_json=emotion.model_dump(),
+            status="success",
+            latency_ms=latency_ms,
+        ),
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="risk_detection",
+            step_index=3,
+            user_id=user_id,
+            session_id=session_id,
+            output_json=risk.model_dump(),
+            status="success",
+            latency_ms=latency_ms,
+        ),
+        _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="memory_recall",
+            step_index=4,
+            user_id=user_id,
+            session_id=session_id,
+            output_json={
+                "working_count": len(memory.working or []),
+                "vector_count": len(memory.vectors or []),
+                "has_summary": bool(memory.summary),
+                "has_profile": bool(memory.profile),
+                "profile_keys": list((memory.profile or {}).keys())[:12],
+            },
+            status="success",
+            latency_ms=latency_ms,
+        ),
+    )
+
+
+def _stable_uuid(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, value))
+
+
 def _get_cached_engine(name: str):
-    """Return a cached engine instance, creating on first call."""
     if name in _engine_cache:
         return _engine_cache[name]
     try:
@@ -83,9 +150,6 @@ class AgentHarness:
     def _timeout(self, key: str) -> int:
         return self._config.get("timeouts", {}).get(key, 5000)
 
-    def _fallback_strategy(self, key: str) -> str:
-        return self._config.get("fallback", {}).get(key, "")
-
     def _template(self, key: str) -> str:
         return self._config.get("templates", {}).get(key, "")
 
@@ -98,68 +162,50 @@ class AgentHarness:
         cancel_event: asyncio.Event,
     ) -> dict:
         """Execute the full pipeline. Returns metadata dict."""
-        import uuid as _uuid
-        # Convert string user_id to a deterministic UUID for DB storage
-        try:
-            db_user_id = str(_uuid.UUID(user_id))
-        except (ValueError, AttributeError):
-            db_user_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, user_id))
-        try:
-            db_session_id = str(_uuid.UUID(session_id))
-        except (ValueError, AttributeError):
-            db_session_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, session_id))
+        db_user_id = _stable_uuid(user_id)
+        db_session_id = _stable_uuid(session_id)
 
         start_time = time.monotonic()
         trace_id = self._generate_trace_id(user_id)
-        step = 0
 
-        # Step 0: Send trace_id
         await stream_mgr.send_trace(trace_id)
 
-        # Step 1: Parallel Analyzer
-        step += 1
         analyzer_input = AnalyzerInput(
             user_id=user_id, session_id=session_id,
             message=message, trace_id=trace_id,
         )
         intent, emotion, risk, memory = await self._run_analyzers(analyzer_input)
 
-        # Record analyzer results
         analyzer_ms = int((time.monotonic() - start_time) * 1000)
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="intent_detection", step_index=1,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json=intent.model_dump(), status="success", latency_ms=analyzer_ms,
-        ))
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="emotion_detection", step_index=2,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json=emotion.model_dump(), status="success", latency_ms=analyzer_ms,
-        ))
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="risk_detection", step_index=3,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json=risk.model_dump(), status="success", latency_ms=analyzer_ms,
-        ))
-        asyncio.create_task(_trace_svc.add_event(
-            trace_id=trace_id, step_name="memory_recall", step_index=4,
-            user_id=db_user_id, session_id=db_session_id,
-            output_json={
-                "working_count": len(memory.working or []),
-                "vector_count": len(memory.vectors or []),
-                "has_summary": bool(memory.summary),
-                "has_profile": bool(memory.profile),
-                "profile_keys": list((memory.profile or {}).keys())[:12],
-            },
-            status="success",
-            latency_ms=analyzer_ms,
-        ))
 
-        # Step 2: Risk check
-        step += 1
         if risk.level in ("critical", "high"):
             await self._handle_risk(risk, stream_mgr, trace_id, start_time, user_id)
+            asyncio.create_task(
+                _record_analysis_events(
+                    trace_id=trace_id,
+                    user_id=db_user_id,
+                    session_id=db_session_id,
+                    intent=intent,
+                    emotion=emotion,
+                    risk=risk,
+                    memory=memory,
+                    latency_ms=analyzer_ms,
+                )
+            )
             return {"trace_id": trace_id, "blocked_by_risk": True}
+
+        asyncio.create_task(
+            _record_analysis_events(
+                trace_id=trace_id,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                intent=intent,
+                emotion=emotion,
+                risk=risk,
+                memory=memory,
+                latency_ms=analyzer_ms,
+            )
+        )
 
         if risk.level == "medium":
             await self._dispatch_risk_notification(
@@ -170,11 +216,8 @@ class AgentHarness:
                 trace_id,
             )
 
-        # Step 3: Personality + Fast Reply (non-blocking, first-sentence-first)
-        step += 1
         personality = await self._get_personality(emotion, intent)
 
-        # Fast reply first — does NOT wait for tools
         fast_reply_sent = await self._fast_reply_race(
             message, emotion, personality, stream_mgr, start_time, cancel_event,
         )
@@ -182,17 +225,11 @@ class AgentHarness:
         if cancel_event.is_set():
             return {"trace_id": trace_id, "cancelled": True}
 
-        # Step 4: Main model stream + tool dispatch in parallel
-        # Tools run concurrently with the main model.
-        # Tool results are sent to the client via tool_result messages.
-        # The main model prompt does NOT wait for tools (preserving TTFT).
-        step += 1
         ttft_ms = None
         response_text = ""
         tool_results = []
         message_id = f"m_{nanoid(size=12)}"
 
-        # Build prompt (without tool results — they arrive via side-channel)
         from app.runtime.prompt_builder import PromptBuilder
         prompt_builder = PromptBuilder()
         messages = prompt_builder.build(
@@ -203,7 +240,6 @@ class AgentHarness:
             memory=memory,
         )
 
-        # Launch tool dispatch as a background task (non-blocking)
         tool_task = None
         if intent.tool_needs and not cancel_event.is_set():
             tool_task = asyncio.create_task(
@@ -217,8 +253,7 @@ class AgentHarness:
                 )
             )
 
-        # Stream main model with retry + total timeout
-        model_total_timeout = self._timeout("model_total") / 1000  # seconds
+        model_total_timeout = self._timeout("model_total") / 1000
         retries = 0
         model_success = False
         model_provider = "unknown"
@@ -260,13 +295,12 @@ class AgentHarness:
                 retries += 1
                 if retries > self.max_retries:
                     break
-            except Exception as e:
+            except Exception as exc:
                 retries += 1
-                logger.warning(f"Model attempt {retries} failed: {e}")
+                logger.warning("Model attempt %s failed: %s", retries, exc)
                 if retries > self.max_retries:
                     break
 
-        # Model completely failed
         if not model_success:
             fallback_text = self._template("model_all_fail") or "抱歉，我现在有点反应不过来，你能稍后再试一下吗？"
             if not fast_reply_sent:
@@ -276,15 +310,14 @@ class AgentHarness:
                 await stream_mgr.send_delta(fallback_text)
             response_text = fallback_text
 
-        # Collect tool results (if any) — they've been streaming via tool_result already
         if tool_task:
             try:
                 tool_results = await asyncio.wait_for(tool_task, timeout=1.0)
             except asyncio.TimeoutError:
                 logger.warning("Tool dispatch did not finish in time after model stream")
                 tool_results = []
-            except Exception as e:
-                logger.warning(f"Tool dispatch failed: {e}")
+            except Exception as exc:
+                logger.warning("Tool dispatch failed: %s", exc)
                 tool_results = []
 
         # Contract: never let the model verbally promise success after a failed tool,
@@ -297,7 +330,6 @@ class AgentHarness:
             await stream_mgr.send_delta("\n" + honest_text)
             response_text = honest_text
 
-        # Step 5: Final
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
         tools_used: list[dict] = []
         for t in tool_results or []:
@@ -335,8 +367,8 @@ class AgentHarness:
                     for m in messages
                 )
                 output_tokens = int(last_model.count_tokens(response_text or ""))
-            except Exception as e:
-                logger.debug(f"Token counting skipped: {e}")
+            except Exception as exc:
+                logger.debug("Token counting skipped: %s", exc)
 
         asyncio.create_task(_trace_svc.record_model_call(
             trace_id=trace_id,
@@ -350,7 +382,6 @@ class AgentHarness:
             status="success" if model_success else "failed",
         ))
 
-        # Record model stream event
         asyncio.create_task(_trace_svc.add_event(
             trace_id=trace_id, step_name="model_stream", step_index=8,
             user_id=db_user_id, session_id=db_session_id,
@@ -365,7 +396,6 @@ class AgentHarness:
             latency_ms=total_latency_ms,
         ))
 
-        # Record final
         asyncio.create_task(_trace_svc.add_event(
             trace_id=trace_id, step_name="response_final", step_index=10,
             user_id=db_user_id, session_id=db_session_id,
@@ -382,7 +412,6 @@ class AgentHarness:
             memory_updated=True,
         )
 
-        # Persist conversation to L0 working memory
         await self._persist_conversation(
             session_id, user_id, message, response_text,
         )
@@ -410,6 +439,13 @@ class AgentHarness:
                 logger.warning(f"{engine_name} timed out ({timeout_ms}ms)")
             except Exception as e:
                 logger.warning(f"{engine_name} failed: {e}")
+            if engine_name == "risk":
+                return RiskResult(
+                    level="critical",
+                    category="safety_unavailable",
+                    confidence=1.0,
+                    triggered_rules=["risk_engine_unavailable"],
+                )
             return default
 
         intent, emotion, risk, memory = await asyncio.gather(
@@ -437,7 +473,6 @@ class AgentHarness:
         return MemorySnapshot()
 
     def _get_engine(self, name: str):
-        """Get a cached engine singleton. Returns None if not implemented."""
         return _get_cached_engine(name)
 
     async def _handle_risk(
@@ -468,8 +503,6 @@ class AgentHarness:
             memory_updated=False,
         )
 
-        import uuid as _uuid
-
         summary = self._build_family_notification_summary(risk)
         notify_status = await self._dispatch_risk_notification(
             user_id,
@@ -478,15 +511,11 @@ class AgentHarness:
             summary,
             trace_id,
         )
-        try:
-            db_user_id = str(_uuid.UUID(user_id))
-        except (ValueError, AttributeError):
-            db_user_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, user_id))
         await _trace_svc.add_event(
             trace_id=trace_id,
             step_name="family_notification",
             step_index=4,
-            user_id=db_user_id,
+            user_id=_stable_uuid(user_id),
             output_json=notify_status,
             status=(
                 "success"
@@ -505,50 +534,28 @@ class AgentHarness:
     ) -> dict:
         try:
             from app.config.settings import settings
-            import uuid as _uuid_mod
-
-            try:
-                normalized_user_id = str(_uuid_mod.UUID(user_id))
-            except (ValueError, AttributeError):
-                normalized_user_id = str(
-                    _uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, user_id)
-                )
-
-            if not settings.enable_celery_tasks:
-                from app.workers.notification_worker import process_risk_notification
-
-                # Await high/critical (and any explicit dispatch) so demos cannot
-                # silently claim success when persistence failed.
-                return await process_risk_notification(
-                    normalized_user_id,
-                    risk_level,
-                    risk_category or "",
-                    summary,
-                    trace_id,
-                )
-
-            from app.workers.notification_worker import send_risk_notification
-
-            send_risk_notification.delay(
-                normalized_user_id,
-                risk_level,
-                risk_category or "",
-                summary,
-                trace_id,
+            from app.workers.notification_outbox_worker import (
+                create_safety_notification_pipeline,
+                deliver_notification_outbox,
             )
-            return {
-                "status": "queued",
-                "records": 0,
-                "webhook_status": None,
-                "error": None,
-            }
-        except Exception as e:
-            logger.error(f"Notification dispatch failed: {e}")
+            result = await create_safety_notification_pipeline(
+                user_id=_stable_uuid(user_id),
+                risk_level=risk_level,
+                risk_category=risk_category or "unknown",
+                summary=summary,
+                trace_id=trace_id,
+            )
+            if settings.enable_celery_tasks and result.get("outbox_ids"):
+                deliver_notification_outbox.delay()
+                result["delivery_queued"] = True
+            return result
+        except Exception as exc:
+            logger.error("Notification dispatch failed: %s", exc)
             return {
                 "status": "failed",
                 "records": 0,
                 "webhook_status": None,
-                "error": str(e),
+                "error": str(exc),
             }
 
     def _build_family_notification_summary(self, risk: RiskResult) -> str:
@@ -592,7 +599,6 @@ class AgentHarness:
         try:
             from app.models.router import model_router
 
-            # Try to get a dedicated fast model — skip if not configured
             try:
                 model = await model_router.get_model("fast")
             except Exception:
@@ -616,15 +622,15 @@ class AgentHarness:
                     timeout=timeout_ms / 1000,
                 )
             except asyncio.TimeoutError:
-                pass
+                logger.debug("Fast reply timed out after %sms", timeout_ms)
 
             if first_token and not cancel_event.is_set():
                 ttft_ms = int((time.monotonic() - start_time) * 1000)
                 await stream_mgr.send_first_reply(first_token, ttft_ms)
                 return True
 
-        except Exception as e:
-            logger.warning(f"Fast reply race failed: {e}")
+        except Exception as exc:
+            logger.warning("Fast reply race failed: %s", exc)
 
         return False
 
@@ -650,7 +656,7 @@ class AgentHarness:
                 session_id=session_id,
             )
         except ImportError:
-            logger.debug("ToolDispatcher not implemented yet (Phase 3)")
+            logger.debug("ToolDispatcher unavailable")
             return []
 
     async def _get_personality(self, emotion: EmotionResult, intent=None) -> PersonalityConfig:
@@ -677,7 +683,6 @@ class AgentHarness:
         except Exception as e:
             logger.warning(f"Failed to persist conversation to L0: {e}")
 
-        # Fire-and-forget Celery tasks for importance evaluation and summary
         from app.config.settings import settings
         if not settings.enable_celery_tasks:
             return
@@ -689,8 +694,8 @@ class AgentHarness:
             evaluate_importance.delay(user_id, user_message, session_id)
             if ai_response:
                 update_session_summary.delay(session_id)
-        except Exception as e:
-            logger.debug(f"Celery memory tasks skipped: {e}")
+        except Exception as exc:
+            logger.debug("Celery memory tasks skipped: %s", exc)
 
     def _generate_trace_id(self, user_id: str) -> str:
         from datetime import datetime
