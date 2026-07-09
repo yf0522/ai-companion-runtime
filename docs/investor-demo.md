@@ -121,9 +121,24 @@ Open Trace detail and walk:
 
 Closing:
 
-“This demo shows one closed loop: companionship, memory, safety interception, family escalation, and auditable execution. That is the difference between a chatbot and a care runtime.”
+“This demo shows a software closed loop for companionship, memory-aware reminders, safety interception, family escalation events, and auditable Trace. Hardware execution evidence is tracked separately under `docs/evidence` and firmware notes — do not equate Mock UI or protocol stubs with a production device closed loop.”
 
 ---
+
+### Verified now vs roadmap (demo narration)
+
+**Verified now**
+- Browser `/ws/chat` risk-gated loop with Trace IDs
+- Risk categories: `scam_alert` / `health_emergency` / `emotional_low`
+- Family notification **events** persisted and listable via `/api/notifications`
+- Reminder tool structured `reminder_create` for devices
+- Device WS route protocol tests (JWT + audio frames)
+
+**Roadmap / do not overclaim**
+- Voice clone / family voice enrollment as shipped product
+- Phone OS intercept / carrier-level call blocking
+- Full ESP32 hardware closed loop without real serial evidence
+- Push-provider delivery receipts beyond NotificationLog persistence
 
 ### Demo checkpoint mapping (technical anchors)
 
@@ -131,3 +146,4 @@ Closing:
 - Risk-aware output behavior in backend: `risk_engine` + `risk_rules.yaml`
 - Family path: `/api/notifications`, `/api/reminders`
 - Auditability: trace timeline and tool/result events in `/api/traces`
+- Repeatable smoke (when PR `#11` lands): `python scripts/demo_smoke.py --dry-run`

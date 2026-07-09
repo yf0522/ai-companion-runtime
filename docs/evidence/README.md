@@ -15,6 +15,15 @@ Use them to explain the product thesis, interaction model, and value loop. Do no
 3. [03-hardware-phone-intercept.png](./03-hardware-phone-intercept.png)
 4. [04-labor-saved-overview.png](./04-labor-saved-overview.png)
 
+### Related diligence artifacts (non-Mock)
+
+| Artifact | Meaning |
+|---|---|
+| `device-serial-log-*.txt` (when present via firmware PR) | Protocol / serial evidence — check file header for “annotated expected” vs live board capture |
+| `demo-run-*.md` (when present via smoke PR) | Smoke checklist output; dry-run ≠ live API proof |
+
+The software runtime loop is verified for chat (and, once merged, device-routed transcripts). Hardware execution evidence remains separate from Mock UI.
+
 ## 01. Voice profile and trust reminder
 
 ![Voice profile and trust reminder demo](./01-voice-clone-trust.png)
