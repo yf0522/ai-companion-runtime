@@ -107,10 +107,15 @@ async def test_intent_snooze_routes_to_caretask():
 
 def test_normalize_title_and_fingerprint():
     assert normalize_title("提醒我吃降压药") == normalize_title("帮我吃降压药")
+    assert normalize_title("每天晚上8点提醒我吃降压药") == normalize_title("帮我记一下吃降压药")
+    assert normalize_title("每天晚上8点提醒我吃降压药") == "吃降压药"
     assert "降压药" in normalize_title("每天晚上提醒我吃降压药吧")
     fp1 = title_fingerprint("吃降压药", "medication", None)
     fp2 = title_fingerprint("提醒我吃降压药", "medication", None)
-    assert fp1 == fp2
+    # Timed vs undated must share identity (due ignored)
+    fp3 = title_fingerprint("吃降压药", "medication", datetime(2026, 7, 9, 20, 0, 0))
+    assert fp1 == fp2 == fp3
+    assert "|" not in fp1.split("|", 1)[1] or fp1.count("|") == 1
 
 
 @pytest.mark.asyncio
@@ -150,6 +155,7 @@ async def test_caretask_create_reuses_active_duplicate(monkeypatch):
             "created_at": None,
             "user_id": kwargs["user_id"],
             "_action": "caretask_reuse",
+            "_schedule_updated": False,
         }
 
     monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
@@ -168,7 +174,94 @@ async def test_caretask_create_reuses_active_duplicate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_caretask_create_clarifies_near_duplicate_different_due(monkeypatch):
+async def test_caretask_create_reuses_when_due_differs(monkeypatch):
+    """Timed then undated (or vice versa) must reuse — never silent double-create."""
+    from app.tools import caretask_service as svc
+
+    existing = {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "title": "吃降压药",
+        "task_type": "medication",
+        "status": "pending",
+        "due_at": "2026-07-09T20:00:00",
+        "reminder_id": None,
+        "snooze_until": None,
+        "notes": None,
+        "created_by": "chat",
+        "completed_at": None,
+        "created_at": None,
+        "user_id": "u1",
+    }
+
+    async def fake_find(**kwargs):
+        return existing
+
+    async def fake_near(**kwargs):
+        return []
+
+    monkeypatch.setattr(svc, "find_active_by_fingerprint", fake_find)
+    monkeypatch.setattr(svc, "find_near_duplicate_candidates", fake_near)
+
+    result = await svc.create_care_task(
+        user_id="u1",
+        title="吃降压药",
+        task_type="medication",
+        due_at=None,
+    )
+    assert result["_action"] == "caretask_reuse"
+    assert result["id"] == existing["id"]
+
+
+@pytest.mark.asyncio
+async def test_caretask_create_updates_schedule_on_reuse(monkeypatch):
+    from app.tools import caretask_service as svc
+
+    existing = {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "title": "吃降压药",
+        "task_type": "medication",
+        "status": "pending",
+        "due_at": None,
+        "reminder_id": None,
+        "snooze_until": None,
+        "notes": None,
+        "created_by": "chat",
+        "completed_at": None,
+        "created_at": None,
+        "user_id": "u1",
+    }
+    new_due = datetime(2026, 7, 9, 20, 0, 0)
+
+    async def fake_find(**kwargs):
+        return existing
+
+    async def fake_near(**kwargs):
+        return []
+
+    async def fake_update(**kwargs):
+        return {
+            **existing,
+            "due_at": new_due.isoformat(),
+            "status": "pending",
+        }
+
+    monkeypatch.setattr(svc, "find_active_by_fingerprint", fake_find)
+    monkeypatch.setattr(svc, "find_near_duplicate_candidates", fake_near)
+    monkeypatch.setattr(svc, "_update_task_schedule", fake_update)
+
+    result = await svc.create_care_task(
+        user_id="u1",
+        title="吃降压药",
+        task_type="medication",
+        due_at=new_due,
+    )
+    assert result["_action"] == "caretask_reuse"
+    assert result["_schedule_updated"] is True
+    assert result["due_at"] == new_due.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_caretask_create_clarifies_near_duplicate_different_title(monkeypatch):
     tool = CareTaskTool()
 
     async def fake_create(**kwargs):
@@ -194,7 +287,7 @@ async def test_caretask_create_clarifies_near_duplicate_different_due(monkeypatc
     result = await tool.execute(
         {
             "action": "create",
-            "query": "明天晚上提醒我吃降压药",
+            "query": "提醒我吃降糖药",
             "user_id": str(uuid.uuid4()),
         }
     )

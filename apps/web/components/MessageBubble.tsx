@@ -35,6 +35,39 @@ function chipLabel(chip: ToolChip): string {
   }
 }
 
+function RiskAlertBanner({
+  level,
+  message,
+  content,
+}: {
+  level: string;
+  message?: string;
+  content: string;
+}) {
+  const alertMsg = (message || "").trim();
+  const body = (content || "").trim();
+  // Avoid rendering the same safety paragraph twice in one bubble.
+  if (alertMsg && alertMsg === body) {
+    return (
+      <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">
+        风险等级：{level}
+      </div>
+    );
+  }
+  if (alertMsg) {
+    return (
+      <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        {alertMsg}
+      </div>
+    );
+  }
+  return (
+    <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">
+      风险等级：{level}
+    </div>
+  );
+}
+
 export default function MessageBubble({ message }: Props) {
   const isUser = message.role === "user";
 
@@ -58,11 +91,12 @@ export default function MessageBubble({ message }: Props) {
             {isUser ? "你" : "AI Companion"}
           </div>
 
-          {/* Risk Alert */}
           {message.riskAlert && (
-            <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {message.riskAlert.message || `风险等级：${message.riskAlert.level}`}
-            </div>
+            <RiskAlertBanner
+              level={message.riskAlert.level}
+              message={message.riskAlert.message}
+              content={message.content}
+            />
           )}
 
           {/* Content */}

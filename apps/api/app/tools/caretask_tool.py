@@ -55,8 +55,17 @@ def _infer_title(text: str, task_type: str) -> str:
         text.strip(),
     )
     raw = (m.group(1) if m else text).strip()
-    raw = re.sub(r"^(每天|明天|今天|晚上|早上|下午)", "", raw).strip()
-    raw = re.sub(r"^(记一下|记下)", "", raw).strip()
+    # Strip schedule fragments so stored titles match identity normalize.
+    raw = re.sub(
+        r"(?:每天|每日|每周|明天|今天|后天)?"
+        r"(?:早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)?"
+        r"(?:\d{1,2}\s*[点时:](?:\d{1,2}\s*分?)?|"
+        r"[零一二三四五六七八九十两]+\s*[点时](?:\s*[零一二三四五六七八九十]+\s*分?)?)?",
+        "",
+        raw,
+    )
+    raw = re.sub(r"^(每天|明天|今天|晚上|早上|下午|中午)", "", raw).strip()
+    raw = re.sub(r"^(记一下|记下|提醒我|记得)", "", raw).strip()
     if len(raw) < 2:
         return "吃药" if task_type == "medication" else "复诊"
     return raw[:80]
@@ -210,13 +219,22 @@ class CareTaskTool(ToolBase):
             link_reminder=due_at is not None,
         )
         action = row.pop("_action", "caretask_create")
+        schedule_updated = bool(row.pop("_schedule_updated", False))
         if action == "caretask_reuse":
             due_txt = f"（{row['due_at']}）" if row.get("due_at") else ""
+            if schedule_updated:
+                display = f"已沿用照护任务并更新时间：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）"
+            else:
+                display = f"已有相同照护任务：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）"
             return ToolResult(
                 tool_name=self.name,
                 status="success",
-                display_text=f"已有相同照护任务：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）",
-                data={"action": "caretask_reuse", "task": row},
+                display_text=display,
+                data={
+                    "action": "caretask_reuse",
+                    "task": row,
+                    "schedule_updated": schedule_updated,
+                },
             )
         if action == "caretask_clarify_create":
             candidates = row.get("candidates") or []
@@ -224,7 +242,7 @@ class CareTaskTool(ToolBase):
                 tool_name=self.name,
                 status="needs_clarification",
                 display_text=(
-                    "发现相似的照护任务，请确认是沿用已有任务还是新建：\n"
+                    "已有相似照护任务，要改时间还是新建？请确认：\n"
                     + _format_candidates(candidates)
                 ),
                 data={
