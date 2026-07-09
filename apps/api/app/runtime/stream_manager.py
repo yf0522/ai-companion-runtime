@@ -44,6 +44,10 @@ class StreamManager:
         """Send a reminder_create message to the ESP32 to persist a timer locally."""
         await self._send({"type": "reminder_create", **data})
 
+    async def send_reminder_snooze(self, data: dict):
+        """Send a reminder_snooze message so the device can defer a local timer."""
+        await self._send({"type": "reminder_snooze", **data})
+
     async def send_final(
         self,
         trace_id: str,

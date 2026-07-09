@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.tools.reminder_tool import ReminderTool
+from app.tools.reminder_tool import ReminderTool, parse_time_from_text
 
 
 @pytest.mark.asyncio
@@ -142,3 +142,81 @@ async def test_dispatcher_passes_user_context_to_reminder(monkeypatch):
     assert results[0].data["reminder_id"] == "rid"
     stream.send_reminder_create.assert_awaited()
     assert stream.send_reminder_create.await_args.args[0]["reminder_id"] == "rid"
+
+
+def test_parse_time_from_text_evening_chinese_hour():
+    parsed = parse_time_from_text("晚上八点")
+    assert parsed is not None
+    assert parsed.hour == 20
+    assert parsed.minute == 0
+
+
+@pytest.mark.asyncio
+async def test_evening_chinese_hour_medicine_reminder(monkeypatch):
+    tool = ReminderTool()
+    captured: dict = {}
+
+    async def fake_persist(**kwargs):
+        captured.update(kwargs)
+        return "44444444-4444-4444-4444-444444444444", kwargs["remind_time"]
+
+    monkeypatch.setattr(tool, "_persist_reminder", fake_persist)
+
+    result = await tool.execute(
+        {
+            "query": "提醒我晚上八点吃降压药",
+            "user_id": "4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf",
+            "trace_id": "tr_evening_cn",
+        }
+    )
+
+    assert result.status == "success"
+    assert result.data["action"] == "reminder_create"
+    assert result.data["hour"] == 20
+    assert "降压药" in result.data["label"]
+    assert captured["title"] == "吃降压药"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_emits_reminder_snooze_device_sync(monkeypatch):
+    from app.tools.dispatcher import ToolDispatcher
+
+    dispatcher = ToolDispatcher()
+    stream = MagicMock()
+    stream.send_tool_status = AsyncMock()
+    stream.send_tool_result = AsyncMock()
+    stream.send_reminder_create = AsyncMock()
+    stream.send_reminder_snooze = AsyncMock()
+
+    async def fake_execute(params):
+        from app.tools.base import ToolResult
+
+        return ToolResult(
+            tool_name="reminder",
+            status="success",
+            display_text="snoozed",
+            data={
+                "action": "reminder_snooze",
+                "reminder_id": "rid-snooze",
+                "label": "吃降压药",
+                "snooze_minutes": 30,
+                "next_fire_at": "2026-07-09T20:30:00",
+            },
+        )
+
+    monkeypatch.setattr(dispatcher._tools["reminder"], "execute", fake_execute)
+
+    await dispatcher.dispatch(
+        ["reminder"],
+        "晚点再吃",
+        "tr-snooze",
+        stream,
+        user_id="user-1",
+        session_id="sess-1",
+    )
+
+    stream.send_reminder_snooze.assert_awaited_once()
+    payload = stream.send_reminder_snooze.await_args.args[0]
+    assert payload["reminder_id"] == "rid-snooze"
+    assert payload["snooze_minutes"] == 30
+    stream.send_reminder_create.assert_not_awaited()

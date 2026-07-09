@@ -126,13 +126,16 @@ class ToolDispatcher:
 
             if result.data and result.data.get("action"):
                 action = result.data["action"]
-                if action == "reminder_create":
+                if action in {"reminder_create", "reminder_snooze"}:
                     ws_data = {
                         k: v
                         for k, v in result.data.items()
                         if k not in ("action", "display_time")
                     }
-                    await stream_mgr.send_reminder_create(ws_data)
+                    if action == "reminder_create":
+                        await stream_mgr.send_reminder_create(ws_data)
+                    else:
+                        await stream_mgr.send_reminder_snooze(ws_data)
 
             if result.status == "success":
                 await stream_mgr.send_tool_status(name, "success")
