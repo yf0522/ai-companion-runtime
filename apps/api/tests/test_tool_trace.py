@@ -80,7 +80,7 @@ async def test_successful_tool_writes_tool_call(monkeypatch):
     assert recorded[0]["trace_id"] == "trace_test_1"
     assert recorded[0]["tool_name"] == "calculator"
     assert recorded[0]["status"] == "success"
-    assert recorded[0]["input_json"] == {"query": "算一下 1+1"}
+    assert recorded[0]["input_json"]["query"] == "算一下 1+1"
     assert recorded[0]["output_json"]["display_text"] == "1+1 = 2"
 
 

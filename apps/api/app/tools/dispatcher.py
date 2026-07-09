@@ -48,7 +48,16 @@ class ToolDispatcher:
         tasks = []
         for name in tool_needs[: self._max_tool_calls]:
             if name in self._tools:
-                tasks.append(self._call_tool(name, message, trace_id, stream_mgr))
+                tasks.append(
+                    self._call_tool(
+                        name,
+                        message,
+                        trace_id,
+                        stream_mgr,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                )
             else:
                 logger.warning(f"Unknown tool: {name}")
 
@@ -89,11 +98,23 @@ class ToolDispatcher:
         message: str,
         trace_id: str,
         stream_mgr: StreamManager,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> ToolResult:
         tool = self._tools[name]
         await stream_mgr.send_tool_status(name, "calling")
         start = time.monotonic()
-        input_json = {"query": message}
+        params = {
+            "query": message,
+            "user_id": user_id,
+            "session_id": session_id,
+            "trace_id": trace_id,
+        }
+        input_json = {
+            "query": message,
+            "user_id": user_id,
+            "session_id": session_id,
+        }
 
         try:
             result = await asyncio.wait_for(
