@@ -445,7 +445,8 @@ class AgentHarness:
         from app.runtime.risk_gate import load_safety_message
 
         safety_msg = load_safety_message(risk.level, risk.category)
-        await stream_mgr.send_risk_alert(risk.level, safety_msg)
+        # Level-only alert: safety copy goes once via first_reply (avoid bubble dup).
+        await stream_mgr.send_risk_alert(risk.level, "")
 
         ttft_ms = int((time.monotonic() - start_time) * 1000)
         await stream_mgr.send_first_reply(safety_msg, ttft_ms)

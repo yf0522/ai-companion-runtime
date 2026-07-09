@@ -137,6 +137,11 @@ async def test_risk_gate_blocks_before_pi_sidecar(monkeypatch):
     first_msg = stream.send_first_reply.await_args.args[0]
     assert "12356" in first_msg or "400-161-9995" in first_msg
     assert "988" not in first_msg
+    # risk_alert must not carry the same safety paragraph (bubble would duplicate).
+    stream.send_risk_alert.assert_awaited()
+    alert_args = stream.send_risk_alert.await_args.args
+    assert alert_args[0] == "high"
+    assert alert_args[1] == ""
     notify.assert_awaited()
 
 

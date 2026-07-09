@@ -21,6 +21,14 @@ _TITLE_NOISE = re.compile(
 )
 _TITLE_TRAIL = re.compile(r"(?:吧|啊|哦|呀|呢|了)+$")
 _WHITESPACE = re.compile(r"\s+")
+# Schedule / clock noise that must not split medication identity fingerprints.
+_SCHEDULE_NOISE = re.compile(
+    r"(?:每天|每日|每周|明天|今天|后天)?"
+    r"(?:早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)?"
+    r"(?:\d{1,2}\s*[点时:](?:\d{1,2}\s*分?)?|"
+    r"[零一二三四五六七八九十两]+\s*[点时](?:\s*[零一二三四五六七八九十]+\s*分?)?)?"
+)
+_REMINDER_FILLER = re.compile(r"(?:提醒我|记得|帮我记一下|帮我记下|帮我|请帮我|给我|记一下|记下|请|麻烦)")
 
 # Allowed transitions: from -> to
 _TRANSITIONS: dict[str, frozenset[str]] = {
@@ -99,12 +107,15 @@ def task_to_dict(row: Any) -> dict[str, Any]:
 
 
 def normalize_title(title: str) -> str:
-    """Normalize CareTask title for fingerprint / near-dup matching."""
+    """Normalize CareTask title for identity matching (ignore schedule wording)."""
     text = (title or "").strip()
     text = _WHITESPACE.sub("", text)
+    # Drop schedule / clock fragments anywhere (elder UX: same med = same task).
+    text = _SCHEDULE_NOISE.sub("", text)
+    text = _REMINDER_FILLER.sub("", text)
     text = _TITLE_NOISE.sub("", text)
     text = _TITLE_TRAIL.sub("", text)
-    # Strip common create prefixes / filler that survive inference
+    # Strip leftover create prefixes that survive inference
     for prefix in (
         "提醒我",
         "记得",
@@ -129,7 +140,17 @@ def due_bucket(due_at: datetime | None) -> str | None:
 
 
 def title_fingerprint(title: str, task_type: str, due_at: datetime | None = None) -> str:
-    return f"{task_type}|{normalize_title(title)}|{due_bucket(due_at) or 'undated'}"
+    """Identity fingerprint: task_type + normalized title.
+
+    ``due_at`` is accepted for API compatibility but intentionally ignored —
+    same medication/appointment title must reuse even when schedule differs.
+    """
+    _ = due_at
+    return f"{task_type}|{normalize_title(title)}"
+
+
+def identity_key(title: str, task_type: str) -> str:
+    return title_fingerprint(title, task_type, None)
 
 
 def _token_overlap(a: str, b: str) -> float:
@@ -160,6 +181,17 @@ class ResolveResult:
     candidates: list[dict[str, Any]] | None = None
 
 
+def _parse_row_due(row: dict[str, Any]) -> datetime | None:
+    if not row.get("due_at"):
+        return None
+    try:
+        return datetime.fromisoformat(str(row["due_at"]).replace("Z", "+00:00")).replace(
+            tzinfo=None
+        )
+    except ValueError:
+        return None
+
+
 async def find_active_by_fingerprint(
     *,
     user_id: str,
@@ -167,21 +199,14 @@ async def find_active_by_fingerprint(
     task_type: str,
     due_at: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Exact active fingerprint match (same type + normalized title + due day)."""
+    """Active identity match: same task_type + normalized title (due ignored)."""
+    _ = due_at
     rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
-    target = title_fingerprint(title, task_type, due_at)
+    target = identity_key(title, task_type)
     for row in rows:
         if row.get("status") not in ACTIVE_STATUSES:
             continue
-        row_due = None
-        if row.get("due_at"):
-            try:
-                row_due = datetime.fromisoformat(str(row["due_at"]).replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
-            except ValueError:
-                row_due = None
-        if title_fingerprint(row["title"], row.get("task_type") or task_type, row_due) == target:
+        if identity_key(row["title"], row.get("task_type") or task_type) == target:
             return row
     return None
 
@@ -194,39 +219,71 @@ async def find_near_duplicate_candidates(
     due_at: datetime | None = None,
     threshold: float = 0.55,
 ) -> list[dict[str, Any]]:
-    """Near-dup active tasks with different due buckets (clarify before create)."""
+    """Near-dup active tasks with similar-but-not-identical titles (clarify)."""
+    _ = due_at
     rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
     out: list[dict[str, Any]] = []
-    new_bucket = due_bucket(due_at)
+    target = identity_key(title, task_type)
     for row in rows:
         if row.get("status") not in ACTIVE_STATUSES:
             continue
         if (row.get("task_type") or task_type) != task_type:
             continue
-        row_due = None
-        if row.get("due_at"):
-            try:
-                row_due = datetime.fromisoformat(str(row["due_at"]).replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
-            except ValueError:
-                row_due = None
-        # Exact fingerprint already handled by reuse path
-        if title_fingerprint(row["title"], task_type, row_due) == title_fingerprint(
-            title, task_type, due_at
-        ):
+        # Exact identity already handled by reuse path
+        if identity_key(row["title"], task_type) == target:
             continue
         overlap = _token_overlap(title, row["title"])
-        if overlap < threshold:
-            continue
-        # Same title-ish but different due day → clarify
-        if due_bucket(row_due) != new_bucket or normalize_title(title) != normalize_title(
-            row["title"]
-        ):
-            if overlap >= threshold:
-                out.append(row)
+        if overlap >= threshold:
+            out.append(row)
     return out
 
+
+async def _update_task_schedule(
+    *,
+    user_id: str,
+    task_id: str,
+    due_at: datetime,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Attach / refresh due_at (+ reminder) on an existing active CareTask."""
+    from app.db.models import Reminder
+    from app.db.session import async_session
+
+    db_user_id = normalize_user_id(user_id)
+    now = datetime.utcnow()
+    async with async_session() as db:
+        row = await _get_task(db, db_user_id, task_id)
+        if title and normalize_title(title) == normalize_title(row.title):
+            # Prefer shorter/cleaner display title when identity matches
+            if len(title.strip()) < len((row.title or "").strip()):
+                row.title = title.strip()
+        row.due_at = due_at
+        row.status = infer_initial_status(due_at, now)
+        row.updated_at = now
+        if row.reminder_id:
+            rem = await db.get(Reminder, row.reminder_id)
+            if rem is not None:
+                rem.time_of_day = due_at
+                rem.next_fire_at = due_at
+                rem.is_active = True
+                rem.title = row.title
+        else:
+            reminder = Reminder(
+                user_id=db_user_id,
+                title=row.title,
+                description=row.notes or f"caretask:{row.task_type}",
+                schedule_type="once",
+                time_of_day=due_at,
+                next_fire_at=due_at,
+                is_active=True,
+                created_by=row.created_by or "chat",
+            )
+            db.add(reminder)
+            await db.flush()
+            row.reminder_id = reminder.id
+        await db.commit()
+        await db.refresh(row)
+        return task_to_dict(row)
 
 async def resolve_task_ref(
     *,
@@ -284,7 +341,11 @@ async def create_care_task(
     created_by: str = "chat",
     link_reminder: bool = True,
 ) -> dict[str, Any]:
-    """Create or reuse an active CareTask with the same fingerprint.
+    """Create or reuse an active CareTask with the same identity.
+
+    Identity = task_type + normalized title (schedule ignored). Same med must
+    never silent-double-create. If a clearer ``due_at`` arrives on reuse, update
+    the existing task schedule.
 
     Returns task dict plus optional ``_action``:
     ``caretask_create`` | ``caretask_reuse`` | ``caretask_clarify_create``.
@@ -297,8 +358,25 @@ async def create_care_task(
         user_id=user_id, title=title, task_type=task_type, due_at=due_at
     )
     if existing is not None:
+        existing_due = _parse_row_due(existing)
+        # Prefer updating schedule when the new utterance has a due and the
+        # existing task is undated, or when the new due differs (clearer time).
+        if due_at is not None and (existing_due is None or existing_due != due_at):
+            try:
+                updated = await _update_task_schedule(
+                    user_id=user_id,
+                    task_id=str(existing["id"]),
+                    due_at=due_at,
+                    title=title,
+                )
+                updated["_action"] = "caretask_reuse"
+                updated["_schedule_updated"] = True
+                return updated
+            except Exception as e:
+                logger.warning("CareTask schedule update on reuse failed: %s", e)
         data = dict(existing)
         data["_action"] = "caretask_reuse"
+        data["_schedule_updated"] = False
         return data
 
     near = await find_near_duplicate_candidates(
@@ -314,7 +392,6 @@ async def create_care_task(
                 "due_at": due_at.isoformat() if due_at else None,
             },
         }
-
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     status = infer_initial_status(due_at, now)
