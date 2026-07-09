@@ -115,14 +115,20 @@ _tmux_start() {
 _start_pi() {
   local log
   log="$(_log_file pi)"
+  # tmux sessions do NOT inherit this script's exports — pass keys explicitly.
+  local gemini_key="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}"
+  local google_key="${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}"
+  if [[ -z "$gemini_key" && -z "$google_key" ]]; then
+    echo "WARN: GOOGLE_API_KEY/GEMINI_API_KEY unset — Pi sidecar will return empty replies" >&2
+  fi
   if _have_tmux; then
     _tmux_start companion-pi "$ROOT/apps/pi-sidecar" \
-      "env TOOL_BRIDGE_URL='$TOOL_BRIDGE_URL' TOOL_BRIDGE_TOKEN='${TOOL_BRIDGE_TOKEN:-}' node server.mjs 2>&1 | tee '$log'"
+      "env TOOL_BRIDGE_URL='$TOOL_BRIDGE_URL' TOOL_BRIDGE_TOKEN='${TOOL_BRIDGE_TOKEN:-}' GEMINI_API_KEY='$gemini_key' GOOGLE_API_KEY='$google_key' PI_ENABLE_TOOLS='${PI_ENABLE_TOOLS:-1}' node server.mjs 2>&1 | tee '$log'"
   else
     (
       cd "$ROOT/apps/pi-sidecar"
-      # double-fork so we survive parent shell death
       (setsid env TOOL_BRIDGE_URL="$TOOL_BRIDGE_URL" TOOL_BRIDGE_TOKEN="${TOOL_BRIDGE_TOKEN:-}" \
+        GEMINI_API_KEY="$gemini_key" GOOGLE_API_KEY="$google_key" PI_ENABLE_TOOLS="${PI_ENABLE_TOOLS:-1}" \
         node server.mjs >"$log" 2>&1 &)
       sleep 0.2
       lsof -tiTCP:"$PI_PORT" -sTCP:LISTEN >"$(_pid_file pi)" 2>/dev/null || true
