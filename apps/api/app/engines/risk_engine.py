@@ -11,14 +11,28 @@ from app.engines.base import AnalyzerInput, BaseEngine, RiskResult
 logger = logging.getLogger(__name__)
 
 
+class RiskConfigurationError(RuntimeError):
+    """Risk policy is unavailable or does not satisfy the runtime contract."""
+
+
+def _risk_rules_path() -> Path:
+    return Path(__file__).parent.parent / "config" / "risk_rules.yaml"
+
+
 def _load_risk_rules() -> dict:
-    path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
+    path = _risk_rules_path()
     try:
         with open(path) as f:
-            return yaml.safe_load(f)
+            rules = yaml.safe_load(f)
     except Exception as e:
-        logger.error(f"Failed to load risk_rules.yaml: {e}")
-        return {}
+        raise RiskConfigurationError(f"Failed to load risk rules from {path}: {e}") from e
+
+    if not isinstance(rules, dict) or not isinstance(rules.get("rules"), dict):
+        raise RiskConfigurationError("Invalid risk rules: top-level 'rules' mapping is required")
+    for level in ("critical", "high", "medium"):
+        if level not in rules["rules"]:
+            raise RiskConfigurationError(f"Invalid risk rules: missing '{level}' policy")
+    return rules
 
 
 def _normalize_text(text: str) -> str:

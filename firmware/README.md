@@ -5,15 +5,24 @@ It is intentionally honest about hardware bring-up: WiFi/ADF audio are gated
 behind compile flags so reviewers can see the contract without mistaking stubs
 for a production flash image.
 
+Audio is fail-closed in this repository. Until a board-specific ESP-ADF pipeline is linked and
+sets the runtime ready state, the device advertises `audio=false`, reports the pipeline as not
+initialized, and refuses to send capture buffers. Protocol tests are not hardware audio evidence.
+
 ## Backend contract (device → server)
 
 1. Connect WebSocket, first text frame:
-   `{"type":"auth","token":"<JWT>"}`
+   `{"type":"auth","auth_type":"device","device_id":"<device uuid>","credential":"<device secret>","firmware_version":"...","capabilities":{...}}`
 2. After wake / listen start:
-   `{"type":"audio_start","sample_rate":16000}`
+   `{"type":"audio_start","seq":1,"sample_rate":16000}`
 3. Stream PCM binary frames (16-bit mono @ 16 kHz).
 4. After VAD end:
-   `{"type":"audio_end"}`
+   `{"type":"audio_end","seq":2}`
+5. Send heartbeat and command receipts with strictly increasing `seq`; receipts include
+   `command_id`, `receipt_type`, and health/firmware metadata for correlation.
+
+Production transport is gated by `CONFIG_COMPANION_REQUIRE_WSS=1`, which rejects
+non-`wss://` `CONFIG_WS_SERVER_URI` values before WebSocket initialization.
 
 ## Backend contract (server → device)
 
@@ -32,6 +41,10 @@ Handled in `main/main.c` `on_ws_text`:
 | `final` | log |
 | `tts_done` | return to LISTENING (second-turn ready) |
 | `no_speech` / `error` | return to LISTENING |
+
+OTA support is interface/state only in this skeleton. Device health reports
+`ota_verification_state=pending_evidence`; do not mark a firmware release
+verified until real signing-key evidence and board boot/flash logs exist.
 
 ## Build / flash (when ESP-IDF is installed)
 
@@ -55,3 +68,4 @@ captures should replace that file when available.
 
 - `CONFIG_COMPANION_ENABLE_WIFI=0` (default): WiFi STA bring-up stubbed.
 - `CONFIG_COMPANION_ENABLE_ADF_AUDIO=0` (default): ADF pipeline remains skeleton.
+- `CONFIG_COMPANION_REQUIRE_WSS=1` (default): non-TLS device WebSocket URIs are rejected.

@@ -1,0 +1,56 @@
+services:
+  api:
+    env_file:
+      - ../.env.production
+    ports: []
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    env_file:
+      - ../.env.production
+    ports: []
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  celery-worker:
+    env_file:
+      - ../.env.production
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  celery-beat:
+    env_file:
+      - ../.env.production
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    ports: []
+
+  redis:
+    ports: []
+
+  minio:
+    ports: []
+
+  jaeger:
+    ports: []
+
+  prometheus:
+    ports: []
+
+  grafana:
+    ports: []

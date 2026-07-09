@@ -5,6 +5,8 @@
 #define WIFI_PASS           CONFIG_WIFI_PASS
 #define WS_SERVER_URI       CONFIG_WS_SERVER_URI
 #define WS_AUTH_TOKEN       CONFIG_WS_AUTH_TOKEN
+#define DEVICE_ID           CONFIG_DEVICE_ID
+#define FIRMWARE_VERSION    "0.4.0-protocol"
 
 // Wake word
 #define WAKE_WORD           "小伴小伴"
@@ -29,4 +31,7 @@
 #endif
 #ifndef CONFIG_COMPANION_ENABLE_ADF_AUDIO
 #define CONFIG_COMPANION_ENABLE_ADF_AUDIO 0
+#endif
+#ifndef CONFIG_COMPANION_REQUIRE_WSS
+#define CONFIG_COMPANION_REQUIRE_WSS 1
 #endif

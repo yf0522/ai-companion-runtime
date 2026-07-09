@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 try:
@@ -38,11 +39,21 @@ except Exception:  # pragma: no cover - optional runtime dependency in local/dev
 
         def stop(self) -> None:
             raise RuntimeError("dashscope package is not available in this environment")
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
-from app.api.auth import decode_token
 from app.api.asr import _build_wav, _executor, _transcribe_sync
 from app.config.settings import settings
+from app.runtime.device_identity import (
+    MAX_AUDIO_FRAME_BYTES,
+    MAX_AUDIO_TURN_BYTES,
+    MAX_DEVICE_MESSAGE_BYTES,
+    SUPPORTED_SAMPLE_RATES,
+    DevicePrincipal,
+    advance_device_sequence,
+    authenticate_device_from_message,
+    require_next_sequence,
+)
+from app.db.session import async_session
 from app.runtime import session_service
 from app.runtime.agent_runtime import DEFAULT_RUNTIME, get_agent_runtime, normalize_runtime_name
 from app.runtime.device_stream_manager import DeviceStreamManager
@@ -51,6 +62,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _AUTH_TIMEOUT_S = 10
+
+
+class DeviceProtocolState:
+    def __init__(self, principal: DevicePrincipal) -> None:
+        self.principal = principal
+        self.high_watermark = principal.sequence_high_watermark
+        self.audio_active = False
+        self.audio_bytes = 0
+
+    def accept_sequence(self, data: dict[str, Any]) -> int:
+        sequence = require_next_sequence(data.get("seq"), self.high_watermark)
+        return sequence
+
+    def mark_sequence_accepted(self, sequence: int) -> None:
+        self.high_watermark = sequence
+
+    def reset_audio_turn(self) -> None:
+        self.audio_active = True
+        self.audio_bytes = 0
+
+    def accept_audio_frame(self, size: int) -> None:
+        if not self.audio_active:
+            raise ValueError("audio_not_started")
+        if size > MAX_AUDIO_FRAME_BYTES:
+            raise ValueError("audio_frame_too_large")
+        self.audio_bytes += size
+        if self.audio_bytes > MAX_AUDIO_TURN_BYTES:
+            raise ValueError("audio_turn_too_large")
+
+    def end_audio_turn(self) -> None:
+        self.audio_active = False
 
 
 async def transcribe_pcm(pcm_data: bytes, sample_rate: int = 16000) -> str:
@@ -170,25 +212,55 @@ async def _run_device_harness(
     )
 
 
+async def _persist_device_sequence(
+    websocket: WebSocket,
+    protocol: DeviceProtocolState,
+    *,
+    sequence: int,
+    device_id: str,
+    **kwargs: Any,
+) -> bool:
+    try:
+        async with async_session() as db:
+            await advance_device_sequence(
+                db,
+                device_id=uuid.UUID(device_id),
+                sequence=sequence,
+                **kwargs,
+            )
+    except ValueError as exc:
+        await websocket.send_json({"type": "error", "code": str(exc), "retry": False})
+        await websocket.close(code=4003, reason="Protocol violation")
+        return False
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "code": str(exc.detail), "retry": False})
+        await websocket.close(code=4003, reason="Protocol violation")
+        return False
+    protocol.mark_sequence_accepted(sequence)
+    return True
+
+
 @router.websocket("/ws/device/realtime")
 async def ws_device_realtime(websocket: WebSocket) -> None:
     await websocket.accept()
 
     try:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=_AUTH_TIMEOUT_S)
+        if len(raw.encode("utf-8")) > MAX_DEVICE_MESSAGE_BYTES:
+            raise ValueError("auth_message_too_large")
         data = json.loads(raw)
     except Exception:
         await websocket.send_json({"type": "error", "code": "auth_required", "retry": False})
         await websocket.close(code=4001, reason="Auth required")
         return
 
-    if data.get("type") != "auth" or not data.get("token"):
+    if data.get("type") != "auth" or data.get("auth_type") != "device":
         await websocket.send_json({"type": "error", "code": "auth_required", "retry": False})
         await websocket.close(code=4001, reason="Auth required")
         return
 
-    payload = decode_token(data["token"])
-    if not payload or "sub" not in payload:
+    principal = await authenticate_device_from_message(data)
+    if principal is None:
         await websocket.send_json({"type": "error", "code": "auth_failed", "retry": False})
         await websocket.close(code=4001, reason="Unauthorized")
         return
@@ -207,17 +279,26 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
         await websocket.close(code=4002, reason="Invalid agent runtime")
         return
 
-    session_id = await session_service.ensure_session(
-        payload["sub"], data.get("session_id")
-    )
+    protocol = DeviceProtocolState(principal)
+    session_id = await session_service.ensure_session(principal.user_id, data.get("session_id"))
     await websocket.send_json({
         "type": "connected",
         "mode": "realtime",
         "session_id": session_id,
         "agent_runtime": agent_runtime,
+        "device_id": principal.device_id,
+        "protocol": {
+            "max_message_bytes": MAX_DEVICE_MESSAGE_BYTES,
+            "max_audio_frame_bytes": MAX_AUDIO_FRAME_BYTES,
+            "max_audio_turn_bytes": MAX_AUDIO_TURN_BYTES,
+            "sequence": "strictly_increasing_by_one",
+        },
     })
     logger.info(
-        "Realtime device connected: user=%s session=%s", payload["sub"], session_id
+        "Realtime device connected: device=%s user=%s session=%s",
+        principal.device_id,
+        principal.user_id,
+        session_id,
     )
 
     pcm = bytearray()
@@ -229,6 +310,14 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
             if msg.get("type") == "websocket.disconnect":
                 break
             if msg.get("bytes") is not None:
+                try:
+                    protocol.accept_audio_frame(len(msg["bytes"]))
+                except ValueError as exc:
+                    await websocket.send_json(
+                        {"type": "error", "code": str(exc), "retry": False}
+                    )
+                    await websocket.close(code=4003, reason="Protocol violation")
+                    return
                 pcm.extend(msg["bytes"])
                 if asr_session is not None:
                     asr_session.send_audio(msg["bytes"])
@@ -239,19 +328,111 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
             text = msg.get("text")
             if text is None:
                 continue
+            if len(text.encode("utf-8")) > MAX_DEVICE_MESSAGE_BYTES:
+                await websocket.send_json(
+                    {"type": "error", "code": "message_too_large", "retry": False}
+                )
+                await websocket.close(code=4003, reason="Protocol violation")
+                return
 
             data = json.loads(text)
             msg_type = data.get("type")
+            try:
+                seq = protocol.accept_sequence(data)
+            except ValueError as exc:
+                await websocket.send_json(
+                    {"type": "error", "code": str(exc), "retry": False}
+                )
+                await websocket.close(code=4003, reason="Protocol violation")
+                return
+
             if msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
+                if not await _persist_device_sequence(
+                    websocket,
+                    protocol,
+                    sequence=seq,
+                    device_id=principal.device_id,
+                ):
+                    return
+                await websocket.send_json({"type": "pong", "seq": seq})
+            elif msg_type == "heartbeat":
+                if not await _persist_device_sequence(
+                    websocket,
+                    protocol,
+                    sequence=seq,
+                    device_id=principal.device_id,
+                    health=data.get("health") if isinstance(data.get("health"), dict) else {},
+                    firmware_version=data.get("firmware_version")
+                    if isinstance(data.get("firmware_version"), str)
+                    else None,
+                ):
+                    return
+                await websocket.send_json(
+                    {
+                        "type": "heartbeat_ack",
+                        "seq": seq,
+                        "device_id": principal.device_id,
+                    }
+                )
+            elif msg_type in {"receipt", "command_receipt"}:
+                command_id = data.get("command_id")
+                receipt_type = data.get("receipt_type")
+                if not isinstance(command_id, str) or not isinstance(receipt_type, str):
+                    await websocket.send_json(
+                        {"type": "error", "code": "receipt_correlation_required", "retry": False}
+                    )
+                    await websocket.close(code=4003, reason="Protocol violation")
+                    return
+                if not await _persist_device_sequence(
+                    websocket,
+                    protocol,
+                    sequence=seq,
+                    device_id=principal.device_id,
+                    command_id=command_id,
+                    receipt_type=receipt_type,
+                    receipt_metadata=data.get("metadata")
+                    if isinstance(data.get("metadata"), dict)
+                    else {},
+                ):
+                    return
+                await websocket.send_json(
+                    {
+                        "type": "receipt_ack",
+                        "seq": seq,
+                        "command_id": command_id,
+                        "receipt_type": receipt_type,
+                    }
+                )
             elif msg_type == "audio_start":
                 pcm.clear()
                 sample_rate = int(data.get("sample_rate") or 16000)
+                if sample_rate not in SUPPORTED_SAMPLE_RATES:
+                    await websocket.send_json(
+                        {"type": "error", "code": "unsupported_sample_rate", "retry": False}
+                    )
+                    await websocket.close(code=4003, reason="Protocol violation")
+                    return
+                if not await _persist_device_sequence(
+                    websocket,
+                    protocol,
+                    sequence=seq,
+                    device_id=principal.device_id,
+                ):
+                    return
                 if asr_session is not None:
                     await asr_session.stop()
                 asr_session = None
+                protocol.reset_audio_turn()
                 await websocket.send_json({"type": "listening"})
             elif msg_type == "audio_end":
+                if not await _persist_device_sequence(
+                    websocket,
+                    protocol,
+                    sequence=seq,
+                    device_id=principal.device_id,
+                ):
+                    return
+                protocol.end_audio_turn()
                 start = time.monotonic()
                 if asr_session is not None:
                     transcript = await asr_session.stop()
@@ -272,7 +453,7 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
                 if transcript:
                     await _run_device_harness(
                         websocket,
-                        user_id=payload["sub"],
+                        user_id=principal.user_id,
                         session_id=session_id,
                         transcript=transcript,
                         agent_runtime=agent_runtime,
@@ -292,8 +473,15 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
                 )
                 pcm.clear()
             else:
+                if not await _persist_device_sequence(
+                    websocket,
+                    protocol,
+                    sequence=seq,
+                    device_id=principal.device_id,
+                ):
+                    return
                 await websocket.send_json(
                     {"type": "error", "code": "unknown_type", "retry": False}
                 )
     except WebSocketDisconnect:
-        logger.info("Realtime device disconnected: user=%s", payload["sub"])
+        logger.info("Realtime device disconnected: device=%s user=%s", principal.device_id, principal.user_id)

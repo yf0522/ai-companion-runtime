@@ -23,6 +23,7 @@ static void main_loop_task(void *arg);
 static void reminder_check_task(void *arg);
 static void send_audio_start(void);
 static void send_audio_end(void);
+static void send_command_receipt(cJSON *root, const char *receipt_type);
 static void handle_reminder_create(cJSON *root);
 static void begin_listen_turn(void);
 
@@ -48,6 +49,11 @@ void app_main(void) {
 }
 
 static void begin_listen_turn(void) {
+    if (!audio_pipeline_is_ready()) {
+        ESP_LOGE(TAG, "Cannot start listen turn: audio pipeline is not ready");
+        state_machine_set(STATE_STANDBY);
+        return;
+    }
     if (!ws_client_is_connected()) {
         ws_client_connect();
     }
@@ -63,22 +69,14 @@ static void send_audio_start(void) {
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "type", "audio_start");
     cJSON_AddNumberToObject(msg, "sample_rate", SAMPLE_RATE);
-    char *payload = cJSON_PrintUnformatted(msg);
-    if (payload) {
-        ws_client_send_text(payload);
-        free(payload);
-    }
+    ws_client_send_json_with_seq(msg);
     cJSON_Delete(msg);
 }
 
 static void send_audio_end(void) {
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "type", "audio_end");
-    char *payload = cJSON_PrintUnformatted(msg);
-    if (payload) {
-        ws_client_send_text(payload);
-        free(payload);
-    }
+    ws_client_send_json_with_seq(msg);
     cJSON_Delete(msg);
 }
 
@@ -112,8 +110,16 @@ static void main_loop_task(void *arg) {
                 begin_listen_turn();
             }
 
-            audio_pipeline_read(audio_buf, FRAME_SIZE_SAMPLES);
-            ws_client_send_binary((uint8_t *)audio_buf, FRAME_SIZE_SAMPLES * sizeof(int16_t));
+            int samples_read = audio_pipeline_read(audio_buf, FRAME_SIZE_SAMPLES);
+            if (samples_read <= 0) {
+                ESP_LOGE(TAG, "Audio capture failed; ending the current turn");
+                send_audio_end();
+                audio_turn_active = false;
+                audio_pipeline_stop();
+                state_machine_set(STATE_STANDBY);
+                break;
+            }
+            ws_client_send_binary((uint8_t *)audio_buf, samples_read * sizeof(int16_t));
 
             if (audio_pipeline_vad_detected()) {
                 send_audio_end();
@@ -164,6 +170,24 @@ static void handle_reminder_create(cJSON *root) {
     );
 }
 
+static void send_command_receipt(cJSON *root, const char *receipt_type) {
+    cJSON *command_id = cJSON_GetObjectItem(root, "command_id");
+    if (!cJSON_IsString(command_id)) {
+        ESP_LOGW(TAG, "receipt skipped: command_id missing for %s", receipt_type);
+        return;
+    }
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "receipt");
+    cJSON_AddStringToObject(msg, "command_id", command_id->valuestring);
+    cJSON_AddStringToObject(msg, "receipt_type", receipt_type);
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "firmware_version", FIRMWARE_VERSION);
+    cJSON_AddStringToObject(meta, "state", "handled");
+    cJSON_AddItemToObject(msg, "metadata", meta);
+    ws_client_send_json_with_seq(msg);
+    cJSON_Delete(msg);
+}
+
 static void on_ws_text(const char *data, int len) {
     ESP_LOGI(TAG, "WS text: %.*s", len, data);
     state_machine_reset_timeout();
@@ -200,12 +224,15 @@ static void on_ws_text(const char *data, int len) {
         state_machine_set(STATE_SPEAKING);
     } else if (strcmp(t, "reminder_create") == 0) {
         handle_reminder_create(root);
+        send_command_receipt(root, "received");
     } else if (strcmp(t, "tool_status") == 0 || strcmp(t, "tool_result") == 0) {
         ESP_LOGI(TAG, "tool event: %s", t);
     } else if (strcmp(t, "final") == 0) {
         ESP_LOGI(TAG, "final received");
+        send_command_receipt(root, "received");
     } else if (strcmp(t, "tts_done") == 0) {
         ESP_LOGI(TAG, "tts_done -> return to listening");
+        send_command_receipt(root, "played");
         state_machine_set(STATE_LISTENING);
         state_machine_reset_timeout();
         audio_turn_active = false;
@@ -234,7 +261,7 @@ static void wifi_init(void) {
 #if CONFIG_COMPANION_ENABLE_WIFI
     ESP_LOGI(TAG, "Connecting to WiFi: %s", WIFI_SSID);
     // Standard ESP-IDF WiFi STA bring-up lives behind this flag.
-    // Without ADF/board support, keep the stub so protocol code still compiles.
+    // Without board audio support, playback remains disabled and health reports not ready.
 #else
     ESP_LOGW(TAG, "WiFi bring-up gated (CONFIG_COMPANION_ENABLE_WIFI=0); protocol code still active");
 #endif

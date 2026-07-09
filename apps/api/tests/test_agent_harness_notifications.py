@@ -16,17 +16,17 @@ async def test_dispatch_awaits_and_returns_persisted_status(monkeypatch):
 
     monkeypatch.setattr(real_settings, "enable_celery_tasks", False)
 
-    async def fake_process(*_args, **_kwargs):
+    async def fake_pipeline(**_kwargs):
         return {
             "status": "persisted",
-            "records": 1,
-            "webhook_status": "no_contact",
-            "error": None,
+            "safety_decision_id": "decision-1",
+            "outbox_ids": [],
+            "case_opened": True,
         }
 
-    import app.workers.notification_worker as worker
+    import app.workers.notification_outbox_worker as worker
 
-    monkeypatch.setattr(worker, "process_risk_notification", fake_process)
+    monkeypatch.setattr(worker, "create_safety_notification_pipeline", fake_pipeline)
 
     status = await harness._dispatch_risk_notification(
         user_id="demo-elder",
@@ -36,7 +36,8 @@ async def test_dispatch_awaits_and_returns_persisted_status(monkeypatch):
         trace_id="tr_test",
     )
     assert status["status"] == "persisted"
-    assert status["records"] == 1
+    assert status["safety_decision_id"] == "decision-1"
+    assert status["case_opened"] is True
 
 
 @pytest.mark.asyncio
@@ -89,71 +90,3 @@ async def test_handle_risk_records_failed_family_notification(monkeypatch):
     assert recorded[0]["step_name"] == "family_notification"
     assert recorded[0]["status"] == "failed"
     assert recorded[0]["output_json"]["error"] == "db down"
-
-
-@pytest.mark.asyncio
-async def test_process_risk_notification_no_contact_persists(monkeypatch):
-    import importlib
-    import sqlalchemy
-    import uuid
-
-    from app.db.models import NotificationLog
-    import app.workers.notification_worker as worker
-
-    session_module = importlib.import_module("app.db.session")
-
-    class _FakeQuery:
-        def where(self, *args, **kwargs):
-            return self
-
-        def order_by(self, *args, **kwargs):
-            return self
-
-    class _FakeResult:
-        def scalar_one_or_none(self):
-            return "张三"
-
-        def scalars(self):
-            return self
-
-        def all(self):
-            return []
-
-    class _FakeSession:
-        def __init__(self):
-            self.added: list[NotificationLog] = []
-            self.committed = False
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def execute(self, stmt):
-            return _FakeResult()
-
-        def add(self, obj):
-            self.added.append(obj)
-
-        async def commit(self):
-            self.committed = True
-
-    fake = _FakeSession()
-    monkeypatch.setattr(session_module, "async_session", lambda: fake, raising=True)
-    monkeypatch.setattr(sqlalchemy, "select", lambda *a, **k: _FakeQuery(), raising=False)
-
-    result = await worker.process_risk_notification(
-        user_id="4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf",
-        risk_level="critical",
-        risk_category="scam_alert",
-        summary="疑似反诈",
-        trace_id="tr_no_contact",
-    )
-
-    assert result["status"] == "persisted"
-    assert result["webhook_status"] == "no_contact"
-    assert fake.committed is True
-    assert len(fake.added) == 1
-    assert fake.added[0].webhook_status == "no_contact"
-    assert fake.added[0].user_id == uuid.UUID("4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf")

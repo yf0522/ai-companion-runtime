@@ -74,22 +74,18 @@ class MemoryEngine(BaseEngine):
     async def _load_important_memories(self, user_id: uuid.UUID) -> list[dict]:
         try:
             from app.db.session import async_session
-            from app.db.models import Memory
+            from app.memory.lifecycle import select_retrievable_memories
 
             async with async_session() as db:
-                result = await db.execute(
-                    select(Memory)
-                    .where(Memory.user_id == user_id)
-                    .order_by(Memory.importance_score.desc(), Memory.created_at.desc())
-                    .limit(5)
-                )
-                rows = result.scalars().all()
+                rows = await select_retrievable_memories(db, user_id=user_id, limit=5)
                 return [
                     {
-                        "content": row.content,
-                        "score": float(row.importance_score or 0.0),
-                        "memory_type": row.memory_type,
-                        "id": str(row.id),
+                        "content": row["content"],
+                        "score": row["importance"],
+                        "memory_type": row["type"],
+                        "id": row["id"],
+                        "purpose": row["purpose"],
+                        "sensitivity": row["sensitivity"],
                     }
                     for row in rows
                 ]

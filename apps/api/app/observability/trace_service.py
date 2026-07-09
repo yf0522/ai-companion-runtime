@@ -4,6 +4,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class AuditPersistenceError(RuntimeError):
+    """A required domain audit event could not be persisted."""
+
+
 def setup_otel():
     """Initialize OpenTelemetry. Best-effort."""
     try:
@@ -39,6 +43,7 @@ class TraceService:
         status: str = "success",
         error_message: str = None,
         latency_ms: int = None,
+        required: bool = False,
     ):
         try:
             from app.db.session import async_session
@@ -65,6 +70,8 @@ class TraceService:
                 await db.commit()
         except Exception as e:
             logger.error(f"Failed to record trace event: {e}")
+            if required:
+                raise AuditPersistenceError("Failed to persist critical audit event") from e
 
     async def record_model_call(
         self,

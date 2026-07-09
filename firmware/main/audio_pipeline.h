@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void audio_pipeline_init(void);
+bool audio_pipeline_is_ready(void);
 void audio_pipeline_start(void);
 void audio_pipeline_stop(void);
 int audio_pipeline_read(int16_t *buf, int samples);

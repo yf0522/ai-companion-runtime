@@ -18,19 +18,20 @@ static const char *TAG = "audio_pipeline";
  */
 
 static bool vad_active = false;
+static bool pipeline_ready = false;
 
 void audio_pipeline_init(void) {
     ESP_LOGI(TAG, "Audio pipeline init (AEC filter=%d, NS mode=%d, SR=%d, adf=%d)",
              AEC_FILTER_LENGTH, NS_MODE, SAMPLE_RATE, CONFIG_COMPANION_ENABLE_ADF_AUDIO);
 #if CONFIG_COMPANION_ENABLE_ADF_AUDIO
-    // Initialize ESP-ADF pipeline with:
-    // - i2s_stream_reader (microphone, 16kHz mono)
-    // - algorithm_stream (AEC + NS + VAD)
-    // - raw_stream_reader (for reading processed audio)
-    // - i2s_stream_writer (speaker output)
+    ESP_LOGE(TAG, "ADF audio was enabled, but the production pipeline is not linked in this build");
 #else
-    ESP_LOGW(TAG, "ADF audio gated off; protocol harness uses stub read/play/VAD");
+    ESP_LOGW(TAG, "Audio pipeline unavailable; capture and playback remain disabled");
 #endif
+}
+
+bool audio_pipeline_is_ready(void) {
+    return pipeline_ready;
 }
 
 void audio_pipeline_start(void) {
@@ -44,12 +45,14 @@ void audio_pipeline_stop(void) {
 }
 
 int audio_pipeline_read(int16_t *buf, int samples) {
-    // raw_stream_read(raw_reader, (char *)buf, samples * sizeof(int16_t));
-    return samples;
+    (void)buf;
+    (void)samples;
+    return 0;
 }
 
 void audio_pipeline_play(const uint8_t *data, int len) {
-    // i2s_stream_write(speaker_writer, data, len);
+    (void)data;
+    (void)len;
 }
 
 bool audio_pipeline_vad_detected(void) {

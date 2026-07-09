@@ -1,5 +1,5 @@
-import ChatWindow from "@/components/ChatWindow";
+import { redirect } from "next/navigation";
 
-export default function ChatPage() {
-  return <ChatWindow />;
+export default function ChatRedirect() {
+  redirect("/elder/companion");
 }

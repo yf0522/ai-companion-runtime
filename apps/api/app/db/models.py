@@ -7,7 +7,7 @@ try:
     from pgvector.sqlalchemy import Vector
 except ImportError:
     Vector = None
-from sqlalchemy import ForeignKey, Index, Text, text
+from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -191,6 +191,9 @@ class Reminder(Base):
     last_fired_at: Mapped[datetime | None] = mapped_column()
     is_active: Mapped[bool] = mapped_column(default=True)
     created_by: Mapped[str] = mapped_column(default="user")
+    lease_until: Mapped[datetime | None] = mapped_column()
+    lease_owner: Mapped[str | None] = mapped_column()
+    retry_count: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
     history: Mapped[list["ReminderHistory"]] = relationship(back_populates="reminder")
@@ -214,6 +217,35 @@ class ReminderHistory(Base):
     reminder: Mapped[Reminder] = relationship(back_populates="history")
 
 
+class ReminderDeliveryAttempt(Base):
+    __tablename__ = "reminder_delivery_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    reminder_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("reminders.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(default=1)
+    state: Mapped[str] = mapped_column(default="queued")
+    idempotency_key: Mapped[str] = mapped_column(nullable=False)
+    due_at: Mapped[datetime] = mapped_column(nullable=False)
+    lease_until: Mapped[datetime | None] = mapped_column()
+    provider_message_id: Mapped[str | None] = mapped_column()
+    error_message: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column()
+    device_received_at: Mapped[datetime | None] = mapped_column()
+    played_at: Mapped[datetime | None] = mapped_column()
+    acknowledged_at: Mapped[datetime | None] = mapped_column()
+    failed_at: Mapped[datetime | None] = mapped_column()
+    expired_at: Mapped[datetime | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_reminder_delivery_attempt_idempotency"),
+        Index("idx_reminder_delivery_attempts_reminder", "reminder_id", "created_at"),
+        Index("idx_reminder_delivery_attempts_state", "state", "due_at"),
+    )
+
+
 class CareTask(Base):
     """Care-domain task (medication / appointment). Reminder is scheduling projection."""
 
@@ -230,12 +262,39 @@ class CareTask(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(default="chat")
     completed_at: Mapped[datetime | None] = mapped_column()
+    version: Mapped[int] = mapped_column(default=1)
+    idempotency_key: Mapped[str | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
     __table_args__ = (
         Index("idx_care_tasks_user_status", "user_id", "status"),
         Index("idx_care_tasks_due", "due_at"),
+        Index("idx_care_tasks_user_idempotency", "user_id", "idempotency_key", unique=True),
+    )
+
+
+class IdempotencyRecord(Base):
+    __tablename__ = "idempotency_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    key: Mapped[str] = mapped_column(nullable=False)
+    operation: Mapped[str] = mapped_column(nullable=False)
+    resource_type: Mapped[str] = mapped_column(nullable=False)
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    request_hash: Mapped[str] = mapped_column(nullable=False)
+    response_json: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    error_json: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    status: Mapped[str] = mapped_column(default="completed")
+    status_code: Mapped[int] = mapped_column(default=200)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "key", "operation", name="uq_idempotency_user_key_operation"),
+        Index("idx_idempotency_records_user", "user_id", "created_at"),
+        Index("idx_idempotency_records_status", "status", "updated_at"),
     )
 
 
@@ -282,6 +341,101 @@ class NotificationLog(Base):
     risk_category: Mapped[str | None] = mapped_column()
     summary: Mapped[str | None] = mapped_column(Text)
     webhook_status: Mapped[str | None] = mapped_column()
+    safety_decision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("safety_decisions.id"))
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("notification_outbox.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
     __table_args__ = (Index("idx_notification_log_user", "user_id", "created_at"),)
+
+
+class SafetyDecision(Base):
+    __tablename__ = "safety_decisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    trace_id: Mapped[str | None] = mapped_column()
+    policy_version: Mapped[str] = mapped_column(nullable=False)
+    risk_level: Mapped[str] = mapped_column(nullable=False)
+    risk_category: Mapped[str] = mapped_column(nullable=False)
+    action: Mapped[str] = mapped_column(nullable=False)
+    evidence_ref: Mapped[str | None] = mapped_column()
+    evidence_json: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    confidence: Mapped[float | None] = mapped_column()
+    calibration: Mapped[str | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        Index("idx_safety_decisions_user", "user_id", "created_at"),
+        Index("idx_safety_decisions_trace", "trace_id"),
+    )
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    safety_decision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("safety_decisions.id"))
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("emergency_contacts.id"))
+    provider: Mapped[str] = mapped_column(default="sandbox")
+    channel: Mapped[str] = mapped_column(default="webhook")
+    idempotency_key: Mapped[str] = mapped_column(nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    state: Mapped[str] = mapped_column(default="queued")
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    attempt_identity: Mapped[str | None] = mapped_column()
+    lease_owner: Mapped[str | None] = mapped_column()
+    lease_until: Mapped[datetime | None] = mapped_column()
+    next_attempt_at: Mapped[datetime | None] = mapped_column()
+    last_error: Mapped[str | None] = mapped_column(Text)
+    provider_message_id: Mapped[str | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_notification_outbox_idempotency"),
+        Index("idx_notification_outbox_state", "state", "next_attempt_at"),
+        Index("idx_notification_outbox_lease", "state", "lease_until"),
+        Index("idx_notification_outbox_user", "user_id", "created_at"),
+    )
+
+
+class NotificationReceipt(Base):
+    __tablename__ = "notification_receipts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    outbox_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("notification_outbox.id"), nullable=False)
+    provider_message_id: Mapped[str | None] = mapped_column()
+    receipt_identity: Mapped[str | None] = mapped_column()
+    event_type: Mapped[str] = mapped_column(nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    occurred_at: Mapped[datetime] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        UniqueConstraint("outbox_id", "receipt_identity", name="uq_notification_receipts_identity"),
+        Index("idx_notification_receipts_outbox", "outbox_id", "created_at"),
+    )
+
+
+class OperatorCase(Base):
+    __tablename__ = "operator_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    safety_decision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("safety_decisions.id"))
+    notification_outbox_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("notification_outbox.id"))
+    status: Mapped[str] = mapped_column(default="open")
+    severity: Mapped[str] = mapped_column(default="high")
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    summary: Mapped[str | None] = mapped_column(Text)
+    resolution: Mapped[str | None] = mapped_column(Text)
+    due_at: Mapped[datetime | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    resolved_at: Mapped[datetime | None] = mapped_column()
+
+    __table_args__ = (
+        Index("idx_operator_cases_status", "status", "severity", "created_at"),
+        Index("idx_operator_cases_user", "user_id", "created_at"),
+    )

@@ -12,3 +12,5 @@ void ws_client_disconnect(void);
 bool ws_client_is_connected(void);
 void ws_client_send_binary(const uint8_t *data, int len);
 void ws_client_send_text(const char *text);
+void ws_client_send_json_with_seq(void *json);
+void ws_client_send_heartbeat(void);

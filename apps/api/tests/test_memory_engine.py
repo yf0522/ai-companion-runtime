@@ -121,6 +121,9 @@ async def test_load_profile_and_memories_from_fake_db(monkeypatch):
         def all(self):
             return self._value if isinstance(self._value, list) else []
 
+        def fetchall(self):
+            return self._value if isinstance(self._value, list) else []
+
     class _ProfileSession:
         async def __aenter__(self):
             return self
@@ -146,6 +149,11 @@ async def test_load_profile_and_memories_from_fake_db(monkeypatch):
                         importance_score=0.85,
                         memory_type="fact",
                         id=uuid.uuid4(),
+                        purpose="care_continuity",
+                        sensitivity="health",
+                        consent_status="granted",
+                        deletion_state="active",
+                        retention_until=None,
                     )
                 ]
             )

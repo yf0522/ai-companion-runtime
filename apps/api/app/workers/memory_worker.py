@@ -28,8 +28,8 @@ async def _update_summary(session_id: str):
     if not messages:
         return
 
-    # Build summary from recent messages
-    # V1: simple concatenation, full model-based compression in Phase 6
+    # Keep summaries deterministic and bounded; model-generated summaries require
+    # a separate reviewed privacy policy before they can enter this lifecycle.
     parts = []
     for msg in messages[-10:]:
         role = "用户" if msg.get("role") == "user" else "AI"
@@ -93,43 +93,26 @@ async def _evaluate_and_store(user_id: str, content: str, session_id: str):
             except (ValueError, TypeError):
                 db_session_id = uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id))
 
+        from app.config.settings import settings
         from app.db.session import async_session
-        from app.db.models import Memory
+        from app.memory.lifecycle import consent_status_for_environment, store_memory
         async with async_session() as db:
-            memory = Memory(
+            memory_id = await store_memory(
+                db,
                 user_id=db_user_id,
                 session_id=db_session_id,
                 content=content[:500],
-                memory_type="fact",
                 importance_score=score,
+                source="chat",
+                source_actor="elder",
+                consent_status=consent_status_for_environment(settings.app_env),
             )
-            db.add(memory)
             await db.commit()
-            await db.refresh(memory)
             logger.info(f"Memory stored: score={score:.2f}, content={content[:50]}")
 
             try:
-                from app.config.settings import settings
                 if settings.enable_celery_tasks:
                     from app.workers.embedding_worker import generate_embedding
-                    generate_embedding.delay(str(memory.id))
+                    generate_embedding.delay(str(memory_id))
             except Exception as e:
                 logger.debug(f"Embedding enqueue skipped: {e}")
-
-
-@app.task(name="app.workers.memory_worker.daily_archive")
-def daily_archive():
-    """Archive old messages to MinIO. Full implementation in Phase 4C."""
-    logger.info("Daily archive task triggered (stub)")
-
-
-@app.task(name="app.workers.memory_worker.vector_cleanup")
-def vector_cleanup():
-    """Clean low-importance old vectors. Full implementation in Phase 4C."""
-    logger.info("Vector cleanup task triggered (stub)")
-
-
-@app.task(name="app.workers.memory_worker.trace_cold_archive")
-def trace_cold_archive():
-    """Archive old traces to MinIO. Full implementation in Phase 4C."""
-    logger.info("Trace cold archive task triggered (stub)")
