@@ -39,53 +39,72 @@ def login():
 
 
 def chat_turn(token, message, timeout=90):
-    ws = websocket.create_connection(ws_url, timeout=timeout)
-    ws.send(json.dumps({"type": "auth", "token": token, "agent_runtime": runtime}))
-    end = time.time() + 15
-    session_id = None
-    while time.time() < end:
-        msg = json.loads(ws.recv())
-        if msg.get("type") == "connected":
-            session_id = msg.get("session_id")
-            break
-    if not session_id:
-        ws.close()
-        raise SystemExit("no connected")
-    ws.send(json.dumps({"type": "user_message", "message": message, "session_id": session_id}))
-    events, tools, content = [], [], ""
-    risk_level = risk_msg = None
-    tools_used = []
-    end = time.time() + timeout
-    while time.time() < end:
-        ws.settimeout(max(1, min(20, end - time.time())))
-        try:
-            msg = json.loads(ws.recv())
-        except Exception:
+    for attempt in range(6):
+        ws = websocket.create_connection(ws_url, timeout=timeout)
+        ws.send(json.dumps({"type": "auth", "token": token, "agent_runtime": runtime}))
+        end = time.time() + 15
+        session_id = None
+        rate_limited = False
+        while time.time() < end:
+            try:
+                raw = ws.recv()
+            except Exception:
+                break
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            if msg.get("type") == "error" and msg.get("code") == "rate_limited":
+                rate_limited = True
+                break
+            if msg.get("type") == "connected":
+                session_id = msg.get("session_id")
+                break
+        if rate_limited or not session_id:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            time.sleep(5 + attempt * 3)
             continue
-        t = msg.get("type")
-        events.append(t)
-        if t == "risk_alert":
-            risk_level = msg.get("level")
-            risk_msg = msg.get("message")
-        elif t in ("first_reply", "delta"):
-            content += msg.get("text") or msg.get("content") or ""
-        elif t == "tool_status":
-            tools.append({"tool": msg.get("tool"), "status": msg.get("status")})
-        elif t == "final":
-            tools_used = msg.get("tools_used") or []
-            break
-        elif t == "error":
-            print("ERROR", msg)
-            break
-    ws.close()
-    return {
-        "events": events,
-        "content": content,
-        "tools": tools,
-        "tools_used": tools_used,
-        "risk_level": risk_level,
-        "risk_msg": risk_msg,
-    }
+        ws.send(json.dumps({"type": "user_message", "message": message, "session_id": session_id}))
+        events, tools, content = [], [], ""
+        risk_level = risk_msg = None
+        tools_used = []
+        end = time.time() + timeout
+        while time.time() < end:
+            ws.settimeout(max(1, min(20, end - time.time())))
+            try:
+                raw = ws.recv()
+            except Exception:
+                continue
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            t = msg.get("type")
+            events.append(t)
+            if t == "risk_alert":
+                risk_level = msg.get("level")
+                risk_msg = msg.get("message")
+            elif t in ("first_reply", "delta"):
+                content += msg.get("text") or msg.get("content") or ""
+            elif t == "tool_status":
+                tools.append({"tool": msg.get("tool"), "status": msg.get("status")})
+            elif t == "final":
+                tools_used = msg.get("tools_used") or []
+                break
+            elif t == "error":
+                print("ERROR", msg)
+                break
+        ws.close()
+        return {
+            "events": events,
+            "content": content,
+            "tools": tools,
+            "tools_used": tools_used,
+            "risk_level": risk_level,
+            "risk_msg": risk_msg,
+        }
+    raise SystemExit("ws_rate_limited_or_no_connected")
 
 
 token = login()
