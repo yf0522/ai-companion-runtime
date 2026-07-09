@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from app.tools.device_projection import infer_schedule_type_from_utterance
+
 logger = logging.getLogger(__name__)
 
 CARE_TASK_STATUSES = frozenset(
@@ -244,11 +246,13 @@ async def _update_task_schedule(
     task_id: str,
     due_at: datetime,
     title: str | None = None,
+    schedule_type: str = "once",
 ) -> dict[str, Any]:
     """Attach / refresh due_at (+ reminder) on an existing active CareTask."""
     from app.db.models import Reminder
     from app.db.session import async_session
 
+    st = schedule_type if schedule_type in {"daily", "once", "weekly", "interval"} else "once"
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     async with async_session() as db:
@@ -267,12 +271,13 @@ async def _update_task_schedule(
                 rem.next_fire_at = due_at
                 rem.is_active = True
                 rem.title = row.title
+                rem.schedule_type = st
         else:
             reminder = Reminder(
                 user_id=db_user_id,
                 title=row.title,
                 description=row.notes or f"caretask:{row.task_type}",
-                schedule_type="once",
+                schedule_type=st,
                 time_of_day=due_at,
                 next_fire_at=due_at,
                 is_active=True,
@@ -283,7 +288,9 @@ async def _update_task_schedule(
             row.reminder_id = reminder.id
         await db.commit()
         await db.refresh(row)
-        return task_to_dict(row)
+        data = task_to_dict(row)
+        data["schedule_type"] = st
+        return data
 
 async def resolve_task_ref(
     *,
@@ -340,6 +347,8 @@ async def create_care_task(
     notes: str | None = None,
     created_by: str = "chat",
     link_reminder: bool = True,
+    schedule_type: str | None = None,
+    query: str | None = None,
 ) -> dict[str, Any]:
     """Create or reuse an active CareTask with the same identity.
 
@@ -347,13 +356,16 @@ async def create_care_task(
     never silent-double-create. If a clearer ``due_at`` arrives on reuse, update
     the existing task schedule.
 
+    Reminder projection uses ``schedule_type`` (daily/once) inferred from
+    ``query`` when not provided — 「每天晚上8点吃降压药」 must not store once.
+
     Returns task dict plus optional ``_action``:
     ``caretask_create`` | ``caretask_reuse`` | ``caretask_clarify_create``.
     """
-    from app.db.models import CareTask, Reminder
-    from app.db.session import async_session
-
     title = (title or "").strip() or "吃药"
+    st = schedule_type or infer_schedule_type_from_utterance(query or title)
+    if st not in {"daily", "once", "weekly", "interval"}:
+        st = "once"
     existing = await find_active_by_fingerprint(
         user_id=user_id, title=title, task_type=task_type, due_at=due_at
     )
@@ -368,6 +380,7 @@ async def create_care_task(
                     task_id=str(existing["id"]),
                     due_at=due_at,
                     title=title,
+                    schedule_type=st,
                 )
                 updated["_action"] = "caretask_reuse"
                 updated["_schedule_updated"] = True
@@ -377,6 +390,7 @@ async def create_care_task(
         data = dict(existing)
         data["_action"] = "caretask_reuse"
         data["_schedule_updated"] = False
+        data["schedule_type"] = st
         return data
 
     near = await find_near_duplicate_candidates(
@@ -390,8 +404,13 @@ async def create_care_task(
                 "title": title,
                 "task_type": task_type,
                 "due_at": due_at.isoformat() if due_at else None,
+                "schedule_type": st,
             },
         }
+
+    from app.db.models import CareTask, Reminder
+    from app.db.session import async_session
+
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     status = infer_initial_status(due_at, now)
@@ -403,7 +422,7 @@ async def create_care_task(
                 user_id=db_user_id,
                 title=title,
                 description=notes or f"caretask:{task_type}",
-                schedule_type="once",
+                schedule_type=st,
                 time_of_day=due_at,
                 next_fire_at=due_at,
                 is_active=True,
@@ -428,6 +447,7 @@ async def create_care_task(
         await db.refresh(row)
         data = task_to_dict(row)
         data["_action"] = "caretask_create"
+        data["schedule_type"] = st
         return data
 
 

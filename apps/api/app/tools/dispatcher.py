@@ -116,26 +116,7 @@ class ToolDispatcher:
 
             if result.data and result.data.get("action"):
                 action = result.data["action"]
-                if action in {"reminder_create", "reminder_snooze"}:
-                    ws_data = {
-                        k: v
-                        for k, v in result.data.items()
-                        if k not in ("action", "display_time")
-                    }
-                    if action == "reminder_create":
-                        await stream_mgr.send_reminder_create(ws_data)
-                    else:
-                        await stream_mgr.send_reminder_snooze(ws_data)
-                elif action == "caretask_snooze" and isinstance(result.data.get("task"), dict):
-                    task = result.data["task"]
-                    await stream_mgr.send_reminder_snooze(
-                        {
-                            "reminder_id": task.get("reminder_id"),
-                            "label": task.get("title"),
-                            "snooze_minutes": result.data.get("snooze_minutes"),
-                            "next_fire_at": task.get("snooze_until") or task.get("due_at"),
-                        }
-                    )
+                await self._project_device_events(action, result.data, stream_mgr)
 
             if result.status == "success":
                 await stream_mgr.send_tool_status(name, "success")
@@ -198,3 +179,63 @@ class ToolDispatcher:
             return ToolResult(
                 tool_name=name, status="failed", display_text="", latency_ms=latency
             )
+
+    async def _project_device_events(
+        self,
+        action: str,
+        data: dict,
+        stream_mgr: StreamManager,
+    ) -> None:
+        """Map domain tool actions onto device-consumable reminder_* events."""
+        from app.tools.device_projection import (
+            caretask_device_cancel_payload,
+            caretask_device_create_payload,
+            caretask_device_snooze_payload,
+        )
+
+        if action in {"reminder_create", "reminder_snooze"}:
+            ws_data = {
+                k: v
+                for k, v in data.items()
+                if k not in ("action", "display_time")
+            }
+            if action == "reminder_create":
+                await stream_mgr.send_reminder_create(ws_data)
+            else:
+                await stream_mgr.send_reminder_snooze(ws_data)
+            return
+
+        task = data.get("task") if isinstance(data.get("task"), dict) else None
+
+        if action in {
+            "caretask_create",
+            "caretask_reuse",
+            "caretask_schedule_updated",
+        }:
+            if not task:
+                return
+            # Skip device create on plain reuse without schedule change (no new timer).
+            if action == "caretask_reuse" and not data.get("schedule_updated"):
+                return
+            payload = caretask_device_create_payload(
+                task,
+                schedule_type=data.get("schedule_type") or task.get("schedule_type"),
+                query=data.get("query"),
+            )
+            if payload:
+                await stream_mgr.send_reminder_create(payload)
+            return
+
+        if action == "caretask_snooze":
+            payload = caretask_device_snooze_payload(data)
+            if payload:
+                await stream_mgr.send_reminder_snooze(payload)
+            return
+
+        if action in {"caretask_complete", "caretask_cancel"}:
+            if not task:
+                return
+            payload = caretask_device_cancel_payload(task)
+            if payload:
+                await stream_mgr.send_reminder_cancel(payload)
+            return
