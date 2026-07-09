@@ -5,6 +5,10 @@ import { useRouter } from "next/navigation";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
+import {
+  AGENT_RUNTIME_OPTIONS,
+  useAgentRuntimeStore,
+} from "@/stores/agentRuntimeStore";
 import MessageBubble from "./MessageBubble";
 import Sidebar from "./Sidebar";
 
@@ -20,6 +24,10 @@ export default function ChatWindow() {
   const sendMessage = useWsStore((s) => s.sendMessage);
   const token = useAuthStore((s) => s.token);
   const clearAuth = useAuthStore((s) => s.clearAuth);
+  const agentRuntime = useAgentRuntimeStore((s) => s.runtime);
+  const setAgentRuntime = useAgentRuntimeStore((s) => s.setRuntime);
+  const activeRuntime = useWsStore((s) => s.activeRuntime);
+  const disconnect = useWsStore((s) => s.disconnect);
   const router = useRouter();
 
   useEffect(() => {
@@ -32,6 +40,15 @@ export default function ChatWindow() {
       useWsStore.getState().disconnect();
     };
   }, [connect, token, router]);
+
+  const handleRuntimeChange = (next: "harness" | "pi_experimental") => {
+    if (next === agentRuntime) return;
+    setAgentRuntime(next);
+    if (token) {
+      disconnect();
+      connect(token);
+    }
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -106,7 +123,34 @@ export default function ChatWindow() {
               <span className="text-[10px] text-gray-400">▾</span>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5">
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
+              <span>运行时</span>
+              <select
+                value={agentRuntime}
+                onChange={(e) =>
+                  handleRuntimeChange(
+                    e.target.value as "harness" | "pi_experimental"
+                  )
+                }
+                className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 outline-none focus:border-indigo-400"
+                title={
+                  AGENT_RUNTIME_OPTIONS.find((o) => o.id === agentRuntime)
+                    ?.description
+                }
+              >
+                {AGENT_RUNTIME_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {activeRuntime === "pi_experimental" && (
+              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                实验
+              </span>
+            )}
             <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`} />
             <span className="text-[11px] text-gray-500">
               {statusLabel[wsStatus]}

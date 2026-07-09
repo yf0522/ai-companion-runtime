@@ -37,6 +37,17 @@ python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000
 `--record` writes `docs/evidence/demo-run-YYYYMMDD.md` for diligence follow-up.
 Scenario mockups remain under `docs/evidence/` (Mock UI, not production screenshots).
 
+### Agent runtime (experimental)
+
+- **Default:** `harness` — production AgentHarness (risk-first orchestration, tools, memory).
+- **Experimental:** `pi_experimental` — selectable in chat UI or WS auth field `agent_runtime`; runs shared risk gate first, then Pi stub unless `ENABLE_PI_RUNTIME=1` + Node sidecar are deployed.
+
+```bash
+# WebSocket auth example
+{"type":"auth","token":"<JWT>","agent_runtime":"harness"}
+{"type":"auth","token":"<JWT>","agent_runtime":"pi_experimental"}
+```
+
 ## 0:00-0:18 Opening
 
 > “AI Companion Runtime is not just conversational AI.

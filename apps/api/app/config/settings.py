@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     asr_rate_limit_per_minute: int = 20
     tts_rate_limit_per_minute: int = 30
 
+    # Experimental Pi agent runtime (TypeScript sidecar — off by default)
+    enable_pi_runtime: bool = False
+    pi_sidecar_url: str = "http://127.0.0.1:8787"
+
     model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 
     def validate_security(self):

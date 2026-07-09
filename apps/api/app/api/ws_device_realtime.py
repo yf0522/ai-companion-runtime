@@ -44,7 +44,7 @@ from app.api.auth import decode_token
 from app.api.asr import _build_wav, _executor, _transcribe_sync
 from app.config.settings import settings
 from app.runtime import session_service
-from app.runtime.agent_harness import AgentHarness
+from app.runtime.agent_runtime import DEFAULT_RUNTIME, get_agent_runtime, normalize_runtime_name
 from app.runtime.device_stream_manager import DeviceStreamManager
 
 logger = logging.getLogger(__name__)
@@ -156,10 +156,12 @@ async def _run_device_harness(
     user_id: str,
     session_id: str,
     transcript: str,
+    agent_runtime: str = DEFAULT_RUNTIME,
 ) -> dict:
     stream_mgr = DeviceStreamManager(websocket)
     cancel_event = asyncio.Event()
-    return await AgentHarness().run(
+    runtime = get_agent_runtime(agent_runtime)
+    return await runtime.run(
         user_id=user_id,
         session_id=session_id,
         message=transcript,
@@ -191,12 +193,29 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
+    try:
+        agent_runtime = normalize_runtime_name(
+            data.get("agent_runtime") or data.get("runtime")
+        )
+    except ValueError as exc:
+        await websocket.send_json({
+            "type": "error",
+            "code": "invalid_runtime",
+            "message": str(exc),
+            "retry": False,
+        })
+        await websocket.close(code=4002, reason="Invalid agent runtime")
+        return
+
     session_id = await session_service.ensure_session(
         payload["sub"], data.get("session_id")
     )
-    await websocket.send_json(
-        {"type": "connected", "mode": "realtime", "session_id": session_id}
-    )
+    await websocket.send_json({
+        "type": "connected",
+        "mode": "realtime",
+        "session_id": session_id,
+        "agent_runtime": agent_runtime,
+    })
     logger.info(
         "Realtime device connected: user=%s session=%s", payload["sub"], session_id
     )
@@ -256,6 +275,7 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
                         user_id=payload["sub"],
                         session_id=session_id,
                         transcript=transcript,
+                        agent_runtime=agent_runtime,
                     )
                     asyncio.create_task(
                         session_service.increment_message_count(session_id)
