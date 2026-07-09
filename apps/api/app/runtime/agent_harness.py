@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from nanoid import generate as nanoid

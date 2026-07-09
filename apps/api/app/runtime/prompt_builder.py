@@ -88,7 +88,7 @@ class PromptBuilder:
         if memory.vectors:
             mem_texts = [m.get("content", "") for m in memory.vectors[:5] if m.get("content")]
             if mem_texts:
-                system_parts.append(f"\n相关记忆：\n" + "\n".join(f"- {t}" for t in mem_texts))
+                system_parts.append("\n相关记忆：\n" + "\n".join(f"- {t}" for t in mem_texts))
 
         # Assemble messages
         messages = [{"role": "system", "content": "\n".join(system_parts)}]

@@ -62,7 +62,7 @@ async def process_risk_notification(
                 select(EmergencyContact)
                 .where(
                     EmergencyContact.user_id == db_user_id,
-                    EmergencyContact.is_active == True,
+                    EmergencyContact.is_active.is_(True),
                 )
                 .order_by(EmergencyContact.priority)
             )

@@ -149,7 +149,6 @@ class EmotionEngine(BaseEngine):
         """Compute emotion trend by comparing with recent emotions in L0."""
         try:
             from app.storage.redis_client import get_redis
-            import json
 
             r = await get_redis()
             key = f"emotion_history:{session_id}"

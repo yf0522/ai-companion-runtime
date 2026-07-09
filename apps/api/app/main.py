@@ -35,7 +35,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Companion Runtime", version="0.1.0", lifespan=lifespan)
 
-from app.config.settings import settings as _settings
+from app.config.settings import settings as _settings  # noqa: E402
+from app.api.rate_limiter import RateLimitMiddleware  # noqa: E402
+
 _cors_origins = [o.strip() for o in _settings.cors_allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -44,8 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from app.api.rate_limiter import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
 
 # Mount Prometheus metrics

@@ -13,7 +13,6 @@ import os
 import struct
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
 try:
     import dashscope

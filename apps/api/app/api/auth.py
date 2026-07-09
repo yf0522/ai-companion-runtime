@@ -1,8 +1,9 @@
 import secrets
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from jose import jwt, JWTError
@@ -68,17 +69,15 @@ async def get_current_user(
     return payload
 
 
-import uuid as _uuid
-
 async def get_current_user_uuid(
     user: dict = Depends(get_current_user),
-) -> _uuid.UUID:
+) -> uuid.UUID:
     """FastAPI dependency: returns the authenticated user's ID as a validated uuid.UUID.
 
     Raises 401 if the sub claim is not a valid UUID.
     """
     try:
-        return _uuid.UUID(user["sub"])
+        return uuid.UUID(user["sub"])
     except (ValueError, TypeError):
         raise HTTPException(status_code=401, detail="Invalid user identity in token")
 
@@ -167,7 +166,7 @@ async def bind_family(code: str, user: dict = Depends(get_current_user)):
     from app.db.session import async_session
 
     async with async_session() as db:
-        binding = FamilyBinding(family_user_id=_uuid.UUID(user["sub"]), elder_user_id=_uuid.UUID(elder_user_id))
+        binding = FamilyBinding(family_user_id=uuid.UUID(user["sub"]), elder_user_id=uuid.UUID(elder_user_id))
         db.add(binding)
         await db.commit()
     return {"bound_to": elder_user_id}
