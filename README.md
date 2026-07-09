@@ -8,19 +8,34 @@ Last updated: 2026-07-09
 
 This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` is being consolidated here; application follow-up material should point reviewers to this repo and mention that consolidation explicitly.
 
+**Pitch boundary (safe):** a working eldercare companion **software** runtime with realtime chat, risk gating, reminder/action structures, family alert event persistence, and Trace observability. Treat live ESP32 closed-loop hardware, voice clone enrollment, and phone-OS intercept as separately evidenced roadmap items — not as shipped claims.
+
 | Area | Current status |
 |---|---|
 | WebSocket companion runtime | Implemented: `/ws/chat` protocol, trace IDs, first reply, deltas, tool status/results, and final messages. |
 | Analyzer pipeline | Implemented: intent, emotion, risk, personality, memory, prompt builder, and timeout-oriented harness flow. |
 | Risk detection | 已对接老龄场景类别：`health_emergency`、`scam_alert`、`emotional_low`；关键字/正则 + 否定词 + 安全上下文已由测试覆盖。 |
 | Model routing | Implemented: configurable model registry with primary/fallback/fast roles and OpenAI-compatible adapters. |
-| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. |
-| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; full ESP32 local trigger evidence still needs a captured hardware test pass. |
-| Device realtime WebSocket | 已落地，并在单测中验证关键行为（JWT、PCM 收发、ASR 回退、模型/TTS 流转）。依赖如 DashScope 的集成验证需补充完整运行环境。 |
-| Hardware device validation | 先前仓库中有 ESP32-S3 构建与二次唤醒验证记录；当前仓未包含可复现硬件日志文件，需补充后再标为完全通过。 |
-| Family notification | `/api/notifications` 已接入持久化通知事件（`notification_log`）；手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
-| Investor demo material | 已补充在 [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单见 [docs/device-test.md](docs/device-test.md)；公开演示图片与 Mock 免责声明见 [docs/evidence/README.md](docs/evidence/README.md)。 |
+| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. Tool-call rows in Trace are landing with the Trace persistence workstream. |
+| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields. Chat→DB reminder persistence is landing with the reminder persistence workstream. |
+| Long-term memory (L2/L3) | L0/L1 Redis recall is in main. DB profile + importance-ranked memory recall is landing (importance top-N; not full vector search yet). |
+| Device realtime WebSocket | Route exists with JWT/PCM/ASR/TTS protocol tests. Routing transcripts through `AgentHarness` (risk/tools/trace/notify) is landing with the device harness workstream. |
+| Audio HTTP endpoints | ASR/TTS routes exist. JWT + size/rate limits are landing with the audio hardening workstream. |
+| Family notification | `/api/notifications` 已接入持久化通知事件（`notification_log`）。Awaited escalation + Trace visibility is landing; 手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
+| Firmware protocol | `firmware/` source aligns to `audio_start`/`audio_end` + backend event parse + NVS reminders. Expected protocol sequence docs are annotated harness text — live board serial capture still required before claiming hardware closed loop. |
+| Demo / CI | Repeatable smoke scripts and backend/web CI workflows are landing as independent workstreams. |
+| Investor demo material | [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单 [docs/device-test.md](docs/device-test.md)；Mock 场景图 [docs/evidence/README.md](docs/evidence/README.md)。 |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
+
+### Verified now vs roadmap
+
+| Verified now (main + tests) | Roadmap / not claimed |
+|---|---|
+| Chat WS + risk categories + Trace events | Production voice clone / enrollment |
+| Reminder structured device payload | Phone OS call intercept |
+| NotificationLog persistence API | Multi-channel push provider + delivery receipts |
+| Device WS protocol tests (stubbed ASR/TTS) | Flashed ESP32 two-turn serial as “fully verified” |
+| Investor Mock UI under `docs/evidence/` | Treating Mock UI as production screenshots |
 
 ## Demo evidence
 
