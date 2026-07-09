@@ -33,6 +33,7 @@ interface ChatState {
     memoryUpdated: boolean;
   }) => void;
   setError: (message: string) => void;
+  resetStreaming: () => void;
   clearMessages: () => void;
 }
 
@@ -127,6 +128,18 @@ export const useChatStore = create<ChatState>()(
         msgs[msgs.length - 1] = { ...last, content: message, status: "error" };
       }
       return { messages: msgs, isStreaming: false };
+    });
+  },
+
+  resetStreaming: () => {
+    set((s) => {
+      if (!s.isStreaming) return {};
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "assistant" && last.status === "streaming") {
+        msgs[msgs.length - 1] = { ...last, status: "error", content: last.content || "(连接中断，请重试)" };
+      }
+      return { messages: msgs, isStreaming: false, currentTraceId: null };
     });
   },
 

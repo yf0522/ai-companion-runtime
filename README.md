@@ -1,6 +1,26 @@
 # AI Companion Runtime
 
-实时 AI 情绪陪伴 + 通用助手系统。基于 WebSocket 的流式对话，支持情绪识别、风险分级、工具调用、长期记忆、模型热插拔、全链路 Trace 观测。
+面向老龄照护场景的实时 AI 陪伴 + 风险分级运行时。基于 WebSocket 的流式对话，支持风险识别（健康紧急/诈骗识别/情绪低落）、工具调用、长期记忆、模型热插拔与全链路 Trace 观测。
+
+## Current verified status
+
+Last updated: 2026-07-09
+
+This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` is being consolidated here; application follow-up material should point reviewers to this repo and mention that consolidation explicitly.
+
+| Area | Current status |
+|---|---|
+| WebSocket companion runtime | Implemented: `/ws/chat` protocol, trace IDs, first reply, deltas, tool status/results, and final messages. |
+| Analyzer pipeline | Implemented: intent, emotion, risk, personality, memory, prompt builder, and timeout-oriented harness flow. |
+| Risk detection | 已对接老龄场景类别：`health_emergency`、`scam_alert`、`emotional_low`；关键字/正则 + 否定词 + 安全上下文已由测试覆盖。 |
+| Model routing | Implemented: configurable model registry with primary/fallback/fast roles and OpenAI-compatible adapters. |
+| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. |
+| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; full ESP32 local trigger evidence still needs a captured hardware test pass. |
+| Device realtime WebSocket | 已落地，并在单测中验证关键行为（JWT、PCM 收发、ASR 回退、模型/TTS 流转）。依赖如 DashScope 的集成验证需补充完整运行环境。 |
+| Hardware device validation | 先前仓库中有 ESP32-S3 构建与二次唤醒验证记录；当前仓未包含可复现硬件日志文件，需补充后再标为完全通过。 |
+| Family notification | 提醒链路可返回结构化类别；`/api/notifications` 与 `/api/reminders` 已接入（演示占位，需持久化与通知适配器） |
+| Investor demo material | 已补充在 `docs/investor-demo.md`；设备验证清单在 `docs/device-test.md`，按当前依赖条件区分“协议验证”和“真实链路验证”。 |
+| License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
 ## Current verified status
 
@@ -207,7 +227,7 @@ ai-companion-runtime/
 ├── apps/
 │   ├── api/                    # FastAPI 后端
 │   │   └── app/
-│   │       ├── api/            # HTTP/WS 端点 (ws_chat, traces, auth, memory)
+│   │       ├── api/            # HTTP/WS 端点 (ws_chat, ws_device_realtime, traces, auth, memory, alerts)
 │   │       ├── config/         # YAML 配置 (models, harness, personality, risk_rules)
 │   │       ├── runtime/        # 核心运行时 (gateway, harness, stream, prompt_builder)
 │   │       ├── engines/        # 分析引擎 (intent, emotion, risk, personality, memory)
@@ -218,10 +238,11 @@ ai-companion-runtime/
 │   │       ├── storage/        # Redis + MinIO 客户端
 │   │       └── db/             # SQLAlchemy + Alembic
 │   └── web/                    # Next.js 前端
-│       ├── app/                # 页面 (chat, traces, login)
+│       ├── app/                # 页面 (chat, traces, login, notifications)
 │       ├── components/         # 组件 (ChatWindow, Sidebar, MessageBubble, TraceTimeline)
 │       ├── stores/             # Zustand (chatStore, wsStore, authStore)
 │       └── lib/                # WebSocket / API 客户端
+├── firmware/                   # 设备端（来自 elder-companion-runtime 合并与对齐后的目录/历史）
 ├── infra/                      # Docker Compose + Prometheus + Grafana
 └── CLAUDE.md                   # 项目开发规范
 ```
@@ -259,10 +280,13 @@ ai-companion-runtime/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | WS | `/ws/chat` | WebSocket 聊天 |
+| WS | `/ws/device/realtime` | 设备端实时语音路由 |
 | GET | `/api/traces/{trace_id}` | 查询 Trace 链路 |
 | GET | `/api/traces` | Trace 列表 |
 | POST | `/api/auth/register` | 用户注册 |
 | POST | `/api/auth/login` | 用户登录 |
+| GET | `/api/reminders` | 提醒事件查询（演示占位，待持久化） |
+| GET | `/api/notifications` | 家属通知查询（演示占位，待通知 provider） |
 | GET | `/api/memory/{user_id}/profile` | 用户画像 |
 | GET | `/api/memory/{user_id}/memories` | 记忆列表 |
 | GET | `/health` | 健康检查 |

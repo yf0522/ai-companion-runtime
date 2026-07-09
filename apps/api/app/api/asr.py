@@ -12,9 +12,25 @@ import os
 import struct
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
-import dashscope
-from dashscope.audio.asr import Recognition, RecognitionResult
+try:
+    import dashscope
+    from dashscope.audio.asr import Recognition, RecognitionResult
+except Exception:  # pragma: no cover - optional dependency in local tests
+    dashscope = None  # type: Any
+
+    class RecognitionResult(dict):
+        status_code: int = 500
+        output: dict[str, list[dict[str, str]]] = {}
+
+    class Recognition:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("dashscope package is not available in this environment")
+
+        def call(self, wav_path: str) -> RecognitionResult:  # noqa: ARG002
+            raise RuntimeError("dashscope package is not available in this environment")
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -55,6 +71,10 @@ def _build_wav(pcm_data: bytes, sample_rate: int = 16000, channels: int = 1, bit
 
 def _transcribe_sync(wav_data: bytes, sample_rate: int) -> str:
     """Run DashScope Recognition synchronously (called from thread pool)."""
+    if dashscope is None:
+        logger.error("ASR: dashscope dependency missing")
+        return ""
+
     # Write WAV data to temp file (Recognition.call() requires a file path)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(wav_data)

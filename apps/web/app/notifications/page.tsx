@@ -1,169 +1,175 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuthStore } from "@/stores/authStore";
+
+type Reminder = {
+  id: string;
+  label: string;
+  timer_type: string;
+  repeat_mode: string;
+  duration_sec: number;
+  hour: number | null;
+  minute: number | null;
+  created_at: string;
+  status: string;
+};
+
+type NotificationItem = {
+  id: string;
+  category: string;
+  title: string;
+  message: string;
+  severity: string;
+  status: string;
+  created_at: string;
+};
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-function getAuthHeaders(): HeadersInit {
+const CATEGORY_META: Record<string, { label: string; tone: string }> = {
+  scam_alert: { label: "诈骗预警", tone: "bg-red-100 text-red-700 border-red-200" },
+  emotional_low: { label: "情绪关怀", tone: "bg-yellow-100 text-yellow-700 border-yellow-200" },
+  health_emergency: { label: "健康紧急", tone: "bg-orange-100 text-orange-700 border-orange-200" },
+};
+
+function formatTime(value: string) {
   try {
-    const raw = localStorage.getItem("companion-auth");
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const token = parsed?.state?.token;
-      if (token) {
-        return { Authorization: `Bearer ${token}` };
-      }
-    }
+    return new Date(value).toLocaleString("zh-CN");
   } catch {
-    // ignore
-  }
-  return {};
-}
-
-interface Notification {
-  id: string;
-  risk_level: string;
-  risk_category: string;
-  summary: string;
-  webhook_status: string | null;
-  created_at: string | null;
-}
-
-const riskBadgeStyles: Record<string, string> = {
-  critical: "bg-red-100 text-red-700 border-red-200",
-  high: "bg-orange-100 text-orange-700 border-orange-200",
-  medium: "bg-yellow-100 text-yellow-700 border-yellow-200",
-  low: "bg-green-100 text-green-700 border-green-200",
-};
-
-const riskLabels: Record<string, string> = {
-  critical: "紧急",
-  high: "高风险",
-  medium: "中风险",
-  low: "低风险",
-};
-
-const categoryLabels: Record<string, string> = {
-  health_emergency: "健康紧急",
-  scam: "诈骗风险",
-  emotional: "情绪异常",
-  suicide: "自伤风险",
-  abuse: "受虐风险",
-};
-
-function formatTime(iso: string | null): string {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
+    return value;
   }
 }
 
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const token = useAuthStore((state) => state.token);
+  const clearAuth = useAuthStore((state) => state.clearAuth);
+  const router = useRouter();
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
 
   useEffect(() => {
-    async function load() {
+    if (!token) {
+      router.push("/login");
+      return;
+    }
+
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const load = async () => {
+      setLoading(true);
+      setError(null);
       try {
-        const res = await fetch(`${API_URL}/api/notifications`, {
-          headers: getAuthHeaders(),
-        });
-        if (res.status === 401) {
-          router.push("/login");
-          return;
+        const [r1, r2] = await Promise.all([
+          fetch(`${API_URL}/api/reminders`, { headers }),
+          fetch(`${API_URL}/api/notifications`, { headers }),
+        ]);
+
+        if (!r1.ok || !r2.ok) {
+          if (r1.status === 401 || r2.status === 401) {
+            clearAuth();
+            router.push("/login");
+            return;
+          }
+          throw new Error("接口请求失败");
         }
-        if (!res.ok) throw new Error("Failed to load notifications");
-        const data = await res.json();
-        setNotifications(data);
-      } catch (e: any) {
-        setError(e.message || "Failed to load");
+
+        const reminderData = await r1.json();
+        const notificationData = await r2.json();
+        setReminders(reminderData.items || []);
+        setNotifications(notificationData.items || []);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "加载失败");
       } finally {
         setLoading(false);
       }
-    }
+    };
+
     load();
-  }, [router]);
+  }, [token, clearAuth, router]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-2xl px-6 py-8">
-        {/* Header */}
-        <div className="mb-6">
-          <a href="/chat" className="text-sm text-indigo-500 hover:underline">
-            &larr; 返回聊天
-          </a>
-          <h1 className="mt-2 text-2xl font-bold text-gray-800">风险通知</h1>
+    <div className="mx-auto min-h-screen max-w-4xl px-4 py-6">
+      <div className="mb-5 flex items-center justify-between">
+        <div>
+          <h1 className="text-[28px] font-semibold text-gray-800">
+            家属与提醒看板
+          </h1>
           <p className="mt-1 text-sm text-gray-500">
-            系统检测到的风险事件记录
+            风险分类页面与后端字段保持一致：scam_alert / emotional_low / health_emergency
           </p>
         </div>
+        <Link href="/chat" className="text-sm text-indigo-500 hover:underline">
+          返回聊天
+        </Link>
+      </div>
 
-        {/* Error */}
-        {error && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-            {error}
-          </div>
-        )}
+      {loading ? (
+        <p className="text-sm text-gray-500">加载中...</p>
+      ) : error ? (
+        <p className="text-sm text-red-500">{error}</p>
+      ) : null}
 
-        {/* Loading */}
-        {loading && (
-          <div className="flex items-center justify-center py-20">
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
-          </div>
-        )}
-
-        {/* Empty state */}
-        {!loading && notifications.length === 0 && !error && (
-          <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-400">
-            暂无风险通知
-          </div>
-        )}
-
-        {/* Notification List */}
-        {!loading && notifications.length > 0 && (
-          <div className="space-y-3">
-            {notifications.map((n) => (
-              <div
-                key={n.id}
-                className="rounded-xl border border-gray-200 bg-white p-4"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
-                        riskBadgeStyles[n.risk_level] ||
-                        "bg-gray-100 text-gray-600 border-gray-200"
-                      }`}
-                    >
-                      {riskLabels[n.risk_level] || n.risk_level}
-                    </span>
-                    <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500">
-                      {categoryLabels[n.risk_category] || n.risk_category}
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-gray-400">
-                    {formatTime(n.created_at)}
-                  </span>
+      <section className="mb-8 rounded-xl border bg-white p-4">
+        <h2 className="mb-3 text-sm font-semibold text-gray-700">提醒事件</h2>
+        {reminders.length === 0 ? (
+          <p className="text-sm text-gray-500">暂无提醒事件</p>
+        ) : (
+          <div className="space-y-2">
+            {reminders.map((item) => (
+              <div key={item.id} className="rounded-lg border p-3 text-sm">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="font-medium text-gray-700">{item.label}</span>
+                  <span className="text-xs text-gray-400">{item.status}</span>
                 </div>
-                <p className="mt-2 text-sm leading-relaxed text-gray-700">
-                  {n.summary}
-                </p>
+                <div className="text-xs text-gray-500">
+                  类型: {item.timer_type} · 重复: {item.repeat_mode} · 创建:
+                  {formatTime(item.created_at)}
+                </div>
+                <div className="text-xs text-gray-500">
+                  {item.hour != null && item.minute != null ? `时间: ${item.hour}:${String(item.minute).padStart(2, "0")} ` : ""}
+                  {item.duration_sec > 0 ? `倒计时: ${item.duration_sec}s` : ""}
+                </div>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </section>
+
+      <section className="rounded-xl border bg-white p-4">
+        <h2 className="mb-3 text-sm font-semibold text-gray-700">家属通知</h2>
+        {notifications.length === 0 ? (
+          <p className="text-sm text-gray-500">暂无待处理通知</p>
+        ) : (
+          <div className="space-y-2">
+            {notifications.map((item) => {
+              const meta = CATEGORY_META[item.category] || {
+                label: item.category || "告警",
+                tone: "bg-gray-100 text-gray-700 border-gray-200",
+              };
+              return (
+                <div key={item.id} className="rounded-lg border p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className={`rounded-full border px-2 py-0.5 text-xs ${meta.tone}`}>
+                      {meta.label}
+                    </span>
+                    <span className="text-xs text-gray-400">{item.status}</span>
+                  </div>
+                  <div className="text-sm font-medium text-gray-700">{item.title}</div>
+                  <p className="mt-1 text-sm text-gray-500">{item.message}</p>
+                  <div className="mt-2 text-xs text-gray-400">
+                    severity: {item.severity} · {formatTime(item.created_at)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

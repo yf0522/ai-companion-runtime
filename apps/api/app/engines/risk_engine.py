@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -78,44 +77,46 @@ class RiskEngine(BaseEngine):
         if self._is_safe_context(message):
             return RiskResult(level="low", category="none", confidence=0.9)
 
-        # Check critical (highest priority)
+        # Critical: health emergency
         critical = rules.get("critical", {})
         for kw in critical.get("keywords", []):
             if kw in message and not self._is_negated(message, kw):
                 return RiskResult(
                     level="critical",
-                    category="self_harm",
+                    category=critical.get("category", "health_emergency"),
                     confidence=0.95,
                     triggered_rules=[f"keyword:{kw}"],
                 )
 
-        # Check high
+        # High: sub-categories (scam / health)
         high = rules.get("high", {})
-        for kw in high.get("keywords", []):
-            if kw in message and not self._is_negated(message, kw):
-                return RiskResult(
-                    level="high",
-                    category="self_harm",
-                    confidence=0.85,
-                    triggered_rules=[f"keyword:{kw}"],
-                )
-        for pattern in high.get("patterns", []):
-            m = re.search(pattern, message)
-            if m and not self._is_negated(message, m.group()):
-                return RiskResult(
-                    level="high",
-                    category="self_harm",
-                    confidence=0.80,
-                    triggered_rules=[f"pattern:{pattern}"],
-                )
+        for cat_name, cat_rules in high.get("categories", {}).items():
+            category = "health_emergency" if cat_name == "health_concern" else cat_name
+            for kw in cat_rules.get("keywords", []):
+                if kw in message and not self._is_negated(message, kw):
+                    return RiskResult(
+                        level="high",
+                        category=category,
+                        confidence=0.85,
+                        triggered_rules=[f"keyword:{kw}"],
+                    )
+            for pattern in cat_rules.get("patterns", []):
+                m = re.search(pattern, message)
+                if m and not self._is_negated(message, m.group()):
+                    return RiskResult(
+                        level="high",
+                        category=category,
+                        confidence=0.80,
+                        triggered_rules=[f"pattern:{pattern}"],
+                    )
 
-        # Check medium (now loaded from YAML)
+        # Medium: emotional low
         medium = rules.get("medium", {})
         for kw in medium.get("keywords", []):
             if kw in message and not self._is_negated(message, kw):
                 return RiskResult(
                     level="medium",
-                    category="sensitive",
+                    category=medium.get("category", "emotional_low"),
                     confidence=0.6,
                     triggered_rules=[f"medium_keyword:{kw}"],
                 )

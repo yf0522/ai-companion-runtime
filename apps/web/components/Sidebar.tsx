@@ -1,6 +1,8 @@
 "use client";
 
 import { useChatStore } from "@/stores/chatStore";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 interface Props {
   isOpen: boolean;
@@ -9,6 +11,12 @@ interface Props {
 
 export default function Sidebar({ isOpen, onToggle }: Props) {
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const pathname = usePathname();
+
+  const navItems = [
+    { href: "/chat", label: "聊天" },
+    { href: "/notifications", label: "家属通知" },
+  ];
 
   if (!isOpen) return null;
 
@@ -29,6 +37,22 @@ export default function Sidebar({ isOpen, onToggle }: Props) {
       <div className="flex-1 overflow-y-auto p-2">
         <div className="px-2 pb-1 pt-2 text-[11px] font-medium text-white/40">
           今天
+        </div>
+        {navItems.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`mb-px block truncate rounded-lg px-3 py-2 text-[13px] transition ${
+              pathname === item.href
+                ? "bg-white/[0.16] text-white"
+                : "text-white/80 hover:bg-white/[0.08]"
+            }`}
+          >
+            {item.label}
+          </Link>
+        ))}
+        <div className="mt-2 px-2 pb-1 pt-2 text-[11px] font-medium text-white/40">
+          会话
         </div>
         <div className="mb-px cursor-pointer truncate rounded-lg bg-white/[0.12] px-3 py-2 text-[13px] text-white">
           当前对话

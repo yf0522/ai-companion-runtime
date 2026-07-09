@@ -1,49 +1,66 @@
 rules:
   critical:
+    category: health_emergency
     keywords:
-      - "不想活了"
-      - "想死"
-      - "自杀"
-      - "结束生命"
-      - "去死"
-      - "想si"
-      - "自sha"
-      - "suicide"
-      - "kill myself"
-      - "want to die"
-    action: fixed_safety_message
-    notify: admin
+      - "胸口疼"
+      - "胸闷喘不上气"
+      - "喘不上气"
+      - "摔倒了站不起来"
+      - "头晕眼前发黑"
+      - "说不出话"
+      - "半边身体不能动"
+      - "心脏疼"
+      - "呼吸困难"
+      - "晕倒"
+    action: emergency_response
+    notify: emergency_contact
     block_tools: true
 
   high:
-    keywords:
-      - "活着没意思"
-      - "太痛苦了"
-      - "撑不下去"
-      - "好想消失"
-      - "世界没有我会更好"
-      - "不想活"
-      - "了结"
-    patterns:
-      - "(?:想|要|去).{0,4}(?:死|走|消失|解脱)"
-      - "(?:活着|人生).{0,6}(?:没意思|没意义|没希望)"
-      - "(?:不想|不要).{0,4}(?:活|在这个世界)"
-    action: safety_template
-    include_hotline: true
+    categories:
+      scam_alert:
+        keywords:
+          - "转钱"
+          - "汇款"
+          - "公安局打电话"
+          - "银行卡密码"
+          - "中奖"
+          - "保证金"
+          - "安全账户"
+          - "不要告诉别人"
+          - "验证码发给我"
+          - "冻结你的账户"
+        patterns:
+          - "(?:让|要|叫).{0,6}(?:转账|汇款|打钱|转钱)"
+          - "(?:公安|检察|法院).{0,6}(?:打电话|来电|通知)"
+      health_emergency:
+        keywords:
+          - "这两天一直头疼"
+          - "吃不下饭好几天"
+          - "晚上老睡不着"
+          - "腿肿"
+          - "血压特别高"
+          - "血糖降不下来"
+          - "连着好几天不舒服"
+        action: alert_and_notify
+        notify: family
+    action: alert_and_notify
+    notify: family
     block_tools: true
 
   medium:
+    category: emotional_low
     keywords:
-      - "绝望"
-      - "无助"
-      - "没有希望"
-      - "看不到未来"
-      - "太痛苦"
-      - "活着好累"
-      - "人生没意义"
-      - "好想哭"
-      - "受够了"
-    action: add_care_guidance
+      - "没人跟我说话"
+      - "一个人好无聊"
+      - "孩子好久没来了"
+      - "老了不中用"
+      - "给人添麻烦"
+      - "活着没意思"
+      - "不想动"
+      - "好久没出门了"
+      - "没人记得我"
+    action: companion_and_notify
 
 # Words that negate risk keywords — if found before a keyword, suppress the match
 negation_words:
@@ -57,12 +74,11 @@ negation_words:
 
 # Patterns that look risky but are actually benign (false positive suppression)
 safe_context_patterns:
-  - "死胡同"
   - "死机"
+  - "笑死"
   - "死循环"
   - "打死不"
   - "气死了"
-  - "笑死"
   - "累死"
   - "饿死"
   - "无聊死"
@@ -72,5 +88,6 @@ safety_hotline:
   text: "如果你正在经历困难，可以拨打 24 小时心理援助热线：400-161-9995"
 
 safety_messages:
-  critical: "我注意到你可能正在经历很大的困难。你的感受很重要，请你记住你不是一个人。如果你现在需要帮助，请拨打 24 小时心理援助热线：400-161-9995。"
-  high: "我听到你了，你现在的感受一定很不容易。如果你愿意，可以跟我多聊聊。如果你感觉需要专业的支持，24 小时心理援助热线随时可以联系：400-161-9995。"
+  critical: "先别动，坐下来慢慢呼吸。我已经通知您的家人了，他们马上会联系您。如果情况紧急，请让身边的人帮忙拨打120。"
+  high: "这个听起来可能是骗人的，千万不要转钱或者告诉对方密码！我帮您通知家人确认一下。"
+  medium: "我听到你了。今天你可能有点低落，我们先慢慢聊。"

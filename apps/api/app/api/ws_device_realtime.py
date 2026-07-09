@@ -5,9 +5,40 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
-import dashscope
-from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
+try:
+    import dashscope
+    from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
+except Exception:  # pragma: no cover - optional runtime dependency in local/dev tests
+    dashscope = None  # type: Any
+
+    class RecognitionCallback:
+        def on_event(self, result: object) -> None:
+            return None
+
+        def on_complete(self) -> None:
+            return None
+
+        def on_error(self, result: object) -> None:
+            return None
+
+    class RecognitionResult(dict):
+        def get_sentence(self) -> list[dict[str, Any]]:
+            return []
+
+    class Recognition:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("dashscope package is not available in this environment")
+
+        def start(self) -> None:
+            raise RuntimeError("dashscope package is not available in this environment")
+
+        def send_audio_frame(self, frame: bytes) -> None:
+            return None
+
+        def stop(self) -> None:
+            raise RuntimeError("dashscope package is not available in this environment")
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.auth import decode_token

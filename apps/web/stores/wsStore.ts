@@ -34,7 +34,12 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Status changes
     client.on("_status", (data) => {
-      set({ status: data.status as WsStatus });
+      const newStatus = data.status as WsStatus;
+      set({ status: newStatus });
+      // Reset streaming state on disconnect to unblock the send button
+      if (newStatus === "disconnected" || newStatus === "reconnecting" || newStatus === "failed") {
+        useChatStore.getState().resetStreaming();
+      }
     });
 
     // Connected

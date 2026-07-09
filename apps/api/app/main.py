@@ -11,7 +11,7 @@ from app.api.memory import router as memory_router
 from app.api.asr import router as asr_router
 from app.api.tts import router as tts_router
 from app.api.ws_device_realtime import router as ws_device_realtime_router
-from app.api.reminder_api import router as reminder_router
+from app.api.alerts import router as alerts_router
 from app.observability.logger import setup_logging
 from app.observability.trace_service import setup_otel
 
@@ -56,7 +56,7 @@ app.include_router(traces_router, prefix="/api")
 app.include_router(sessions_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
-app.include_router(reminder_router, prefix="/api")
+app.include_router(alerts_router, prefix="/api")
 app.include_router(asr_router)
 app.include_router(tts_router)
 
