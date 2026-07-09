@@ -26,25 +26,32 @@ export default function ChatWindow() {
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const agentRuntime = useAgentRuntimeStore((s) => s.runtime);
   const setAgentRuntime = useAgentRuntimeStore((s) => s.setRuntime);
+  const hydrateRuntime = useAgentRuntimeStore((s) => s.hydrate);
+  const runtimeHydrated = useAgentRuntimeStore((s) => s.hydrated);
   const activeRuntime = useWsStore((s) => s.activeRuntime);
   const disconnect = useWsStore((s) => s.disconnect);
   const router = useRouter();
+
+  useEffect(() => {
+    hydrateRuntime();
+  }, [hydrateRuntime]);
 
   useEffect(() => {
     if (!token) {
       router.push("/login");
       return;
     }
+    if (!runtimeHydrated) return;
     connect(token);
     return () => {
       useWsStore.getState().disconnect();
     };
-  }, [connect, token, router]);
+  }, [connect, token, router, runtimeHydrated]);
 
   const handleRuntimeChange = (next: "harness" | "pi_experimental") => {
     if (next === agentRuntime) return;
     setAgentRuntime(next);
-    if (token) {
+    if (token && runtimeHydrated) {
       disconnect();
       connect(token);
     }

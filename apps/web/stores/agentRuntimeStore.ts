@@ -30,15 +30,22 @@ function readStoredRuntime(): AgentRuntimeId {
 
 interface AgentRuntimeState {
   runtime: AgentRuntimeId;
+  hydrated: boolean;
   setRuntime: (runtime: AgentRuntimeId) => void;
+  hydrate: () => void;
 }
 
+/** Default harness on SSR + first client paint to avoid select title hydration mismatch. */
 export const useAgentRuntimeStore = create<AgentRuntimeState>((set) => ({
-  runtime: readStoredRuntime(),
+  runtime: "harness",
+  hydrated: false,
+  hydrate: () => {
+    set({ runtime: readStoredRuntime(), hydrated: true });
+  },
   setRuntime: (runtime) => {
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, runtime);
     }
-    set({ runtime });
+    set({ runtime, hydrated: true });
   },
 }));
