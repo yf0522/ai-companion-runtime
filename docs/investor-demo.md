@@ -11,16 +11,40 @@ For investor-facing scenario mockups (voice trust, daily memory summary, hardwar
 
 ## Setup
 
-- Backend API running: `http://localhost:8000`
-- Web console running: `http://localhost:3000`
+Local demo ports (this machine’s usual layout):
+
+| Service | URL |
+|---------|-----|
+| Web | `http://localhost:3000` |
+| API (local uvicorn) | `http://localhost:8001` |
+| API (docker-compose) | `http://localhost:8000` |
+| Pi sidecar (experimental) | `http://127.0.0.1:8787` |
+
 - Trace view open, waiting for a new trace ID
-- Device or device-simulated WS client connected
+- Device or device-simulated WS client connected (`docs/device-test.md`)
 - Pre-configured elderly user profile in memory:
   - 慢病用药：晚上 20:00 吃降压药
   - 近期就诊提醒/作息
   - 家属联系人已开启
 - Prepared expected categories:
   - `health_emergency`, `scam_alert`, `emotional_low`
+
+### Models (current demo)
+
+- **Primary / fallback / fast** in `apps/api/app/config/models.yaml` use **Gemini** (`gemini-2.5-flash` / `gemini-2.5-flash-lite`) via `GOOGLE_API_KEY` (or `GEMINI_API_KEY`).
+- Qwen (`QWEN_API_KEY`) remains supported by the adapter registry but is **not** the current demo primary — do not expect Qwen latency/cost numbers unless you switch `models.yaml`.
+
+### Latency regression path
+
+```bash
+cd apps/api
+python scripts/latency_bench.py --iterations 5
+# Optional: refresh CI baseline (mocked adapters — no live keys)
+python scripts/latency_bench.py --iterations 5 --update-baseline ../../docs/evidence/latency-baseline.json
+pytest -q tests/test_latency_bench.py
+```
+
+CI: `.github/workflows/latency.yml` fails when p95 regresses >20% vs `docs/evidence/latency-baseline.json`.
 
 ### Repeatable smoke (optional but recommended)
 
@@ -29,9 +53,9 @@ For investor-facing scenario mockups (voice trust, daily memory summary, hardwar
 python scripts/demo_smoke.py --dry-run
 python scripts/device_ws_smoke.py --dry-run
 
-# Live against local API
-python scripts/demo_smoke.py --base-url http://127.0.0.1:8000 --record
-python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000
+# Live against local API (prefer 8001 for uvicorn; 8000 for docker-compose)
+python scripts/demo_smoke.py --base-url http://127.0.0.1:8001 --record
+python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8001
 ```
 
 `--record` writes `docs/evidence/demo-run-YYYYMMDD.md` for diligence follow-up.
@@ -39,8 +63,10 @@ Scenario mockups remain under `docs/evidence/` (Mock UI, not production screensh
 
 ### Agent runtime (experimental)
 
-- **Default:** `harness` — production AgentHarness (risk-first orchestration, tools, memory).
-- **Experimental:** `pi_experimental` — selectable in chat UI or WS auth field `agent_runtime`; runs shared risk gate first, then Pi stub unless `ENABLE_PI_RUNTIME=1` + Node sidecar are deployed.
+- **Default / diligence preferred:** `harness` — production AgentHarness (risk-first orchestration, tools, memory, device projection).
+- **Experimental:** `pi_experimental` — selectable in chat UI or WS auth field `agent_runtime`; shared risk gate first, then Pi sidecar when `ENABLE_PI_RUNTIME=1`.
+- Pi tool loop uses `TOOL_BRIDGE_URL` (must point at the companion API `/api` base, e.g. `http://127.0.0.1:8001/api`). In production, set `TOOL_BRIDGE_TOKEN` (required when `APP_ENV=production`).
+- Prefer **harness** for investor demos that need CareTask → device `reminder_*` projection; Pi bridge executes tools and records Trace `tool_calls`, but does not yet push device WS events by itself.
 
 ```bash
 # WebSocket auth example
