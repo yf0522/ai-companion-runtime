@@ -329,20 +329,25 @@ class CareTaskTool(ToolBase):
             query=query or None,
         )
         if resolved.kind == "none":
+            already_done = bool(getattr(resolved, "already_done", False))
             reason = (
                 "already_done"
-                if getattr(resolved, "already_done", False)
+                if already_done
                 else "no_active_care_task"
             )
             return ToolResult(
                 tool_name=self.name,
-                status="failed",
+                status="success" if action == "complete" and already_done else "failed",
                 display_text=_none_resolve_display(verb_cn, resolved),
                 data={
                     "reason": reason,
-                    "action": action,
+                    "action": (
+                        "caretask_already_done"
+                        if action == "complete" and already_done
+                        else action
+                    ),
                     "hint": getattr(resolved, "hint", None),
-                    "already_done": bool(getattr(resolved, "already_done", False)),
+                    "already_done": already_done,
                 },
             )
         if resolved.kind == "many":

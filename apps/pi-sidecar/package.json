@@ -6,7 +6,8 @@
   "description": "Experimental Pi agent bridge for companion-runtime",
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node --watch server.mjs"
+    "dev": "node --watch server.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.80.3",
