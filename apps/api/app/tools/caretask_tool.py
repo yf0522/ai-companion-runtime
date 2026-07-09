@@ -209,6 +209,7 @@ class CareTaskTool(ToolBase):
         if due_at is None and query:
             due_at = _parse_due_at(query)
 
+        schedule_type = params.get("schedule_type")
         row = await svc.create_care_task(
             user_id=str(user_id),
             title=title,
@@ -217,23 +218,30 @@ class CareTaskTool(ToolBase):
             notes=params.get("notes") or (f"trace:{params['trace_id']}" if params.get("trace_id") else None),
             created_by="chat",
             link_reminder=due_at is not None,
+            schedule_type=str(schedule_type) if schedule_type else None,
+            query=query or title,
         )
         action = row.pop("_action", "caretask_create")
         schedule_updated = bool(row.pop("_schedule_updated", False))
+        st = row.get("schedule_type")
         if action == "caretask_reuse":
             due_txt = f"（{row['due_at']}）" if row.get("due_at") else ""
             if schedule_updated:
                 display = f"已沿用照护任务并更新时间：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）"
+                device_action = "caretask_schedule_updated"
             else:
                 display = f"已有相同照护任务：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）"
+                device_action = "caretask_reuse"
             return ToolResult(
                 tool_name=self.name,
                 status="success",
                 display_text=display,
                 data={
-                    "action": "caretask_reuse",
+                    "action": device_action,
                     "task": row,
                     "schedule_updated": schedule_updated,
+                    "schedule_type": st,
+                    "query": query,
                 },
             )
         if action == "caretask_clarify_create":
@@ -256,7 +264,12 @@ class CareTaskTool(ToolBase):
             tool_name=self.name,
             status="success",
             display_text=f"已创建照护任务：{row['title']}{due_txt}，状态 {row['status']}",
-            data={"action": "caretask_create", "task": row},
+            data={
+                "action": "caretask_create",
+                "task": row,
+                "schedule_type": st,
+                "query": query,
+            },
         )
 
     async def _list(self, params: dict, user_id: str) -> ToolResult:
@@ -361,11 +374,16 @@ class CareTaskTool(ToolBase):
             task_id=str(resolved["id"]),
             minutes=int(minutes),
         )
+        snooze_minutes = int(row.get("snooze_minutes", minutes))
         return ToolResult(
             tool_name=self.name,
             status="success",
-            display_text=f"好的，我{row.get('snooze_minutes', minutes)}分钟后再提醒您{row['title']}",
-            data={"action": "caretask_snooze", "task": row},
+            display_text=f"好的，我{snooze_minutes}分钟后再提醒您{row['title']}",
+            data={
+                "action": "caretask_snooze",
+                "task": row,
+                "snooze_minutes": snooze_minutes,
+            },
         )
 
     async def _cancel(self, params: dict, user_id: str, query: str) -> ToolResult:

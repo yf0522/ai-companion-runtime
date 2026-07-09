@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,10 @@ class StreamManager:
     async def send_reminder_snooze(self, data: dict):
         """Send a reminder_snooze message so the device can defer a local timer."""
         await self._send({"type": "reminder_snooze", **data})
+
+    async def send_reminder_cancel(self, data: dict):
+        """Send a reminder_cancel so the device can drop a local timer (complete/cancel)."""
+        await self._send({"type": "reminder_cancel", **data})
 
     async def send_final(
         self,

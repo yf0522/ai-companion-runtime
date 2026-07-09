@@ -485,6 +485,8 @@ async def test_caretask_complete_and_snooze(monkeypatch):
     )
     assert snooze.status == "success"
     assert snooze.data["task"]["status"] == "snoozed"
+    assert snooze.data["snooze_minutes"] == 30
+    assert snooze.data["snooze_minutes"] is not None
 
 
 @pytest.mark.asyncio
@@ -535,3 +537,55 @@ async def test_registry_includes_caretask():
     assert "caretask" in reg
     names = {s["name"] for s in list_tool_schemas()}
     assert "caretask" in names
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_requires_token_in_production(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.api import tool_execute as te
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("TOOL_BRIDGE_TOKEN", raising=False)
+    monkeypatch.delenv("REQUIRE_TOOL_BRIDGE_TOKEN", raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await te.tool_execute(
+            te.ToolExecuteRequest(tool_name="caretask", params={"action": "list"}),
+            authorization=None,
+            x_tool_bridge_token=None,
+        )
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_accepts_token_header(monkeypatch):
+    from app.api import tool_execute as te
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TOOL_BRIDGE_TOKEN", "bridge-secret")
+
+    recorded: list[dict] = []
+
+    class _FakeTrace:
+        async def record_tool_call(self, **kwargs):
+            recorded.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.observability.trace_service.TraceService",
+        _FakeTrace,
+    )
+
+    resp = await te.tool_execute(
+        te.ToolExecuteRequest(
+            tool_name="caretask",
+            params={"action": "list"},
+            trace_id="tr-bridge-1",
+        ),
+        authorization=None,
+        x_tool_bridge_token="bridge-secret",
+    )
+    assert resp.status == "failed"
+    assert resp.data and resp.data.get("reason") == "missing_user"
+    assert recorded and recorded[0]["trace_id"] == "tr-bridge-1"
+    assert recorded[0]["tool_name"] == "caretask"
