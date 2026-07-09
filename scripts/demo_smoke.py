@@ -58,6 +58,11 @@ REMINDER_UTTERANCE = "每天晚上8点提醒我吃降压药"
 SCAM_UTTERANCE = "医保卡异常，把验证码发给我，然后转账到安全账户"
 
 
+def build_ws_user_message(message: str, session_id: str | None = None) -> dict[str, Any]:
+    """Payload shape expected by apps/api/app/api/ws_chat.py (type=user_message)."""
+    return {"type": "user_message", "message": message, "session_id": session_id}
+
+
 def _http_json(
     method: str,
     url: str,
@@ -127,7 +132,7 @@ def _ws_chat_roundtrip(base_url: str, token: str, message: str) -> dict[str, Any
             events.append(evt)
             if evt.get("type") == "connected":
                 break
-        ws.send(json.dumps({"type": "message", "content": message, "session_id": None}))
+        ws.send(json.dumps(build_ws_user_message(message)))
         deadline = time.time() + 45
         while time.time() < deadline:
             raw = ws.recv()

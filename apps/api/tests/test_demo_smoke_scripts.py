@@ -41,6 +41,15 @@ def test_device_ws_smoke_dry_run_passes():
     assert "device_ws_smoke" in mod.format_report(report)
 
 
+def test_demo_smoke_ws_user_message_payload_matches_backend():
+    mod = _load("demo_smoke_payload", "demo_smoke.py")
+    payload = mod.build_ws_user_message("每天晚上8点提醒我吃降压药")
+    assert payload["type"] == "user_message"
+    assert "message" in payload
+    assert "content" not in payload
+    assert payload["message"] == "每天晚上8点提醒我吃降压药"
+
+
 def test_demo_smoke_main_dry_run_exit_zero(tmp_path):
     mod = _load("demo_smoke_main", "demo_smoke.py")
     code = mod.main(["--dry-run"])
