@@ -90,7 +90,7 @@ async def test_process_risk_notification_writes_scam_alert_trace(monkeypatch: py
     monkeypatch.setattr(sqlalchemy, "select", _fake_select, raising=False)
     monkeypatch.setattr(worker, "_send_webhook", lambda *_args: "sent", raising=False)
 
-    await worker.process_risk_notification(
+    result = await worker.process_risk_notification(
         user_id="4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf",
         risk_level="high",
         risk_category="scam_alert",
@@ -98,6 +98,8 @@ async def test_process_risk_notification_writes_scam_alert_trace(monkeypatch: py
         trace_id="trace_2026_07_09_demo",
     )
 
+    assert result["status"] == "persisted"
+    assert result["records"] == 1
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     record = fake_session.added[0]
