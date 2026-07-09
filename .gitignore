@@ -49,3 +49,6 @@ grafdata/
 # OMX local agent state
 .omx/
 **/.omx/
+
+# local demo stack run state
+.local-stack/
