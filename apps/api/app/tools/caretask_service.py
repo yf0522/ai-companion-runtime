@@ -240,6 +240,29 @@ async def find_near_duplicate_candidates(
     return out
 
 
+async def _linked_reminder_schedule_type(
+    *,
+    user_id: str,
+    reminder_id: str | None,
+) -> str | None:
+    """Return Reminder.schedule_type for a CareTask-linked reminder, if any."""
+    if not reminder_id:
+        return None
+    from app.db.models import Reminder
+    from app.db.session import async_session
+
+    try:
+        rid = uuid.UUID(str(reminder_id))
+    except (ValueError, TypeError):
+        return None
+    db_user_id = normalize_user_id(user_id)
+    async with async_session() as db:
+        rem = await db.get(Reminder, rid)
+        if rem is None or rem.user_id != db_user_id:
+            return None
+        return rem.schedule_type
+
+
 async def _update_task_schedule(
     *,
     user_id: str,
@@ -371,26 +394,38 @@ async def create_care_task(
     )
     if existing is not None:
         existing_due = _parse_row_due(existing)
-        # Prefer updating schedule when the new utterance has a due and the
-        # existing task is undated, or when the new due differs (clearer time).
-        if due_at is not None and (existing_due is None or existing_due != due_at):
-            try:
-                updated = await _update_task_schedule(
-                    user_id=user_id,
-                    task_id=str(existing["id"]),
-                    due_at=due_at,
-                    title=title,
-                    schedule_type=st,
-                )
-                updated["_action"] = "caretask_reuse"
-                updated["_schedule_updated"] = True
-                return updated
-            except Exception as e:
-                logger.warning("CareTask schedule update on reuse failed: %s", e)
+        existing_st = await _linked_reminder_schedule_type(
+            user_id=user_id, reminder_id=existing.get("reminder_id")
+        )
+        due_changed = due_at is not None and (
+            existing_due is None or existing_due != due_at
+        )
+        # once→daily (same clock) must still refresh Reminder + device projection.
+        # Missing linked schedule is treated as once for comparison.
+        schedule_type_changed = (existing_st or "once") != st
+        needs_schedule_refresh = due_changed or (
+            schedule_type_changed and (due_at is not None or existing_due is not None)
+        )
+        if needs_schedule_refresh:
+            refresh_due = due_at or existing_due
+            if refresh_due is not None:
+                try:
+                    updated = await _update_task_schedule(
+                        user_id=user_id,
+                        task_id=str(existing["id"]),
+                        due_at=refresh_due,
+                        title=title,
+                        schedule_type=st,
+                    )
+                    updated["_action"] = "caretask_reuse"
+                    updated["_schedule_updated"] = True
+                    return updated
+                except Exception as e:
+                    logger.warning("CareTask schedule update on reuse failed: %s", e)
         data = dict(existing)
         data["_action"] = "caretask_reuse"
         data["_schedule_updated"] = False
-        data["schedule_type"] = st
+        data["schedule_type"] = existing_st or st
         return data
 
     near = await find_near_duplicate_candidates(

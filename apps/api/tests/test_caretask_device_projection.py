@@ -197,6 +197,53 @@ async def test_dispatcher_projects_schedule_updated_not_plain_reuse(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_create_care_task_upgrades_once_to_daily_same_due(monkeypatch):
+    """Same clock + once→daily utterance must refresh Reminder.schedule_type."""
+    from datetime import datetime
+    from app.tools import caretask_service as svc
+
+    due = datetime(2026, 7, 10, 20, 0, 0)
+    existing = {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "title": "吃降压药",
+        "task_type": "medication",
+        "status": "pending",
+        "due_at": due.isoformat(),
+        "reminder_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    }
+    captured: dict = {}
+
+    async def fake_find(**kwargs):
+        return existing
+
+    async def fake_linked(**kwargs):
+        return "once"
+
+    async def fake_update(**kwargs):
+        captured.update(kwargs)
+        out = dict(existing)
+        out["schedule_type"] = kwargs["schedule_type"]
+        out["due_at"] = kwargs["due_at"].isoformat()
+        return out
+
+    monkeypatch.setattr(svc, "find_active_by_fingerprint", fake_find)
+    monkeypatch.setattr(svc, "_linked_reminder_schedule_type", fake_linked)
+    monkeypatch.setattr(svc, "_update_task_schedule", fake_update)
+
+    result = await svc.create_care_task(
+        user_id="11111111-1111-1111-1111-111111111111",
+        title="吃降压药",
+        due_at=due,
+        query="每天晚上8点吃降压药",
+        link_reminder=True,
+    )
+    assert result["_schedule_updated"] is True
+    assert result["schedule_type"] == "daily"
+    assert captured["schedule_type"] == "daily"
+    assert captured["due_at"] == due
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_caretask_snooze_minutes_not_none(monkeypatch):
     dispatcher = ToolDispatcher()
     stream = _mock_stream()
