@@ -22,6 +22,26 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Investor demo material | 已补充在 [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单见 [docs/device-test.md](docs/device-test.md)；公开演示图片与 Mock 免责声明见 [docs/evidence/README.md](docs/evidence/README.md)。 |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
+## Demo evidence
+
+Mock UI · scenario demo. These visuals illustrate intended eldercare flows and should not be presented as production screenshots.
+
+### 1. Voice profile and trust reminder
+
+![Voice profile and trust reminder demo](docs/evidence/01-voice-clone-trust.png)
+
+### 2. Daily memory and family summary
+
+![Daily memory and family summary demo](docs/evidence/02-daily-memory-summary.png)
+
+### 3. Hardware-assisted phone intercept
+
+![Hardware-assisted phone intercept demo](docs/evidence/03-hardware-phone-intercept.png)
+
+### 4. Labor saved overview
+
+![Labor saved overview demo](docs/evidence/04-labor-saved-overview.png)
+
 ## 架构总览
 
 ```
