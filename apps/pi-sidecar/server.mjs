@@ -11,8 +11,17 @@ if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
 const PORT = Number(process.env.PI_SIDECAR_PORT || 8787);
 const DEFAULT_MODEL = process.env.PI_MODEL || "gemini-2.5-flash";
 const DEFAULT_PROVIDER = process.env.PI_PROVIDER || "google";
-const TOOL_BRIDGE_URL =
-  process.env.TOOL_BRIDGE_URL || "http://127.0.0.1:8000/api";
+
+function resolveToolBridgeUrl() {
+  const explicit = (process.env.TOOL_BRIDGE_URL || "").trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  // Prefer same host as the companion API the web client uses (local often :8001).
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
+  if (apiBase) return `${apiBase}/api`;
+  return "http://127.0.0.1:8000/api";
+}
+
+const TOOL_BRIDGE_URL = resolveToolBridgeUrl();
 const TOOL_BRIDGE_TOKEN = process.env.TOOL_BRIDGE_TOKEN || "";
 const ENABLE_TOOLS = process.env.PI_ENABLE_TOOLS !== "0";
 const SYSTEM_PROMPT =
@@ -71,31 +80,64 @@ function normalizeMessages(body) {
   return messages;
 }
 
+function bridgeErrorText(data, status) {
+  const detail = data?.detail ?? data?.error;
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  if (detail != null) {
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (status === 404) {
+    return `tool bridge 404 at ${TOOL_BRIDGE_URL}/tools/execute — set TOOL_BRIDGE_URL to the companion API /api base`;
+  }
+  return `bridge HTTP ${status}`;
+}
+
 async function bridgeExecute(toolName, params, ctx) {
   const headers = { "Content-Type": "application/json" };
   if (TOOL_BRIDGE_TOKEN) {
     headers["X-Tool-Bridge-Token"] = TOOL_BRIDGE_TOKEN;
   }
-  const res = await fetch(`${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/execute`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      tool_name: toolName,
-      params,
-      user_id: ctx.userId,
-      session_id: ctx.sessionId,
-      trace_id: ctx.traceId,
-      risk_blocked: Boolean(ctx.riskBlocked),
-      risk_level: ctx.riskLevel || null,
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
+  const url = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/execute`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        tool_name: toolName,
+        params,
+        user_id: ctx.userId,
+        session_id: ctx.sessionId,
+        trace_id: ctx.traceId,
+        risk_blocked: Boolean(ctx.riskBlocked),
+        risk_level: ctx.riskLevel || null,
+      }),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[pi-sidecar] tool bridge fetch failed url=${url} err=${message}`);
     return {
       tool_name: toolName,
       status: "failed",
-      display_text: data.detail || data.error || `bridge HTTP ${res.status}`,
-      data: { reason: "bridge_http_error" },
+      display_text: `tool bridge unreachable (${TOOL_BRIDGE_URL}): ${message}`,
+      data: { reason: "bridge_unreachable", url },
+    };
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const display_text = bridgeErrorText(data, res.status);
+    console.error(
+      `[pi-sidecar] tool bridge HTTP ${res.status} url=${url} detail=${display_text}`,
+    );
+    return {
+      tool_name: toolName,
+      status: "failed",
+      display_text,
+      data: { reason: "bridge_http_error", http_status: res.status, url },
     };
   }
   return data;
@@ -405,6 +447,29 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(
-    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask" : "off"}`,
+    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask" : "off"} bridge=${TOOL_BRIDGE_URL}`,
   );
+  if (ENABLE_TOOLS) {
+    const schemasUrl = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/schemas`;
+    fetch(schemasUrl, {
+      headers: TOOL_BRIDGE_TOKEN
+        ? { "X-Tool-Bridge-Token": TOOL_BRIDGE_TOKEN }
+        : undefined,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          console.error(
+            `[pi-sidecar] tool bridge health check failed HTTP ${res.status} at ${schemasUrl}`,
+          );
+          return;
+        }
+        console.log(`[pi-sidecar] tool bridge ok ${schemasUrl}`);
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[pi-sidecar] tool bridge health check unreachable ${schemasUrl}: ${message}`,
+        );
+      });
+  }
 });
