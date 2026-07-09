@@ -1,0 +1,50 @@
+name: Latency Regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/app/runtime/**"
+      - "apps/api/app/engines/**"
+      - "apps/api/app/models/**"
+      - "scripts/latency_bench.py"
+      - "docs/evidence/latency-baseline.json"
+      - ".github/workflows/latency.yml"
+      - "apps/api/tests/test_latency_bench.py"
+  pull_request:
+    paths:
+      - "apps/api/app/runtime/**"
+      - "apps/api/app/engines/**"
+      - "apps/api/app/models/**"
+      - "scripts/latency_bench.py"
+      - "docs/evidence/latency-baseline.json"
+      - ".github/workflows/latency.yml"
+      - "apps/api/tests/test_latency_bench.py"
+
+jobs:
+  latency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Latency bench unit tests
+        working-directory: apps/api
+        run: pytest -q tests/test_latency_bench.py
+
+      - name: Latency regression benchmark
+        run: |
+          python scripts/latency_bench.py \
+            --iterations 5 \
+            --baseline docs/evidence/latency-baseline.json \
+            --regression-pct 20
