@@ -9,6 +9,7 @@ from app.api.sessions import router as sessions_router
 from app.api.auth import router as auth_router
 from app.api.memory import router as memory_router
 from app.api.reminder_api import router as reminder_api_router
+from app.api.tool_execute import router as tool_execute_router
 from app.api.asr import router as asr_router
 from app.api.tts import router as tts_router
 from app.api.ws_device_realtime import router as ws_device_realtime_router
@@ -58,6 +59,7 @@ app.include_router(sessions_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
 app.include_router(reminder_api_router, prefix="/api")
+app.include_router(tool_execute_router, prefix="/api")
 app.include_router(alerts_router, prefix="/api")
 app.include_router(asr_router)
 app.include_router(tts_router)

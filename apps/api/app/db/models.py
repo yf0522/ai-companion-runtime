@@ -214,6 +214,31 @@ class ReminderHistory(Base):
     reminder: Mapped[Reminder] = relationship(back_populates="history")
 
 
+class CareTask(Base):
+    """Care-domain task (medication / appointment). Reminder is scheduling projection."""
+
+    __tablename__ = "care_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(nullable=False)
+    task_type: Mapped[str] = mapped_column(nullable=False, default="medication")
+    status: Mapped[str] = mapped_column(nullable=False, default="pending")
+    due_at: Mapped[datetime | None] = mapped_column()
+    snooze_until: Mapped[datetime | None] = mapped_column()
+    reminder_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("reminders.id"), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(default="chat")
+    completed_at: Mapped[datetime | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        Index("idx_care_tasks_user_status", "user_id", "status"),
+        Index("idx_care_tasks_due", "due_at"),
+    )
+
+
 class EmergencyContact(Base):
     __tablename__ = "emergency_contacts"
 

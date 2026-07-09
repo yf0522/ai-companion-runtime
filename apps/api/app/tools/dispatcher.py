@@ -18,20 +18,10 @@ class ToolDispatcher:
         self._register_defaults()
 
     def _register_defaults(self):
-        from app.tools.weather_tool import WeatherTool
-        from app.tools.calculator_tool import CalculatorTool
-        try:
-            from app.tools.search_tool import SearchTool
-            self.register(SearchTool())
-        except ImportError:
-            pass
-        try:
-            from app.tools.reminder_tool import ReminderTool
-            self.register(ReminderTool())
-        except ImportError:
-            pass
-        self.register(WeatherTool())
-        self.register(CalculatorTool())
+        from app.tools.registry import get_tool_registry
+
+        for tool in get_tool_registry().values():
+            self.register(tool)
 
     def register(self, tool: ToolBase):
         self._tools[tool.name] = tool
@@ -136,6 +126,16 @@ class ToolDispatcher:
                         await stream_mgr.send_reminder_create(ws_data)
                     else:
                         await stream_mgr.send_reminder_snooze(ws_data)
+                elif action == "caretask_snooze" and isinstance(result.data.get("task"), dict):
+                    task = result.data["task"]
+                    await stream_mgr.send_reminder_snooze(
+                        {
+                            "reminder_id": task.get("reminder_id"),
+                            "label": task.get("title"),
+                            "snooze_minutes": result.data.get("snooze_minutes"),
+                            "next_fire_at": task.get("snooze_until") or task.get("due_at"),
+                        }
+                    )
 
             if result.status == "success":
                 await stream_mgr.send_tool_status(name, "success")

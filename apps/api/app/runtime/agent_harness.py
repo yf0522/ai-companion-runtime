@@ -288,6 +288,15 @@ class AgentHarness:
                 logger.warning(f"Tool dispatch failed: {e}")
                 tool_results = []
 
+        # Contract: never let the model verbally promise success after a failed tool.
+        from app.tools.honesty import enforce_no_verbal_promise
+
+        honest_text = enforce_no_verbal_promise(response_text, tool_results)
+        if honest_text != response_text:
+            logger.info("Rewrote response to avoid verbal promise after tool failure")
+            await stream_mgr.send_delta("\n" + honest_text)
+            response_text = honest_text
+
         # Step 5: Final
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
         tools_used = []
