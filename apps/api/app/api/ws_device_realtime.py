@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
 from typing import Any
 
 try:
@@ -43,8 +42,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.auth import decode_token
 from app.api.asr import _build_wav, _executor, _transcribe_sync
-from app.api.tts import stream_synthesize_pcm
 from app.config.settings import settings
+from app.runtime import session_service
+from app.runtime.agent_harness import AgentHarness
+from app.runtime.device_stream_manager import DeviceStreamManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,26 +59,6 @@ async def transcribe_pcm(pcm_data: bytes, sample_rate: int = 16000) -> str:
     wav_data = _build_wav(pcm_data, sample_rate=sample_rate)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, _transcribe_sync, wav_data, sample_rate)
-
-
-async def stream_reply_text(text: str) -> AsyncIterator[str]:
-    from app.models.router import model_router
-
-    try:
-        model = await model_router.get_model("fast")
-        messages = [
-            {"role": "system", "content": "你是一个简短、温暖的中文语音陪伴助手。回复必须适合朗读，控制在40字内。"},
-            {"role": "user", "content": text},
-        ]
-        provider = getattr(model, "provider", "unknown")
-        model_name = getattr(model, "model_name", "unknown")
-        logger.info("Realtime model stream started: provider=%s model=%s", provider, model_name)
-        async for token in model.stream_chat(messages):
-            yield token
-        logger.info("Realtime model stream done: provider=%s model=%s", provider, model_name)
-    except Exception as e:
-        logger.warning("Realtime model failed, using template reply: %s", e)
-        yield "模型有点慢，我先陪你一下。"
 
 
 class _RealtimeAsrCallback(RecognitionCallback):
@@ -169,37 +150,22 @@ class RealtimeAsrSession:
             self._final_by_begin[key] = text
 
 
-async def _send_tts_segments(
+async def _run_device_harness(
     websocket: WebSocket,
-    text_stream: AsyncIterator[str],
     *,
-    first_sent: bool = False,
-) -> str:
-    full_text = ""
-    first = not first_sent
-
-    async for token in text_stream:
-        if not token:
-            continue
-        full_text += token
-        if first:
-            await websocket.send_json({"type": "first_reply", "text": token})
-            first = False
-        else:
-            await websocket.send_json({"type": "delta", "text": token})
-
-    if first:
-        fallback = "模型暂时没有回复。"
-        full_text = fallback
-        await websocket.send_json({"type": "first_reply", "text": fallback})
-        async for chunk in stream_synthesize_pcm(fallback):
-            await websocket.send_bytes(chunk)
-    elif full_text.strip():
-        async for chunk in stream_synthesize_pcm(full_text):
-            await websocket.send_bytes(chunk)
-
-    await websocket.send_json({"type": "tts_done"})
-    return full_text
+    user_id: str,
+    session_id: str,
+    transcript: str,
+) -> dict:
+    stream_mgr = DeviceStreamManager(websocket)
+    cancel_event = asyncio.Event()
+    return await AgentHarness().run(
+        user_id=user_id,
+        session_id=session_id,
+        message=transcript,
+        stream_mgr=stream_mgr,
+        cancel_event=cancel_event,
+    )
 
 
 @router.websocket("/ws/device/realtime")
@@ -225,8 +191,15 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
-    await websocket.send_json({"type": "connected", "mode": "realtime"})
-    logger.info("Realtime device connected: user=%s", payload["sub"])
+    session_id = await session_service.ensure_session(
+        payload["sub"], data.get("session_id")
+    )
+    await websocket.send_json(
+        {"type": "connected", "mode": "realtime", "session_id": session_id}
+    )
+    logger.info(
+        "Realtime device connected: user=%s session=%s", payload["sub"], session_id
+    )
 
     pcm = bytearray()
     sample_rate = 16000
@@ -265,15 +238,32 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
                     transcript = await asr_session.stop()
                     asr_session = None
                     if not transcript and len(pcm) >= 640:
-                        logger.info("Realtime ASR returned empty, falling back to batch ASR: pcm=%d", len(pcm))
-                        transcript = await transcribe_pcm(bytes(pcm), sample_rate=sample_rate)
+                        logger.info(
+                            "Realtime ASR returned empty, falling back to batch ASR: pcm=%d",
+                            len(pcm),
+                        )
+                        transcript = await transcribe_pcm(
+                            bytes(pcm), sample_rate=sample_rate
+                        )
                 else:
-                    transcript = await transcribe_pcm(bytes(pcm), sample_rate=sample_rate)
+                    transcript = await transcribe_pcm(
+                        bytes(pcm), sample_rate=sample_rate
+                    )
                 await websocket.send_json({"type": "asr_final", "text": transcript})
                 if transcript:
-                    await _send_tts_segments(websocket, stream_reply_text(transcript))
+                    await _run_device_harness(
+                        websocket,
+                        user_id=payload["sub"],
+                        session_id=session_id,
+                        transcript=transcript,
+                    )
+                    asyncio.create_task(
+                        session_service.increment_message_count(session_id)
+                    )
                 else:
-                    await websocket.send_json({"type": "no_speech", "reason": "empty_transcript"})
+                    await websocket.send_json(
+                        {"type": "no_speech", "reason": "empty_transcript"}
+                    )
                 logger.info(
                     "Realtime turn done: pcm=%d transcript=%r latency_ms=%d",
                     len(pcm),
@@ -282,10 +272,8 @@ async def ws_device_realtime(websocket: WebSocket) -> None:
                 )
                 pcm.clear()
             else:
-                await websocket.send_json({"type": "error", "code": "unknown_type", "retry": False})
+                await websocket.send_json(
+                    {"type": "error", "code": "unknown_type", "retry": False}
+                )
     except WebSocketDisconnect:
         logger.info("Realtime device disconnected: user=%s", payload["sub"])
-
-
-async def _single_text(text: str) -> AsyncIterator[str]:
-    yield text
