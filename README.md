@@ -4,7 +4,7 @@
 
 ## Current verified status
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` is being consolidated here; application follow-up material should point reviewers to this repo and mention that consolidation explicitly.
 
@@ -17,15 +17,16 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Risk detection | 已对接老龄场景类别：`health_emergency`、`scam_alert`、`emotional_low`；关键字/正则 + 否定词 + 安全上下文已由测试覆盖。 |
 | Model routing | Implemented: configurable model registry with primary/fallback/fast roles and OpenAI-compatible adapters. |
 | Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. Tool-call rows are persisted into Trace. |
-| Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; chat-created reminders persist to the `reminders` table with `reminder_id`. |
-| Long-term memory | L0/L1 Redis recall + DB user profile (L2) + importance-ranked memory recall (top-N). Full vector/embedding similarity search is still roadmap. |
+| Care tasks and device delivery | Implemented: `CareTask` is the canonical lifecycle with clarification, idempotency, version checks, completion, snooze, and cancellation; `Reminder` projects scheduling and device delivery attempts/receipts. |
+| Long-term memory | L0/L1 recall, DB profile and important memories, plus consent, provenance, correction, deletion, embedding lifecycle, and reviewable reflection proposals. Retrieval-quality evaluation remains roadmap work. |
 | Device realtime WebSocket | Implemented: `/ws/device/realtime` routes transcripts through `AgentHarness` (risk/tools/trace/notify) with JWT/PCM/ASR/TTS protocol tests. |
 | Audio HTTP endpoints | Implemented: `/v1/recognize` and `/v1/synthesize` require JWT and enforce size/rate limits. |
-| Family notification | `/api/notifications` reads persisted `notification_log` events; high/critical escalations await persistence and record Trace `family_notification`. 手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
+| Family notification and cases | Contract primitives implemented: versioned safety decisions, atomic notification outbox, leases/retries, normalized receipt records, privacy-safe family alerts, and basic operator cases. Current providers are sandbox/unconfigured; a real provider, verified contacts, and full case activity are still required for a paid pilot. |
 | Firmware protocol | `firmware/` source aligns to `audio_start`/`audio_end` + backend event parse + NVS reminders. Expected protocol sequence docs are annotated harness text — live board serial capture still required before claiming hardware closed loop. |
 | Demo / CI | Repeatable smoke scripts under `scripts/`; GitHub Actions run backend pytest/ruff, web build, and latency regression on PRs. |
 | Agent runtime | Production default: `AgentHarness`. Optional experimental `pi_experimental` via WS auth `agent_runtime` + frontend toggle (Pi sidecar stub until `ENABLE_PI_RUNTIME=1`). Risk gate always runs before Pi path. |
 | Investor demo material | [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单 [docs/device-test.md](docs/device-test.md)；Mock 场景图 [docs/evidence/README.md](docs/evidence/README.md)。 |
+| Product direction | [docs/product-roadmap-2026-h2.md](docs/product-roadmap-2026-h2.md) defines the family-funded home-care product shape and next PR sequence; [docs/production-development-plan.md](docs/production-development-plan.md) remains the architectural foundation. |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
 ### Verified now vs roadmap
@@ -33,8 +34,8 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Verified now (main + tests) | Roadmap / not claimed |
 |---|---|
 | Chat WS + risk categories + Trace events (incl. tool calls) | Production voice clone / enrollment |
-| Reminder structured device payload + DB persistence | Phone OS call intercept |
-| NotificationLog persistence + Trace family_notification | Multi-channel push provider + delivery receipts |
+| CareTask lifecycle + Reminder delivery attempts and device receipts | Phone OS call intercept |
+| Safety decision + notification outbox + receipt/case contracts | Configured production provider and verified household contacts |
 | Device WS through AgentHarness (protocol tests) | Flashed ESP32 two-turn serial as “fully verified” |
 | Importance-ranked memory recall + user profile | Full vector similarity search as default L3 |
 | Investor Mock UI under `docs/evidence/` | Treating Mock UI as production screenshots |

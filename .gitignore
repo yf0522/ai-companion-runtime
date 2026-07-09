@@ -34,6 +34,7 @@ docs/*
 !docs/device-test.md
 !docs/investor-demo.md
 !docs/production-development-plan.md
+!docs/product-roadmap-2026-h2.md
 !docs/runbooks/
 !docs/runbooks/*.md
 !docs/evidence/
