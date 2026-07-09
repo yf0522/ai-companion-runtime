@@ -37,10 +37,11 @@ Local demo ports (this machine’s usual layout):
 ### Latency regression path
 
 ```bash
-cd apps/api
+cd <repo-root>
 python scripts/latency_bench.py --iterations 5
 # Optional: refresh CI baseline (mocked adapters — no live keys)
-python scripts/latency_bench.py --iterations 5 --update-baseline ../../docs/evidence/latency-baseline.json
+python scripts/latency_bench.py --iterations 5 --update-baseline docs/evidence/latency-baseline.json
+cd apps/api
 pytest -q tests/test_latency_bench.py
 ```
 

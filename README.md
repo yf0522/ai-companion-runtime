@@ -185,8 +185,10 @@ cd ai-companion-runtime
 ```bash
 cp .env.example .env
 # 编辑 .env, 填入你的模型 API Key:
-# QWEN_API_KEY=sk-your-key  (阿里云百炼)
-# DEEPSEEK_API_KEY=sk-your-key
+# GOOGLE_API_KEY=your-gemini-key  # current demo primary/fallback/fast models
+# GEMINI_API_KEY=your-gemini-key  # optional alias for Pi sidecar/provider tooling
+# QWEN_API_KEY=sk-your-key        # optional if you switch models.yaml back to Qwen
+# DEEPSEEK_API_KEY=sk-your-key    # optional if you switch models.yaml to DeepSeek
 ```
 
 ### 3a. Docker Compose 启动 (推荐)
