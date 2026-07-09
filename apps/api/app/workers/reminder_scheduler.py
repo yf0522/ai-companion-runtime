@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from datetime import datetime, timedelta
 
 from app.workers.celery_app import app
@@ -27,7 +26,7 @@ async def _check_and_fire():
     async with async_session() as db:
         result = await db.execute(
             select(Reminder).where(
-                Reminder.is_active == True,
+                Reminder.is_active.is_(True),
                 Reminder.next_fire_at <= now,
             )
         )

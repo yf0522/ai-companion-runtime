@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime
 
 from app.workers.celery_app import app
 

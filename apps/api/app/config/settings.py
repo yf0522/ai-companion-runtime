@@ -91,7 +91,7 @@ class Settings(BaseSettings):
 
         if is_prod and errors:
             raise RuntimeError(
-                f"Refusing to start in production with insecure configuration:\n"
+                "Refusing to start in production with insecure configuration:\n"
                 + "\n".join(f"  - {e}" for e in errors)
                 + "\nSet proper secrets in .env or change APP_ENV to 'development'."
             )

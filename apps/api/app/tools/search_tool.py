@@ -58,7 +58,7 @@ class SearchTool(ToolBase):
             return ToolResult(
                 tool_name=self.name,
                 status="failed",
-                display_text=f"搜索失败",
+                display_text="搜索失败",
             )
 
     def _extract_search_query(self, query: str) -> str:

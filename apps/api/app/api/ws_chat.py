@@ -108,7 +108,7 @@ async def ws_chat(websocket: WebSocket):
         conn = await gateway.connect(
             websocket, user_id, session_id, agent_runtime=agent_runtime
         )
-    except RuntimeError as e:
+    except RuntimeError:
         await websocket.send_json({
             "type": "error", "code": "session_error",
             "message": "Failed to create session. Please try again.",
