@@ -104,8 +104,18 @@ def normalize_title(title: str) -> str:
     text = _WHITESPACE.sub("", text)
     text = _TITLE_NOISE.sub("", text)
     text = _TITLE_TRAIL.sub("", text)
-    # Strip common create prefixes that survive inference
-    for prefix in ("提醒我", "记得", "帮我", "请帮我", "给我"):
+    # Strip common create prefixes / filler that survive inference
+    for prefix in (
+        "提醒我",
+        "记得",
+        "帮我记一下",
+        "帮我记下",
+        "帮我",
+        "请帮我",
+        "给我",
+        "记一下",
+        "记下",
+    ):
         if text.startswith(prefix):
             text = text[len(prefix) :]
     text = text.lower()

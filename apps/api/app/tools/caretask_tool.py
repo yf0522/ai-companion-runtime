@@ -50,9 +50,13 @@ def _infer_task_type(text: str) -> str:
 
 
 def _infer_title(text: str, task_type: str) -> str:
-    m = re.search(r"(?:提醒我|记得|帮我)?(.{2,24}?)(?:吧|啊|哦)?$", text.strip())
+    m = re.search(
+        r"(?:提醒我|记得|帮我记一下|帮我记下|帮我|记一下)?(.{2,24}?)(?:吧|啊|哦)?$",
+        text.strip(),
+    )
     raw = (m.group(1) if m else text).strip()
     raw = re.sub(r"^(每天|明天|今天|晚上|早上|下午)", "", raw).strip()
+    raw = re.sub(r"^(记一下|记下)", "", raw).strip()
     if len(raw) < 2:
         return "吃药" if task_type == "medication" else "复诊"
     return raw[:80]
