@@ -75,6 +75,11 @@ _load_env() {
 
 cmd_stop() {
   echo "Stopping local stack..."
+  if command -v tmux >/dev/null 2>&1; then
+    for s in companion-web companion-api companion-pi; do
+      tmux has-session -t "=$s" 2>/dev/null && tmux kill-session -t "=$s" 2>/dev/null || true
+    done
+  fi
   _kill_port "$WEB_PORT"
   _kill_port "$API_PORT"
   _kill_port "$PI_PORT"
@@ -95,41 +100,69 @@ cmd_status() {
   done
 }
 
+_have_tmux() { command -v tmux >/dev/null 2>&1; }
+
+_tmux_start() {
+  # $1=session $2=workdir $3=command...
+  local session="$1" workdir="$2"
+  shift 2
+  tmux has-session -t "=$session" 2>/dev/null && tmux kill-session -t "=$session" 2>/dev/null || true
+  tmux new-session -d -s "$session" -c "$workdir" "$@"
+  # record tmux pane pid for status
+  tmux list-panes -t "$session" -F '#{pane_pid}' >"$(_pid_file "${session#companion-}")" 2>/dev/null || true
+}
+
 _start_pi() {
-  local log pidf
+  local log
   log="$(_log_file pi)"
-  pidf="$(_pid_file pi)"
-  (
-    cd "$ROOT/apps/pi-sidecar"
-    nohup env TOOL_BRIDGE_URL="$TOOL_BRIDGE_URL" TOOL_BRIDGE_TOKEN="${TOOL_BRIDGE_TOKEN:-}" \
-      node server.mjs >"$log" 2>&1 &
-    echo $! >"$pidf"
-  )
+  if _have_tmux; then
+    _tmux_start companion-pi "$ROOT/apps/pi-sidecar" \
+      "env TOOL_BRIDGE_URL='$TOOL_BRIDGE_URL' TOOL_BRIDGE_TOKEN='${TOOL_BRIDGE_TOKEN:-}' node server.mjs 2>&1 | tee '$log'"
+  else
+    (
+      cd "$ROOT/apps/pi-sidecar"
+      # double-fork so we survive parent shell death
+      (setsid env TOOL_BRIDGE_URL="$TOOL_BRIDGE_URL" TOOL_BRIDGE_TOKEN="${TOOL_BRIDGE_TOKEN:-}" \
+        node server.mjs >"$log" 2>&1 &)
+      sleep 0.2
+      lsof -tiTCP:"$PI_PORT" -sTCP:LISTEN >"$(_pid_file pi)" 2>/dev/null || true
+    )
+  fi
 }
 
 _start_api() {
-  local log pidf
+  local log
   log="$(_log_file api)"
-  pidf="$(_pid_file api)"
-  (
-    cd "$ROOT/apps/api"
-    nohup env ENABLE_PI_RUNTIME="$ENABLE_PI_RUNTIME" PI_SIDECAR_URL="$PI_SIDECAR_URL" \
-      TOOL_BRIDGE_URL="$TOOL_BRIDGE_URL" PYTHONPATH=. \
-      uv run uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" >"$log" 2>&1 &
-    echo $! >"$pidf"
-  )
+  if _have_tmux; then
+    _tmux_start companion-api "$ROOT/apps/api" \
+      "env ENABLE_PI_RUNTIME='$ENABLE_PI_RUNTIME' PI_SIDECAR_URL='$PI_SIDECAR_URL' TOOL_BRIDGE_URL='$TOOL_BRIDGE_URL' PYTHONPATH=. uv run uvicorn app.main:app --host '$API_HOST' --port '$API_PORT' 2>&1 | tee '$log'"
+  else
+    (
+      cd "$ROOT/apps/api"
+      (setsid env ENABLE_PI_RUNTIME="$ENABLE_PI_RUNTIME" PI_SIDECAR_URL="$PI_SIDECAR_URL" \
+        TOOL_BRIDGE_URL="$TOOL_BRIDGE_URL" PYTHONPATH=. \
+        uv run uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" >"$log" 2>&1 &)
+      sleep 0.2
+      lsof -tiTCP:"$API_PORT" -sTCP:LISTEN >"$(_pid_file api)" 2>/dev/null || true
+    )
+  fi
 }
 
 _start_web() {
-  local log pidf
+  local log
   log="$(_log_file web)"
-  pidf="$(_pid_file web)"
-  (
-    cd "$ROOT/apps/web"
-    nohup env NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
-      npm run dev -- -p "$WEB_PORT" -H "$WEB_HOST" >"$log" 2>&1 &
-    echo $! >"$pidf"
-  )
+  if _have_tmux; then
+    _tmux_start companion-web "$ROOT/apps/web" \
+      "env NEXT_PUBLIC_API_URL='$NEXT_PUBLIC_API_URL' NEXT_PUBLIC_WS_URL='$NEXT_PUBLIC_WS_URL' npm run dev -- -p '$WEB_PORT' -H '$WEB_HOST' 2>&1 | tee '$log'"
+  else
+    (
+      cd "$ROOT/apps/web"
+      (setsid env NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
+        npm run dev -- -p "$WEB_PORT" -H "$WEB_HOST" >"$log" 2>&1 &)
+      sleep 0.2
+      lsof -tiTCP:"$WEB_PORT" -sTCP:LISTEN >"$(_pid_file web)" 2>/dev/null || true
+    )
+  fi
 }
 
 cmd_start() {
