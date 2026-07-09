@@ -18,6 +18,21 @@ The goal is to prove: companionship + memory + safety interception + family hand
 - Prepared expected categories:
   - `health_emergency`, `scam_alert`, `emotional_low`
 
+### Repeatable smoke (optional but recommended)
+
+```bash
+# Structure check (no server)
+python scripts/demo_smoke.py --dry-run
+python scripts/device_ws_smoke.py --dry-run
+
+# Live against local API
+python scripts/demo_smoke.py --base-url http://127.0.0.1:8000 --record
+python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000
+```
+
+`--record` writes `docs/evidence/demo-run-YYYYMMDD.md` for diligence follow-up.
+Scenario mockups remain under `docs/evidence/` (Mock UI, not production screenshots).
+
 ## 0:00-0:18 Opening
 
 > “AI Companion Runtime is not just conversational AI.
