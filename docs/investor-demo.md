@@ -106,6 +106,20 @@ Narration:
 
 “This is the key technical edge: not faster answers, but **risk-first interception**.”
 
+## Optional beat: snooze / 二次提醒
+
+After the medicine reminder is set, elder says:
+
+```text
+晚点再吃
+```
+
+Expected behavior:
+
+- Intent routes to `reminder` tool snooze path.
+- Active medicine reminder `next_fire_at` moves forward (~30 minutes).
+- Assistant confirms: “好的，我半小时后再提醒您…”
+
 ## 2:16-2:46 Family escalation
 
 Triggered by the same conversation or by the assistant guidance, show family summary generation:
@@ -120,12 +134,15 @@ Expected behavior:
   - category `scam_alert`
   - severity / status fields
   - trace linkage
+- Family opens `/notifications` and clicks **确认已处理** (`POST /api/notifications/{id}/ack`).
+- Optional: confirm medicine task via **确认已吃药/已处理** (`POST /api/reminders/{id}/ack`).
+- Family JWT cannot open elder `/ws/chat` (`family_chat_forbidden`).
 - If provider adapter is connected, send path is executed.
 - If adapter not connected yet (current roadmap), clearly state “已生成审计事件，待 provider 接入后下发” in UI/Narration.
 
 Narration:
 
-“Family handoff is not a UX feature only — it is a workflow boundary with escalation state.”
+“Family handoff is not a UX feature only — it is a workflow boundary with escalation state and confirmation tasks.”
 
 ## 2:46-3:00 Trace audit
 
@@ -149,7 +166,10 @@ Closing:
 **Verified now**
 - Browser `/ws/chat` risk-gated loop with Trace IDs
 - Risk categories: `scam_alert` / `health_emergency` / `emotional_low`
-- Family notification **events** persisted and listable via `/api/notifications`
+- Family notification **events** persisted and listable via `/api/notifications`, with ack confirmation
+- Reminder create + snooze (`晚点再吃`) + family/elder reminder ack
+- Trace timeline includes `memory_recall` and persisted `model_calls`
+- Family role blocked from elder private chat WS
 - Reminder tool structured `reminder_create` for devices
 - Device WS route protocol tests (JWT + audio frames)
 

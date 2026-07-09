@@ -142,6 +142,19 @@ class AgentHarness:
             user_id=db_user_id, session_id=db_session_id,
             output_json=risk.model_dump(), status="success", latency_ms=analyzer_ms,
         ))
+        asyncio.create_task(_trace_svc.add_event(
+            trace_id=trace_id, step_name="memory_recall", step_index=4,
+            user_id=db_user_id, session_id=db_session_id,
+            output_json={
+                "working_count": len(memory.working or []),
+                "vector_count": len(memory.vectors or []),
+                "has_summary": bool(memory.summary),
+                "has_profile": bool(memory.profile),
+                "profile_keys": list((memory.profile or {}).keys())[:12],
+            },
+            status="success",
+            latency_ms=analyzer_ms,
+        ))
 
         # Step 2: Risk check
         step += 1
@@ -209,11 +222,18 @@ class AgentHarness:
         model_total_timeout = self._timeout("model_total") / 1000  # seconds
         retries = 0
         model_success = False
+        model_provider = "unknown"
+        model_name = "unknown"
+        model_role = "primary"
+        last_model = None
         while retries <= self.max_retries and not cancel_event.is_set():
             try:
-                role = "primary" if retries == 0 else "fallback"
+                model_role = "primary" if retries == 0 else "fallback"
                 from app.models.router import model_router
-                model = await model_router.get_model(role)
+                model = await model_router.get_model(model_role)
+                last_model = model
+                model_provider = getattr(model, "provider", "unknown") or "unknown"
+                model_name = getattr(model, "model_name", "unknown") or "unknown"
                 first_token = True
 
                 async def _stream_model():
@@ -277,11 +297,41 @@ class AgentHarness:
             elif hasattr(t, "tool_name"):
                 tools_used.append(t.tool_name)
 
-        # Record model call
+        prompt_tokens = 0
+        output_tokens = 0
+        if last_model is not None and hasattr(last_model, "count_tokens"):
+            try:
+                prompt_tokens = sum(
+                    int(last_model.count_tokens(m.get("content", "") or ""))
+                    for m in messages
+                )
+                output_tokens = int(last_model.count_tokens(response_text or ""))
+            except Exception as e:
+                logger.debug(f"Token counting skipped: {e}")
+
+        asyncio.create_task(_trace_svc.record_model_call(
+            trace_id=trace_id,
+            provider=model_provider,
+            model=model_name,
+            role=model_role,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            ttft_ms=ttft_ms or 0,
+            total_latency_ms=total_latency_ms,
+            status="success" if model_success else "failed",
+        ))
+
+        # Record model stream event
         asyncio.create_task(_trace_svc.add_event(
             trace_id=trace_id, step_name="model_stream", step_index=8,
             user_id=db_user_id, session_id=db_session_id,
-            output_json={"response_length": len(response_text), "model_success": model_success},
+            output_json={
+                "response_length": len(response_text),
+                "model_success": model_success,
+                "provider": model_provider,
+                "model": model_name,
+                "role": model_role,
+            },
             status="success" if model_success else "failed",
             latency_ms=total_latency_ms,
         ))

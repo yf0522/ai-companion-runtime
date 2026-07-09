@@ -55,9 +55,10 @@ async def _get_managed_elder_id(user: dict) -> uuid.UUID:
 
         async with async_session() as db:
             result = await db.execute(
-                select(FamilyBinding.elder_user_id).where(
-                    FamilyBinding.family_user_id == user_id
-                )
+                select(FamilyBinding.elder_user_id)
+                .where(FamilyBinding.family_user_id == user_id)
+                .order_by(FamilyBinding.created_at.desc())
+                .limit(1)
             )
             elder_id = result.scalar_one_or_none()
             if not elder_id:
@@ -229,4 +230,57 @@ async def get_reminder_history(reminder_id: str, user: dict = Depends(get_curren
             }
             for h in history
         ]
+
+
+@router.post("/reminders/{reminder_id}/ack")
+async def acknowledge_reminder(reminder_id: str, user: dict = Depends(get_current_user)):
+    """Confirm a reminder was handled (e.g. medicine taken)."""
+    elder_id = await _get_managed_elder_id(user)
+
+    try:
+        rid = uuid.UUID(reminder_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Reminder not found")
+
+    from app.db.session import async_session
+    from app.db.models import Reminder, ReminderHistory
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(Reminder).where(Reminder.id == rid, Reminder.user_id == elder_id)
+        )
+        reminder = result.scalar_one_or_none()
+        if not reminder:
+            raise HTTPException(status_code=404, detail="Reminder not found")
+
+        hist_result = await db.execute(
+            select(ReminderHistory)
+            .where(
+                ReminderHistory.reminder_id == rid,
+                ReminderHistory.acknowledged.is_(False),
+            )
+            .order_by(ReminderHistory.fired_at.desc())
+            .limit(1)
+        )
+        history = hist_result.scalar_one_or_none()
+        if history:
+            history.acknowledged = True
+            history.delivered = True
+        else:
+            history = ReminderHistory(
+                reminder_id=rid,
+                fired_at=datetime.utcnow(),
+                delivered=True,
+                acknowledged=True,
+            )
+            db.add(history)
+
+        await db.commit()
+        await db.refresh(history)
+        return {
+            "status": "acknowledged",
+            "reminder_id": str(rid),
+            "history_id": str(history.id),
+            "acknowledged": True,
+        }
 
