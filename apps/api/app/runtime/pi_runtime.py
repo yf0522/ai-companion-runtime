@@ -25,7 +25,7 @@ _SIDECAR_TIMEOUT_S = 120.0
 
 
 class PiExperimentalRuntime:
-    """Experimental Pi agent path — risk gate first, then optional Node sidecar."""
+    """Experimental Pi agent path — risk gate first, then pi-agent-core sidecar."""
 
     name = RUNTIME_PI_EXPERIMENTAL
 
@@ -63,6 +63,7 @@ class PiExperimentalRuntime:
                 cancel_event=cancel_event,
                 trace_id=gate.trace_id,
                 start=start,
+                risk_level=getattr(gate.risk, "level", None),
             )
         except Exception as exc:
             logger.warning("Pi sidecar failed: %s", exc, exc_info=True)
@@ -78,6 +79,7 @@ class PiExperimentalRuntime:
         cancel_event: asyncio.Event,
         trace_id: str,
         start: float,
+        risk_level: str | None = None,
     ) -> dict:
         url = f"{settings.pi_sidecar_url.rstrip('/')}/v1/chat"
         payload = {
@@ -88,6 +90,9 @@ class PiExperimentalRuntime:
             "trace_id": trace_id,
             "user_id": user_id,
             "session_id": session_id,
+            "use_agent_core": True,
+            "risk_level": risk_level,
+            "risk_blocked": False,
         }
 
         response_text = ""
@@ -95,6 +100,8 @@ class PiExperimentalRuntime:
         ttft_ms = 0
         sidecar_error: str | None = None
         seen_done = False
+        tools_used: list[str] = []
+        failed_tool_results: list = []
         sidecar_start = time.monotonic()
 
         async with httpx.AsyncClient(timeout=_SIDECAR_TIMEOUT_S) as client:
@@ -130,10 +137,47 @@ class PiExperimentalRuntime:
                         else:
                             await stream_mgr.send_delta(delta)
                         response_text += delta
+                    elif event_type == "tool_status":
+                        tool = str(event.get("tool", "caretask"))
+                        status = str(event.get("status", "calling"))
+                        await stream_mgr.send_tool_status(tool, status)
+                        if tool and tool not in tools_used:
+                            tools_used.append(tool)
+                        if status in {"failed", "timeout"}:
+                            from app.tools.base import ToolResult
+
+                            failed_tool_results.append(
+                                ToolResult(
+                                    tool_name=tool,
+                                    status=status,
+                                    display_text=f"{tool} 未能完成",
+                                )
+                            )
+                    elif event_type == "tool_result":
+                        tool = str(event.get("tool", "caretask"))
+                        text = str(event.get("text", ""))
+                        status = str(event.get("status", "success"))
+                        if text:
+                            await stream_mgr.send_tool_result(tool, text)
+                        if tool and tool not in tools_used:
+                            tools_used.append(tool)
+                        if status in {"failed", "timeout"}:
+                            from app.tools.base import ToolResult
+
+                            failed_tool_results.append(
+                                ToolResult(
+                                    tool_name=tool,
+                                    status=status,
+                                    display_text=text or f"{tool} 未能完成",
+                                )
+                            )
                     elif event_type == "error":
                         sidecar_error = str(event.get("message", "pi sidecar error"))
                         break
                     elif event_type == "done":
+                        for name in event.get("tools_used") or []:
+                            if name and name not in tools_used:
+                                tools_used.append(str(name))
                         seen_done = True
                         break
 
@@ -144,18 +188,27 @@ class PiExperimentalRuntime:
             raise RuntimeError("Pi sidecar stream ended before completion")
 
         logger.info(
-            "Pi sidecar stream complete model=%s/%s ttft=%sms sidecar=%sms chars=%d",
+            "Pi sidecar stream complete model=%s/%s ttft=%sms sidecar=%sms chars=%d tools=%s",
             settings.pi_provider,
             settings.pi_model,
             ttft_ms,
             int((time.monotonic() - sidecar_start) * 1000),
             len(response_text),
+            tools_used,
         )
 
         if not response_text:
             response_text = "（Pi 实验路径未返回内容，请稍后重试。）"
             ttft_ms = int((time.monotonic() - start) * 1000)
             await stream_mgr.send_first_reply(response_text, ttft_ms)
+
+        if failed_tool_results:
+            from app.tools.honesty import enforce_no_verbal_promise
+
+            honest = enforce_no_verbal_promise(response_text, failed_tool_results)
+            if honest != response_text:
+                await stream_mgr.send_delta("\n" + honest)
+                response_text = honest
 
         total_latency_ms = int((time.monotonic() - start) * 1000)
         message_id = f"m_{nanoid(size=12)}"
@@ -164,7 +217,7 @@ class PiExperimentalRuntime:
             message_id=message_id,
             ttft_ms=ttft_ms,
             total_latency_ms=total_latency_ms,
-            tools_used=[],
+            tools_used=tools_used,
             memory_updated=False,
         )
         return {
@@ -173,7 +226,10 @@ class PiExperimentalRuntime:
             "agent_runtime": self.name,
             "pi_experimental": True,
             "response_text": response_text,
+            "tools_used": tools_used,
             "sidecar_error": sidecar_error,
+            # Tradeoff note: pi-agent-core tool loop may increase TTFT vs harness fast-reply.
+            "ttft_tradeoff": "pi_agent_core_tool_loop_may_delay_first_token_vs_harness_fast_reply",
         }
 
     async def _emit_disabled_stub(
