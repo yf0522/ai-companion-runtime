@@ -170,7 +170,9 @@ async def test_caretask_create_reuses_active_duplicate(monkeypatch):
     assert first.data["action"] == "caretask_create"
     assert second.status == "success"
     assert second.data["action"] == "caretask_reuse"
-    assert "未重复创建" in second.display_text
+    assert "沿用" in second.display_text or "已经有" in second.display_text
+    assert "pending" not in second.display_text.lower()
+    assert "未重复创建" not in second.display_text
 
 
 @pytest.mark.asyncio
@@ -443,6 +445,139 @@ def test_extract_resolve_hint_strips_cancel_verb():
     assert is_generic_med_hint(extract_resolve_hint(None, "取消吃药提醒"))
     assert extract_resolve_hint(None, "取消降压药") == "降压药"
     assert not is_generic_med_hint(extract_resolve_hint(None, "取消降压药"))
+    assert extract_resolve_hint(None, "降压药我吃过了") == "降压药"
+    assert not is_generic_med_hint(extract_resolve_hint(None, "降压药我吃过了"))
+
+
+@pytest.mark.asyncio
+async def test_resolve_specific_med_does_not_broaden_to_unrelated(monkeypatch):
+    """P0: after 降压药 done, 「降压药我吃过了」 must not offer 降糖药/量血压."""
+    from app.tools import caretask_service as svc
+
+    active = [
+        {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "title": "降糖药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+        {
+            "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "title": "量血压",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+    ]
+    all_rows = active + [
+        {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "title": "降压药",
+            "status": "done",
+            "due_at": None,
+            "task_type": "medication",
+        },
+    ]
+
+    async def fake_list(**kwargs):
+        if kwargs.get("include_terminal"):
+            return all_rows
+        return active
+
+    monkeypatch.setattr(svc, "list_care_tasks", fake_list)
+    resolved = await svc.resolve_task_ref(
+        user_id=str(uuid.uuid4()),
+        query="降压药我吃过了",
+    )
+    assert resolved.kind == "none"
+    assert resolved.already_done is True
+    assert resolved.hint == "降压药"
+    titles = {c["title"] for c in (resolved.candidates or [])}
+    assert "降糖药" not in titles
+    assert "量血压" not in titles
+
+    tool = CareTaskTool()
+    result = await tool.execute(
+        {
+            "action": "complete",
+            "query": "降压药我吃过了",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+    assert result.status == "failed"
+    assert "降压药" in result.display_text
+    assert "降糖药" not in result.display_text
+    assert "量血压" not in result.display_text
+
+
+@pytest.mark.asyncio
+async def test_resolve_specific_pending_med_matches(monkeypatch):
+    from app.tools import caretask_service as svc
+
+    active = [
+        {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "title": "吃降压药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+        {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "title": "降糖药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+    ]
+
+    async def fake_list(**kwargs):
+        return active
+
+    monkeypatch.setattr(svc, "list_care_tasks", fake_list)
+    resolved = await svc.resolve_task_ref(
+        user_id=str(uuid.uuid4()),
+        query="降压药我吃过了",
+    )
+    assert resolved.kind == "one"
+    assert resolved.task is not None
+    assert "降压" in resolved.task["title"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_task_id_from_clarify_followup(monkeypatch):
+    from app.tools import caretask_service as svc
+
+    tid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    active = [
+        {
+            "id": tid,
+            "title": "降糖药",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+        {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "title": "量血压",
+            "status": "pending",
+            "due_at": None,
+            "task_type": "medication",
+        },
+    ]
+
+    async def fake_list(**kwargs):
+        return active
+
+    monkeypatch.setattr(svc, "list_care_tasks", fake_list)
+    resolved = await svc.resolve_task_ref(
+        user_id=str(uuid.uuid4()),
+        query=f"取消任务 降糖药 id={tid}",
+    )
+    assert resolved.kind == "one"
+    assert resolved.task is not None
+    assert resolved.task["id"] == tid
 
 
 def test_honesty_does_not_claim_success_on_clarification():
@@ -466,13 +601,15 @@ def test_honesty_rewrites_reuse_as_already_recorded():
         ToolResult(
             tool_name="caretask",
             status="success",
-            display_text="已有相同照护任务：吃降压药，状态 pending（未重复创建）",
+            display_text="您已经有吃降压药的提醒了，我帮您沿用，没有重复创建。",
             data={"action": "caretask_reuse"},
         )
     ]
     claimed = "好的，已经为您记录了吃降压药"
     out = enforce_no_verbal_promise(claimed, reuse)
-    assert "未重复创建" in out
+    assert "沿用" in out or "已经有" in out
+    assert "pending" not in out.lower()
+    assert "未重复创建" not in out
     assert "已经为您记录了" not in out
 
 
@@ -481,14 +618,24 @@ def test_honesty_rewrites_false_reminded_now_on_reuse():
         ToolResult(
             tool_name="caretask",
             status="success",
-            display_text="已有相同照护任务：吃降糖药，状态 pending（未重复创建）",
+            display_text="您已经有吃降糖药的提醒了，我帮您沿用，没有重复创建。",
             data={"action": "caretask_reuse"},
         )
     ]
     claimed = "我已经提醒你吃降糖药了"
     out = enforce_no_verbal_promise(claimed, reuse)
-    assert "未重复创建" in out
+    assert "沿用" in out or "已经有" in out
     assert "我已经提醒你" not in out
+
+
+def test_reuse_display_text_has_no_tech_jargon():
+    from app.tools.caretask_tool import _reuse_display
+
+    text = _reuse_display("降糖药", schedule_updated=False)
+    assert "沿用" in text
+    assert "pending" not in text.lower()
+    assert "未重复创建" not in text
+    assert "状态" not in text
 
 
 @pytest.mark.asyncio

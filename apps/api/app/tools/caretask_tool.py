@@ -84,10 +84,11 @@ def _infer_action_from_query(query: str) -> str:
 
 
 def _format_candidates(candidates: list[dict[str, Any]]) -> str:
+    """Elder-facing candidate list — titles only, no status/id jargon."""
     lines = []
     for i, t in enumerate(candidates[:8], start=1):
         due = f"（{t['due_at']}）" if t.get("due_at") else ""
-        lines.append(f"（{i}）{t['title']}{due} [{t.get('status', '')}] id={t['id'][:8]}")
+        lines.append(f"（{i}）{t['title']}{due}")
     return "\n".join(lines)
 
 
@@ -102,6 +103,26 @@ def _candidate_payload(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
         }
         for c in candidates
     ]
+
+
+def _reuse_display(title: str, *, schedule_updated: bool) -> str:
+    """Natural Chinese for CareTask reuse — no pending/status jargon."""
+    label = title.strip()
+    # Avoid 「吃吃降压药」 when title already starts with 吃.
+    if "药" in label and not label.startswith("吃"):
+        label = f"吃{label}"
+    if schedule_updated:
+        return f"您已经有{label}的提醒了，我帮您更新了时间，没有重复创建。"
+    return f"您已经有{label}的提醒了，我帮您沿用，没有重复创建。"
+
+
+def _none_resolve_display(verb_cn: str, resolved: Any) -> str:
+    hint = getattr(resolved, "hint", None) or ""
+    if getattr(resolved, "already_done", False) and hint:
+        return f"「{hint}」的提醒已经完成过了，目前没有待完成的。"
+    if hint and not svc.is_generic_med_hint(hint):
+        return f"没有待{verb_cn}的{hint}提醒"
+    return f"没有可{verb_cn}的照护任务"
 
 
 class CareTaskTool(ToolBase):
@@ -225,17 +246,14 @@ class CareTaskTool(ToolBase):
         schedule_updated = bool(row.pop("_schedule_updated", False))
         st = row.get("schedule_type")
         if action == "caretask_reuse":
-            due_txt = f"（{row['due_at']}）" if row.get("due_at") else ""
             if schedule_updated:
-                display = f"已沿用照护任务并更新时间：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）"
                 device_action = "caretask_schedule_updated"
             else:
-                display = f"已有相同照护任务：{row['title']}{due_txt}，状态 {row['status']}（未重复创建）"
                 device_action = "caretask_reuse"
             return ToolResult(
                 tool_name=self.name,
                 status="success",
-                display_text=display,
+                display_text=_reuse_display(row["title"], schedule_updated=schedule_updated),
                 data={
                     "action": device_action,
                     "task": row,
@@ -250,11 +268,12 @@ class CareTaskTool(ToolBase):
                 tool_name=self.name,
                 status="needs_clarification",
                 display_text=(
-                    "已有相似照护任务，要改时间还是新建？请确认：\n"
+                    "已有相似照护任务，请点选要改时间的那一项，或告诉我新建：\n"
                     + _format_candidates(candidates)
                 ),
                 data={
                     "action": "caretask_clarify_create",
+                    "clarify_verb": "确认",
                     "candidates": _candidate_payload(candidates),
                     "proposed": row.get("proposed"),
                 },
@@ -263,7 +282,7 @@ class CareTaskTool(ToolBase):
         return ToolResult(
             tool_name=self.name,
             status="success",
-            display_text=f"已创建照护任务：{row['title']}{due_txt}，状态 {row['status']}",
+            display_text=f"好的，已记下：{row['title']}{due_txt}",
             data={
                 "action": "caretask_create",
                 "task": row,
@@ -285,11 +304,12 @@ class CareTaskTool(ToolBase):
                 display_text="当前没有待处理的照护任务",
                 data={"action": "caretask_list", "tasks": []},
             )
-        lines = [f"- {t['title']} [{t['status']}]" for t in rows[:10]]
+        # Elder UI: titles only; status stays in structured data for Trace.
+        lines = [f"- {t['title']}" for t in rows[:10]]
         return ToolResult(
             tool_name=self.name,
             status="success",
-            display_text="照护任务：\n" + "\n".join(lines),
+            display_text="您当前的照护任务：\n" + "\n".join(lines),
             data={"action": "caretask_list", "tasks": rows},
         )
 
@@ -309,11 +329,21 @@ class CareTaskTool(ToolBase):
             query=query or None,
         )
         if resolved.kind == "none":
+            reason = (
+                "already_done"
+                if getattr(resolved, "already_done", False)
+                else "no_active_care_task"
+            )
             return ToolResult(
                 tool_name=self.name,
                 status="failed",
-                display_text=f"没有可{verb_cn}的照护任务",
-                data={"reason": "no_active_care_task", "action": action},
+                display_text=_none_resolve_display(verb_cn, resolved),
+                data={
+                    "reason": reason,
+                    "action": action,
+                    "hint": getattr(resolved, "hint", None),
+                    "already_done": bool(getattr(resolved, "already_done", False)),
+                },
             )
         if resolved.kind == "many":
             candidates = resolved.candidates or []
@@ -321,12 +351,13 @@ class CareTaskTool(ToolBase):
                 tool_name=self.name,
                 status="needs_clarification",
                 display_text=(
-                    f"找到多个照护任务，请告诉我要{verb_cn}哪一个：\n"
+                    f"找到多个照护任务，请点选要{verb_cn}的那一项：\n"
                     + _format_candidates(candidates)
                 ),
                 data={
                     "action": f"caretask_{action}",
                     "reason": "ambiguous_task_ref",
+                    "clarify_verb": verb_cn,
                     "candidates": _candidate_payload(candidates),
                 },
             )

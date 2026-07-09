@@ -34,8 +34,26 @@ class StreamManager:
     async def send_tool_status(self, tool: str, status: str):
         await self._send({"type": "tool_status", "tool": tool, "status": status})
 
-    async def send_tool_result(self, tool: str, text: str):
-        await self._send({"type": "tool_result", "tool": tool, "text": text})
+    async def send_tool_result(
+        self,
+        tool: str,
+        text: str,
+        *,
+        status: str | None = None,
+        action: str | None = None,
+        candidates: list | None = None,
+        data: dict | None = None,
+    ):
+        payload: dict = {"type": "tool_result", "tool": tool, "text": text}
+        if status:
+            payload["status"] = status
+        if action:
+            payload["action"] = action
+        if candidates:
+            payload["candidates"] = candidates
+        if data:
+            payload["data"] = data
+        await self._send(payload)
 
     async def send_risk_alert(self, level: str, message: str):
         await self._send({"type": "risk_alert", "level": level, "message": message})

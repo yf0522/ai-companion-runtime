@@ -10,6 +10,7 @@ import {
   useAgentRuntimeStore,
 } from "@/stores/agentRuntimeStore";
 import MessageBubble from "./MessageBubble";
+import type { CareTaskCandidate } from "./CareTaskClarifyCard";
 import Sidebar from "./Sidebar";
 
 export default function ChatWindow() {
@@ -75,6 +76,18 @@ export default function ChatWindow() {
     if (!trimmed || isStreaming) return;
     sendMessage(trimmed);
     setInput("");
+  };
+
+  const handleClarifySelect = (candidate: CareTaskCandidate, verb: string) => {
+    if (isStreaming || wsStatus !== "connected") return;
+    // Prefer task_id so resolve_task_ref binds exactly; title helps elder readability.
+    const text =
+      verb === "取消"
+        ? `取消任务 ${candidate.title} id=${candidate.id}`
+        : verb === "完成"
+          ? `完成任务 ${candidate.title} id=${candidate.id}`
+          : `选择任务 ${candidate.title} id=${candidate.id}`;
+    sendMessage(text);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -207,7 +220,12 @@ export default function ChatWindow() {
           ) : (
             <>
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  isStreaming={isStreaming}
+                  onClarifySelect={handleClarifySelect}
+                />
               ))}
               <div ref={messagesEndRef} />
             </>

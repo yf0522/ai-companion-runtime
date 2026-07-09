@@ -21,6 +21,17 @@ _FALSE_REMIND_NOW_PATTERNS = [
     r"已(?:经)?提醒过(?:你|您)",
 ]
 
+# Technical dumps that must never appear in elder chat bubbles.
+_TECH_JARGON_PATTERNS = [
+    r"状态\s*pending",
+    r"\bpending\b",
+    r"未重复创建",
+    r"已有相同照护任务",
+    r"id\s*[=:：]\s*[0-9a-f-]{8,}",
+    r"\[pending\]",
+    r"caretask_",
+]
+
 
 def response_claims_tool_success(text: str) -> bool:
     if not text:
@@ -32,6 +43,12 @@ def response_claims_reminded_now(text: str) -> bool:
     if not text:
         return False
     return any(re.search(p, text, re.IGNORECASE) for p in _FALSE_REMIND_NOW_PATTERNS)
+
+
+def response_has_tech_jargon(text: str) -> bool:
+    if not text:
+        return False
+    return any(re.search(p, text, re.IGNORECASE) for p in _TECH_JARGON_PATTERNS)
 
 
 def failed_tool_results(results: list[ToolResult] | None) -> list[ToolResult]:
@@ -86,11 +103,16 @@ def enforce_no_verbal_promise(
     if not reuse:
         return response_text
 
-    needs_rewrite = response_claims_tool_success(response_text) or response_claims_reminded_now(
-        response_text
+    needs_rewrite = (
+        response_claims_tool_success(response_text)
+        or response_claims_reminded_now(response_text)
+        or response_has_tech_jargon(response_text)
     )
     if not needs_rewrite:
         return response_text
 
-    parts = [r.display_text or "已有相同照护任务（未重复创建）" for r in reuse]
+    parts = [
+        r.display_text or "您已经有这个提醒了，我帮您沿用，没有重复创建。"
+        for r in reuse
+    ]
     return "；".join(parts)

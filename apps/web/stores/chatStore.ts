@@ -8,10 +8,20 @@ export type ToolChipStatus =
   | "timeout"
   | "needs_clarification";
 
+export interface CareTaskCandidate {
+  id: string;
+  title: string;
+  status?: string;
+  due_at?: string | null;
+  task_type?: string;
+}
+
 export interface ToolChip {
   tool: string;
   status: ToolChipStatus;
   action?: string;
+  candidates?: CareTaskCandidate[];
+  clarifyVerb?: string;
 }
 
 export interface Message {
@@ -22,8 +32,32 @@ export interface Message {
   ttftMs?: number;
   totalLatencyMs?: number;
   toolsUsed?: ToolChip[];
+  careTaskClarify?: {
+    verb: string;
+    candidates: CareTaskCandidate[];
+  };
   riskAlert?: { level: string; message: string };
   status: "sending" | "streaming" | "complete" | "error";
+}
+
+function normalizeCandidates(raw: unknown): CareTaskCandidate[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: CareTaskCandidate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const id = String(obj.id || "").trim();
+    const title = String(obj.title || "").trim();
+    if (!id || !title) continue;
+    out.push({
+      id,
+      title,
+      status: obj.status ? String(obj.status) : undefined,
+      due_at: obj.due_at == null ? null : String(obj.due_at),
+      task_type: obj.task_type ? String(obj.task_type) : undefined,
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 function normalizeToolChip(raw: unknown): ToolChip | null {
@@ -47,13 +81,28 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
       ? statusRaw
       : "calling") as ToolChipStatus;
     const action = obj.action ? String(obj.action) : undefined;
-    return action ? { tool, status, action } : { tool, status };
+    const candidates = normalizeCandidates(obj.candidates);
+    const clarifyVerb = obj.clarify_verb
+      ? String(obj.clarify_verb)
+      : obj.clarifyVerb
+        ? String(obj.clarifyVerb)
+        : undefined;
+    const chip: ToolChip = { tool, status };
+    if (action) chip.action = action;
+    if (candidates) chip.candidates = candidates;
+    if (clarifyVerb) chip.clarifyVerb = clarifyVerb;
+    return chip;
   }
   return null;
 }
 
-function upsertToolChip(chips: ToolChip[], tool: string, status: string): ToolChip[] {
-  const chip = normalizeToolChip({ tool, status });
+function upsertToolChip(
+  chips: ToolChip[],
+  tool: string,
+  status: string,
+  extra?: Partial<ToolChip>,
+): ToolChip[] {
+  const chip = normalizeToolChip({ tool, status, ...extra });
   if (!chip) return chips;
   const next = [...chips];
   const idx = next.findIndex((c) => c.tool === tool);
@@ -63,6 +112,23 @@ function upsertToolChip(chips: ToolChip[], tool: string, status: string): ToolCh
     next.push(chip);
   }
   return next;
+}
+
+function clarifyFromChips(chips: ToolChip[] | undefined): Message["careTaskClarify"] {
+  if (!chips) return undefined;
+  for (const chip of chips) {
+    if (
+      chip.status === "needs_clarification" &&
+      chip.candidates &&
+      chip.candidates.length > 0
+    ) {
+      return {
+        verb: chip.clarifyVerb || "确认",
+        candidates: chip.candidates,
+      };
+    }
+  }
+  return undefined;
 }
 
 interface ChatState {
@@ -75,6 +141,14 @@ interface ChatState {
   appendDelta: (text: string) => void;
   setFirstReply: (text: string, ttftMs: number) => void;
   setToolStatus: (tool: string, status: string) => void;
+  setToolResult: (data: {
+    tool: string;
+    status?: string;
+    text?: string;
+    action?: string;
+    candidates?: unknown;
+    clarifyVerb?: string;
+  }) => void;
   setRiskAlert: (level: string, message: string) => void;
   finalizeMessage: (data: {
     traceId: string;
@@ -149,11 +223,41 @@ export const useChatStore = create<ChatState>()(
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant") {
+        const toolsUsed = upsertToolChip(last.toolsUsed || [], tool, status);
         msgs[msgs.length - 1] = {
           ...last,
-          toolsUsed: upsertToolChip(last.toolsUsed || [], tool, status),
+          toolsUsed,
+          careTaskClarify: clarifyFromChips(toolsUsed) || last.careTaskClarify,
         };
       }
+      return { messages: msgs };
+    });
+  },
+
+  setToolResult: (data) => {
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role !== "assistant") return {};
+      const status = data.status || "success";
+      const candidates = normalizeCandidates(data.candidates);
+      const toolsUsed = upsertToolChip(last.toolsUsed || [], data.tool, status, {
+        action: data.action,
+        candidates,
+        clarifyVerb: data.clarifyVerb,
+      });
+      const careTaskClarify =
+        status === "needs_clarification" && candidates
+          ? {
+              verb: data.clarifyVerb || "确认",
+              candidates,
+            }
+          : clarifyFromChips(toolsUsed) || last.careTaskClarify;
+      msgs[msgs.length - 1] = {
+        ...last,
+        toolsUsed,
+        careTaskClarify,
+      };
       return { messages: msgs };
     });
   },
@@ -180,11 +284,11 @@ export const useChatStore = create<ChatState>()(
         // Prefer live chip statuses; merge final outcomes by tool name.
         let chips = [...(last.toolsUsed || [])];
         for (const chip of fromFinal) {
-          chips = upsertToolChip(chips, chip.tool, chip.status);
-          const idx = chips.findIndex((c) => c.tool === chip.tool);
-          if (idx >= 0 && chip.action) {
-            chips[idx] = { ...chips[idx], action: chip.action };
-          }
+          chips = upsertToolChip(chips, chip.tool, chip.status, {
+            action: chip.action,
+            candidates: chip.candidates,
+            clarifyVerb: chip.clarifyVerb,
+          });
         }
         msgs[msgs.length - 1] = {
           ...last,
@@ -193,6 +297,7 @@ export const useChatStore = create<ChatState>()(
           ttftMs: data.ttftMs,
           totalLatencyMs: data.totalLatencyMs,
           toolsUsed: chips,
+          careTaskClarify: clarifyFromChips(chips) || last.careTaskClarify,
           status: "complete",
         };
       }

@@ -1,7 +1,12 @@
 import type { Message, ToolChip, ToolChipStatus } from "@/stores/chatStore";
+import CareTaskClarifyCard, {
+  type CareTaskCandidate,
+} from "./CareTaskClarifyCard";
 
 interface Props {
   message: Message;
+  isStreaming?: boolean;
+  onClarifySelect?: (candidate: CareTaskCandidate, verb: string) => void;
 }
 
 function chipStyle(status: ToolChipStatus): string {
@@ -60,8 +65,13 @@ function RiskAlertBanner({
   );
 }
 
-export default function MessageBubble({ message }: Props) {
+export default function MessageBubble({
+  message,
+  isStreaming = false,
+  onClarifySelect,
+}: Props) {
   const isUser = message.role === "user";
+  const clarify = message.careTaskClarify;
 
   return (
     <div className={`py-4 ${!isUser ? "bg-[#fafafa]" : ""}`}>
@@ -113,6 +123,16 @@ export default function MessageBubble({ message }: Props) {
                 </span>
               ))}
             </div>
+          )}
+
+          {/* CareTask clarify — tap to choose which task to cancel/complete */}
+          {!isUser && clarify && clarify.candidates.length > 0 && onClarifySelect && (
+            <CareTaskClarifyCard
+              candidates={clarify.candidates}
+              verb={clarify.verb}
+              disabled={isStreaming || message.status === "streaming"}
+              onSelect={(c) => onClarifySelect(c, clarify.verb)}
+            />
           )}
 
           {/* Meta bar */}
