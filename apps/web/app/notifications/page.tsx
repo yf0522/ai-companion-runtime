@@ -142,6 +142,9 @@ export default function NotificationsPage() {
         const notificationData = await r2.json();
         setReminders(mapReminders(reminderData));
         setNotifications(notificationData.items || []);
+        if (notificationData.status === "unavailable") {
+          setError("通知服务暂时不可用，请稍后重试（不是“暂无通知”）");
+        }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "加载失败");
       } finally {

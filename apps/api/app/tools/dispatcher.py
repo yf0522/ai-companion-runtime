@@ -42,11 +42,22 @@ class ToolDispatcher:
         message: str,
         trace_id: str,
         stream_mgr: StreamManager,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> list[ToolResult]:
         tasks = []
-        for name in tool_needs[:self._max_tool_calls]:
+        for name in tool_needs[: self._max_tool_calls]:
             if name in self._tools:
-                tasks.append(self._call_tool(name, message, stream_mgr))
+                tasks.append(
+                    self._call_tool(
+                        name,
+                        message,
+                        trace_id,
+                        stream_mgr,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                )
             else:
                 logger.warning(f"Unknown tool: {name}")
 
@@ -56,27 +67,71 @@ class ToolDispatcher:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [r for r in results if isinstance(r, ToolResult)]
 
-    async def _call_tool(self, name: str, message: str, stream_mgr: StreamManager) -> ToolResult:
+    async def _record_tool_call(
+        self,
+        *,
+        trace_id: str,
+        tool_name: str,
+        input_json: dict,
+        output_json: dict | None,
+        status: str,
+        latency_ms: int,
+    ) -> None:
+        """Best-effort persistence — never break chat on trace DB failure."""
+        try:
+            from app.observability.trace_service import TraceService
+
+            await TraceService().record_tool_call(
+                trace_id=trace_id,
+                tool_name=tool_name,
+                input_json=input_json,
+                output_json=output_json,
+                status=status,
+                latency_ms=latency_ms,
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist tool call for {tool_name}: {e}")
+
+    async def _call_tool(
+        self,
+        name: str,
+        message: str,
+        trace_id: str,
+        stream_mgr: StreamManager,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> ToolResult:
         tool = self._tools[name]
         await stream_mgr.send_tool_status(name, "calling")
         start = time.monotonic()
+        params = {
+            "query": message,
+            "user_id": user_id,
+            "session_id": session_id,
+            "trace_id": trace_id,
+        }
+        input_json = {
+            "query": message,
+            "user_id": user_id,
+            "session_id": session_id,
+        }
 
         try:
             result = await asyncio.wait_for(
-                tool.execute({"query": message}),
+                tool.execute(params),
                 timeout=self._tool_timeout_ms / 1000,
             )
             latency = int((time.monotonic() - start) * 1000)
             result.latency_ms = latency
 
-            # Check for WS actions embedded in tool result data.
-            # Tools can request the dispatcher send structured messages to the
-            # ESP32 without knowing about WebSocket themselves.
             if result.data and result.data.get("action"):
                 action = result.data["action"]
                 if action == "reminder_create":
-                    ws_data = {k: v for k, v in result.data.items()
-                               if k not in ("action", "display_time")}
+                    ws_data = {
+                        k: v
+                        for k, v in result.data.items()
+                        if k not in ("action", "display_time")
+                    }
                     await stream_mgr.send_reminder_create(ws_data)
 
             if result.status == "success":
@@ -85,15 +140,52 @@ class ToolDispatcher:
             else:
                 await stream_mgr.send_tool_status(name, "failed")
 
+            await self._record_tool_call(
+                trace_id=trace_id,
+                tool_name=name,
+                input_json=input_json,
+                output_json={
+                    "status": result.status,
+                    "display_text": result.display_text,
+                    "data": result.data,
+                },
+                status=result.status,
+                latency_ms=latency,
+            )
             return result
 
         except asyncio.TimeoutError:
             latency = int((time.monotonic() - start) * 1000)
             await stream_mgr.send_tool_status(name, "failed")
-            return ToolResult(tool_name=name, status="timeout", display_text="", latency_ms=latency)
+            await self._record_tool_call(
+                trace_id=trace_id,
+                tool_name=name,
+                input_json=input_json,
+                output_json={"status": "timeout", "display_text": "", "data": None},
+                status="timeout",
+                latency_ms=latency,
+            )
+            return ToolResult(
+                tool_name=name, status="timeout", display_text="", latency_ms=latency
+            )
 
         except Exception as e:
             latency = int((time.monotonic() - start) * 1000)
             logger.error(f"Tool {name} error: {e}")
             await stream_mgr.send_tool_status(name, "failed")
-            return ToolResult(tool_name=name, status="failed", display_text="", latency_ms=latency)
+            await self._record_tool_call(
+                trace_id=trace_id,
+                tool_name=name,
+                input_json=input_json,
+                output_json={
+                    "status": "failed",
+                    "display_text": "",
+                    "data": None,
+                    "error": str(e),
+                },
+                status="failed",
+                latency_ms=latency,
+            )
+            return ToolResult(
+                tool_name=name, status="failed", display_text="", latency_ms=latency
+            )
