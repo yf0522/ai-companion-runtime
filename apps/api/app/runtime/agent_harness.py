@@ -146,8 +146,11 @@ class AgentHarness:
         # Step 2: Risk check
         step += 1
         if risk.level in ("critical", "high"):
-            await self._handle_risk(risk, stream_mgr, trace_id, start_time)
+            await self._handle_risk(risk, stream_mgr, trace_id, start_time, user_id)
             return {"trace_id": trace_id, "blocked_by_risk": True}
+
+        if risk.level == "medium":
+            await self._dispatch_risk_notification(user_id, "medium", risk.category, message[:100])
 
         # Step 3: Personality + Fast Reply (non-blocking, first-sentence-first)
         step += 1
@@ -345,7 +348,14 @@ class AgentHarness:
         """Get a cached engine singleton. Returns None if not implemented."""
         return _get_cached_engine(name)
 
-    async def _handle_risk(self, risk: RiskResult, stream_mgr: StreamManager, trace_id: str, start_time: float):
+    async def _handle_risk(
+        self,
+        risk: RiskResult,
+        stream_mgr: StreamManager,
+        trace_id: str,
+        start_time: float,
+        user_id: str,
+    ):
         """Handle high/critical risk: send alert and safe response."""
         await stream_mgr.send_risk_alert(risk.level, "")
 
@@ -371,6 +381,31 @@ class AgentHarness:
             tools_used=[],
             memory_updated=False,
         )
+
+        await self._dispatch_risk_notification(
+            user_id,
+            risk.level,
+            risk.category,
+            f"触发规则: {risk.triggered_rules}",
+        )
+
+    async def _dispatch_risk_notification(
+        self,
+        user_id: str,
+        risk_level: str,
+        risk_category: str | None,
+        summary: str,
+    ) -> None:
+        try:
+            from app.config.settings import settings
+
+            if not settings.enable_celery_tasks:
+                return
+            from app.workers.notification_worker import send_risk_notification
+
+            send_risk_notification.delay(user_id, risk_level, risk_category or "", summary)
+        except Exception as e:
+            logger.debug(f"Notification dispatch skipped: {e}")
 
     async def _fast_reply_race(
         self, message: str, emotion: EmotionResult, personality: PersonalityConfig,

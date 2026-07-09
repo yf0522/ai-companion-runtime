@@ -2,11 +2,45 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
+from typing import Optional
 
 from app.tools.base import ToolBase, ToolResult
 
 logger = logging.getLogger(__name__)
+
+DAILY_KEYWORDS = ["吃药", "量血压", "测血糖", "吃饭", "喝水", "做操", "散步", "锻炼", "吃早饭", "吃午饭", "吃晚饭"]
+ONCE_KEYWORDS = ["打电话", "买", "取", "寄", "明天", "后天", "下周"]
+
+
+def detect_schedule_type(text: str) -> Optional[str]:
+    for kw in DAILY_KEYWORDS:
+        if kw in text:
+            return "daily"
+    for kw in ONCE_KEYWORDS:
+        if kw in text:
+            return "once"
+    return None
+
+
+def parse_time_from_text(text: str) -> Optional[time]:
+    m = re.search(r"下午\s*(\d{1,2})\s*(?:点|:)\s*(\d{1,2})?", text)
+    if m:
+        h = int(m.group(1))
+        mi = int(m.group(2)) if m.group(2) else 0
+        if h < 12:
+            h += 12
+        return time(h, mi)
+
+    m = re.search(r"上午\s*(\d{1,2})\s*(?:点|:)\s*(\d{1,2})?", text)
+    if m:
+        return time(int(m.group(1)), int(m.group(2)) if m.group(2) else 0)
+
+    m = re.search(r"(\d{1,2})\s*(?:点|:)\s*(\d{1,2})?", text)
+    if m:
+        return time(int(m.group(1)), int(m.group(2)) if m.group(2) else 0)
+
+    return None
 
 
 class ReminderTool(ToolBase):

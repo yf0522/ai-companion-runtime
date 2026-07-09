@@ -6,7 +6,7 @@
 
 Last updated: 2026-07-09
 
-This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` is being consolidated here; application follow-up material should point reviewers to this repo and mention that consolidation explicitly.
+This repository is the canonical home for the merged AI companion runtime and eldercare device integration work. The earlier device-focused repo `https://github.com/yf0522/elder-companion-runtime` has been consolidated here; application follow-up material should point reviewers to this repo.
 
 | Area | Current status |
 |---|---|
@@ -17,8 +17,9 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. |
 | Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; full ESP32 local trigger evidence still needs a captured hardware test pass. |
 | Device realtime WebSocket | Implemented and covered by automated tests: JWT auth, PCM receive, ASR fallback, model text streaming, TTS PCM bytes, and empty-speech handling. |
+| ESP32-S3 firmware | Imported under `firmware/` from `elder-companion-runtime`: wake state machine, audio pipeline stubs, WebSocket client, and local reminder support. |
 | Hardware device validation | Partially verified: prior ESP32-S3 build/flash and second-turn diagnosis are documented in `docs/hardware-second-turn-diagnosis.md`; repeatable in-repo hardware evidence should be added before claiming full production readiness. |
-| Family notification | Roadmap/adapter boundary unless a notification provider is configured and tested. |
+| Family notification | Implemented as DB-backed notification logs plus Celery webhook worker; provider/webhook configuration still needs deployment validation. |
 | Investor demo material | Added in `docs/investor-demo.md`; device evidence checklist added in `docs/device-test.md`. |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 

@@ -32,6 +32,11 @@ docs/
 docs/*
 !docs/device-test.md
 !docs/investor-demo.md
+!docs/superpowers/
+!docs/superpowers/plans/
+!docs/superpowers/plans/2026-06-15-elder-companion-pivot.md
+!docs/superpowers/specs/
+!docs/superpowers/specs/2026-06-15-elder-companion-pivot-design.md
 *.html
 
 # Data

@@ -3,16 +3,26 @@ import { persist } from "zustand/middleware";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+function parseJwtRole(token: string): string {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.role || "elder";
+  } catch {
+    return "elder";
+  }
+}
+
 interface AuthState {
   token: string | null;
   userId: string | null;
   username: string | null;
+  role: string | null;
 
-  setAuth: (token: string, userId: string, username: string) => void;
+  setAuth: (token: string, userId: string, username: string, role: string) => void;
   clearAuth: () => void;
   isAuthenticated: () => boolean;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string, role?: string) => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -21,9 +31,10 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       userId: null,
       username: null,
+      role: null,
 
-      setAuth: (token, userId, username) => set({ token, userId, username }),
-      clearAuth: () => set({ token: null, userId: null, username: null }),
+      setAuth: (token, userId, username, role) => set({ token, userId, username, role }),
+      clearAuth: () => set({ token: null, userId: null, username: null, role: null }),
       isAuthenticated: () => !!get().token,
 
       login: async (username: string, password: string) => {
@@ -41,14 +52,15 @@ export const useAuthStore = create<AuthState>()(
           token: data.access_token,
           userId: data.user_id,
           username: data.username,
+          role: parseJwtRole(data.access_token),
         });
       },
 
-      register: async (username: string, password: string) => {
+      register: async (username: string, password: string, role?: string) => {
         const res = await fetch(`${API_URL}/api/auth/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({ username, password, ...(role ? { role } : {}) }),
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -59,6 +71,7 @@ export const useAuthStore = create<AuthState>()(
           token: data.access_token,
           userId: data.user_id,
           username: data.username,
+          role: parseJwtRole(data.access_token),
         });
       },
     }),
@@ -68,6 +81,7 @@ export const useAuthStore = create<AuthState>()(
         token: state.token,
         userId: state.userId,
         username: state.username,
+        role: state.role,
       }),
     }
   )

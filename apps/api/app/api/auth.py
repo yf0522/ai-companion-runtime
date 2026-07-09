@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -18,6 +19,7 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     email: Optional[str] = None
+    role: str = "elder"
 
 
 class LoginRequest(BaseModel):
@@ -32,11 +34,12 @@ class TokenResponse(BaseModel):
     username: str
 
 
-def create_token(user_id: str, username: str) -> str:
+def create_token(user_id: str, username: str, role: str = "elder") -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {
         "sub": user_id,
         "username": username,
+        "role": role,
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
@@ -98,12 +101,13 @@ async def register(req: RegisterRequest):
             username=req.username,
             email=req.email,
             password_hash=pwd_context.hash(req.password),
+            role=req.role,
         )
         db.add(user)
         await db.commit()
         await db.refresh(user)
 
-        token = create_token(str(user.id), user.username)
+        token = create_token(str(user.id), user.username, user.role)
         return TokenResponse(
             access_token=token,
             user_id=str(user.id),
@@ -126,9 +130,44 @@ async def login(req: LoginRequest):
         if not user or not pwd_context.verify(req.password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        token = create_token(str(user.id), user.username)
+        token = create_token(str(user.id), user.username, user.role)
         return TokenResponse(
             access_token=token,
             user_id=str(user.id),
             username=user.username,
         )
+
+
+_bind_codes: dict[str, tuple[str, datetime]] = {}
+
+
+@router.post("/auth/generate-bind-code")
+async def generate_bind_code(user: dict = Depends(get_current_user)):
+    if user.get("role") != "elder":
+        raise HTTPException(status_code=403, detail="Only elder users can generate bind codes")
+    code = f"{secrets.randbelow(1000000):06d}"
+    _bind_codes[code] = (user["sub"], datetime.utcnow() + timedelta(minutes=10))
+    return {"code": code, "expires_in_seconds": 600}
+
+
+@router.post("/auth/bind-family")
+async def bind_family(code: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "family":
+        raise HTTPException(status_code=403, detail="Only family users can bind")
+    entry = _bind_codes.get(code)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Invalid or expired code")
+    elder_user_id, expires_at = entry
+    if datetime.utcnow() > expires_at:
+        del _bind_codes[code]
+        raise HTTPException(status_code=410, detail="Code expired")
+    del _bind_codes[code]
+
+    from app.db.models import FamilyBinding
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        binding = FamilyBinding(family_user_id=_uuid.UUID(user["sub"]), elder_user_id=_uuid.UUID(elder_user_id))
+        db.add(binding)
+        await db.commit()
+    return {"bound_to": elder_user_id}

@@ -57,10 +57,16 @@ app.conf.beat_schedule = {
         "task": "app.workers.memory_worker.trace_cold_archive",
         "schedule": crontab(hour=2, minute=0, day_of_month=1),
     },
+    "check-due-reminders": {
+        "task": "app.workers.reminder_scheduler.check_due_reminders",
+        "schedule": 60.0,
+    },
 }
 
 app.autodiscover_tasks([
     "app.workers.memory_worker",
     "app.workers.embedding_worker",
     "app.workers.reflection_worker",
+    "app.workers.reminder_scheduler",
+    "app.workers.notification_worker",
 ])
