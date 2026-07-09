@@ -38,8 +38,8 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; full ESP32 local trigger evidence still needs a captured hardware test pass. |
 | Device realtime WebSocket | Implemented and covered by automated tests: JWT auth, PCM receive, ASR fallback, model text streaming, TTS PCM bytes, and empty-speech handling. |
 | ESP32-S3 firmware | Imported under `firmware/` from `elder-companion-runtime`: wake state machine, audio pipeline stubs, WebSocket client, and local reminder support. |
-| Hardware device validation | Partially verified: prior ESP32-S3 build/flash and second-turn diagnosis are documented in `docs/hardware-second-turn-diagnosis.md`; repeatable in-repo hardware evidence should be added before claiming full production readiness. |
-| Family notification | Implemented as DB-backed notification logs plus Celery webhook worker; provider/webhook configuration still needs deployment validation. |
+| Hardware device validation | Partially verified: earlier ESP32-S3 build/flash notes are retained in historical design docs; current repo keeps this as prior reference, and repeatable in-repo hardware evidence still needs capture before claiming full production readiness. |
+| Family notification | 接口已上链路（`/api/notifications`、`/api/reminders`），当前为演示占位/结构化输出，真实 provider 下发与回执仍在 roadmap。 |
 | Investor demo material | Added in `docs/investor-demo.md`; device evidence checklist added in `docs/device-test.md`. |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
