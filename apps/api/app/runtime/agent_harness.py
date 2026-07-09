@@ -195,7 +195,14 @@ class AgentHarness:
         tool_task = None
         if intent.tool_needs and not cancel_event.is_set():
             tool_task = asyncio.create_task(
-                self._dispatch_tools(intent.tool_needs, message, trace_id, stream_mgr)
+                self._dispatch_tools(
+                    intent.tool_needs,
+                    message,
+                    trace_id,
+                    stream_mgr,
+                    user_id=db_user_id,
+                    session_id=db_session_id,
+                )
             )
 
         # Stream main model with retry + total timeout
@@ -545,12 +552,27 @@ class AgentHarness:
 
         return False
 
-    async def _dispatch_tools(self, tool_needs: list[str], message: str, trace_id: str, stream_mgr: StreamManager) -> list:
-        """Dispatch tools. Returns list of results. Stub for Phase 3."""
+    async def _dispatch_tools(
+        self,
+        tool_needs: list[str],
+        message: str,
+        trace_id: str,
+        stream_mgr: StreamManager,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list:
+        """Dispatch tools with user/session context for persistence-capable tools."""
         try:
             from app.tools.dispatcher import ToolDispatcher
             dispatcher = ToolDispatcher()
-            return await dispatcher.dispatch(tool_needs, message, trace_id, stream_mgr)
+            return await dispatcher.dispatch(
+                tool_needs,
+                message,
+                trace_id,
+                stream_mgr,
+                user_id=user_id,
+                session_id=session_id,
+            )
         except ImportError:
             logger.debug("ToolDispatcher not implemented yet (Phase 3)")
             return []
