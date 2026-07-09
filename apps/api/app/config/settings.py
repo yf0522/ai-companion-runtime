@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     enable_pi_runtime: bool = False
     pi_sidecar_url: str = "http://127.0.0.1:8787"
     pi_provider: str = "google"
-    pi_model: str = "gemini-2.5-flash"
+    pi_model: str = "gemini-flash-latest"
 
     model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 

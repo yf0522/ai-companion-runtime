@@ -3,13 +3,16 @@ import { Agent, convertToLlm } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
+import { normalizeCareTaskParams } from "./caretask-params.mjs";
+import { assistantErrorMessage } from "./pi-events.mjs";
+
 // pi-ai's Google provider reads GEMINI_API_KEY; align with harness GOOGLE_API_KEY.
 if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
   process.env.GEMINI_API_KEY = process.env.GOOGLE_API_KEY;
 }
 
 const PORT = Number(process.env.PI_SIDECAR_PORT || 8787);
-const DEFAULT_MODEL = process.env.PI_MODEL || "gemini-2.5-flash";
+const DEFAULT_MODEL = process.env.PI_MODEL || "gemini-flash-latest";
 const DEFAULT_PROVIDER = process.env.PI_PROVIDER || "google";
 
 function resolveToolBridgeUrl() {
@@ -173,7 +176,11 @@ function makeCareTaskTool(ctx) {
       query: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {
-      const result = await bridgeExecute("caretask", params || {}, ctx);
+      const result = await bridgeExecute(
+        "caretask",
+        normalizeCareTaskParams(params, ctx.userText),
+        ctx,
+      );
       const status = result.status || "failed";
       const text =
         result.display_text ||
@@ -204,10 +211,12 @@ async function streamAgentChat({ res, body }) {
     traceId: body.trace_id || null,
     riskBlocked: Boolean(body.risk_blocked),
     riskLevel: body.risk_level || null,
+    userText: lastUser.content,
   };
 
   const tools = ENABLE_TOOLS ? [makeCareTaskTool(ctx)] : [];
   const toolsUsed = [];
+  let agentError = null;
 
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -307,6 +316,12 @@ async function streamAgentChat({ res, body }) {
   });
 
   agent.subscribe(async (event) => {
+    const errorMessage = assistantErrorMessage(event);
+    if (errorMessage) {
+      agentError = errorMessage;
+      writeNdjson(res, { type: "error", message: errorMessage });
+      return;
+    }
     if (
       event.type === "message_update" &&
       event.assistantMessageEvent?.type === "text_delta" &&
@@ -316,7 +331,7 @@ async function streamAgentChat({ res, body }) {
         type: "text_delta",
         delta: event.assistantMessageEvent.delta,
       });
-    } else if (event.type === "agent_end") {
+    } else if (event.type === "agent_end" && !agentError) {
       writeNdjson(res, {
         type: "done",
         reason: "agent_end",

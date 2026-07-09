@@ -109,6 +109,8 @@ def test_normalize_title_and_fingerprint():
     assert normalize_title("提醒我吃降压药") == normalize_title("帮我吃降压药")
     assert normalize_title("每天晚上8点提醒我吃降压药") == normalize_title("帮我记一下吃降压药")
     assert normalize_title("每天晚上8点提醒我吃降压药") == "吃降压药"
+    assert normalize_title("服用降压药") == "吃降压药"
+    assert normalize_title("服药降压药") == "吃降压药"
     assert "降压药" in normalize_title("每天晚上提醒我吃降压药吧")
     fp1 = title_fingerprint("吃降压药", "medication", None)
     fp2 = title_fingerprint("提醒我吃降压药", "medication", None)
@@ -505,10 +507,12 @@ async def test_resolve_specific_med_does_not_broaden_to_unrelated(monkeypatch):
             "user_id": str(uuid.uuid4()),
         }
     )
-    assert result.status == "failed"
+    assert result.status == "success"
+    assert result.data["action"] == "caretask_already_done"
     assert "降压药" in result.display_text
     assert "降糖药" not in result.display_text
     assert "量血压" not in result.display_text
+    assert "pending" not in result.display_text.lower()
 
 
 @pytest.mark.asyncio

@@ -164,6 +164,8 @@ def normalize_title(title: str) -> str:
     ):
         if text.startswith(prefix):
             text = text[len(prefix) :]
+    if "药" in text:
+        text = re.sub(r"^(?:服用|服药)", "吃", text)
     text = text.lower()
     return text.strip() or (title or "").strip()[:80]
 
