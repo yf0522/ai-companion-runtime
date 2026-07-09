@@ -15,8 +15,8 @@ class _FakeStream:
     async def send_tool_status(self, tool: str, status: str):
         self.events.append(("status", tool, status))
 
-    async def send_tool_result(self, tool: str, text: str):
-        self.events.append(("result", tool, text))
+    async def send_tool_result(self, tool: str, text: str, **kwargs):
+        self.events.append(("result", tool, text, kwargs))
 
     async def send_reminder_create(self, data: dict):
         self.events.append(("reminder_create", data))
@@ -129,4 +129,7 @@ async def test_trace_persistence_failure_does_not_crash_dispatch(monkeypatch):
 
     assert len(results) == 1
     assert results[0].status == "success"
-    assert ("result", "calculator", "1+1 = 2") in stream.events
+    assert any(
+        e[0] == "result" and e[1] == "calculator" and e[2] == "1+1 = 2"
+        for e in stream.events
+    )

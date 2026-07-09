@@ -80,6 +80,19 @@ export const useWsStore = create<WsState>((set, get) => ({
       useChatStore.getState().setToolStatus(data.tool, data.status);
     });
 
+    // Tool result — may carry clarify candidates for CareTask UI
+    client.on("tool_result", (data) => {
+      const payload = data.data || {};
+      useChatStore.getState().setToolResult({
+        tool: data.tool,
+        status: data.status,
+        text: data.text,
+        action: data.action || payload.action,
+        candidates: data.candidates || payload.candidates,
+        clarifyVerb: payload.clarify_verb || data.clarify_verb,
+      });
+    });
+
     // Final
     client.on("final", (data) => {
       useChatStore.getState().finalizeMessage({

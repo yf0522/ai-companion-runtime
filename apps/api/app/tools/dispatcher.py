@@ -118,17 +118,39 @@ class ToolDispatcher:
                 action = result.data["action"]
                 await self._project_device_events(action, result.data, stream_mgr)
 
+            result_data = result.data if isinstance(result.data, dict) else {}
+            candidates = result_data.get("candidates") if result_data else None
+            action = result_data.get("action") if result_data else None
             if result.status == "success":
                 await stream_mgr.send_tool_status(name, "success")
-                await stream_mgr.send_tool_result(name, result.display_text)
+                await stream_mgr.send_tool_result(
+                    name,
+                    result.display_text,
+                    status="success",
+                    action=action,
+                    data=result_data or None,
+                )
             elif result.status == "needs_clarification":
                 await stream_mgr.send_tool_status(name, "needs_clarification")
                 if result.display_text:
-                    await stream_mgr.send_tool_result(name, result.display_text)
+                    await stream_mgr.send_tool_result(
+                        name,
+                        result.display_text,
+                        status="needs_clarification",
+                        action=action,
+                        candidates=candidates,
+                        data=result_data or None,
+                    )
             else:
                 await stream_mgr.send_tool_status(name, result.status or "failed")
                 if result.display_text:
-                    await stream_mgr.send_tool_result(name, result.display_text)
+                    await stream_mgr.send_tool_result(
+                        name,
+                        result.display_text,
+                        status=result.status or "failed",
+                        action=action,
+                        data=result_data or None,
+                    )
 
             await self._record_tool_call(
                 trace_id=trace_id,

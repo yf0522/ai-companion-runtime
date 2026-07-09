@@ -37,6 +37,18 @@ _RESOLVE_ACTION_PREFIX = re.compile(
     r"^(?:请|麻烦|帮我|给我)?(?:取消|不要了|不要|删掉|删除|完成|打卡|推迟|延后)"
 )
 _RESOLVE_ACTION_SUFFIX = re.compile(r"(?:的)?(?:提醒|任务|闹钟)+$")
+# Complete / done phrasing: 「降压药我吃过了」 → hint 「降压药」
+# Match with or without trailing 了 (normalize_title may strip 了 first).
+_RESOLVE_DONE_SUFFIX = re.compile(
+    r"(?:我)?(?:已经)?(?:"
+    r"吃过了?|吃完了?|吃了|服用了?|打卡了?|完成了?|做过了?|好了"
+    r")$"
+)
+_TASK_ID_IN_QUERY = re.compile(
+    r"(?:id\s*[=:：]\s*)?"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
 _GENERIC_MED_HINTS = frozenset(
     {
         "",
@@ -202,15 +214,32 @@ def extract_resolve_hint(title_hint: str | None, query: str | None) -> str:
 
     Strips cancel/complete verbs and trailing 「提醒」 so category phrases
     like 「取消吃药提醒」 become the generic med hint 「吃药」.
+    Also strips done phrasing: 「降压药我吃过了」 → 「降压药」.
     """
-    text = normalize_title(title_hint or query or "")
+    # Strip done/cancel phrasing on raw text first so normalize_title's
+    # trailing-「了」 trim cannot leave a dangling 「吃过」.
+    raw = _WHITESPACE.sub("", (title_hint or query or "").strip())
+    raw = _RESOLVE_ACTION_PREFIX.sub("", raw)
+    raw = _RESOLVE_DONE_SUFFIX.sub("", raw)
+    raw = _RESOLVE_ACTION_SUFFIX.sub("", raw)
+    text = normalize_title(raw)
     text = _RESOLVE_ACTION_PREFIX.sub("", text)
+    text = _RESOLVE_DONE_SUFFIX.sub("", text)
     text = _RESOLVE_ACTION_SUFFIX.sub("", text)
     text = text.strip()
     # Second pass: leftover filler after verb strip (e.g. 取消提醒我吃药)
     text = normalize_title(text)
+    text = _RESOLVE_DONE_SUFFIX.sub("", text)
     text = _RESOLVE_ACTION_SUFFIX.sub("", text)
     return text.strip()
+
+
+def extract_task_id_from_query(query: str | None) -> str | None:
+    """Parse an explicit CareTask UUID from clarify-button follow-ups."""
+    if not query:
+        return None
+    m = _TASK_ID_IN_QUERY.search(query)
+    return m.group(1) if m else None
 
 
 def is_generic_med_hint(hint: str) -> bool:
@@ -229,6 +258,8 @@ class ResolveResult:
     kind: Literal["one", "many", "none"]
     task: dict[str, Any] | None = None
     candidates: list[dict[str, Any]] | None = None
+    hint: str | None = None
+    already_done: bool = False
 
 
 def _parse_row_due(row: dict[str, Any]) -> datetime | None:
@@ -363,6 +394,14 @@ async def _update_task_schedule(
         data["schedule_type"] = st
         return data
 
+def _title_matches_hint(hint: str, title: str) -> bool:
+    nt = normalize_title(title)
+    nh = normalize_title(hint)
+    if not nh or not nt:
+        return False
+    return nh in nt or nt in nh or _token_overlap(nh, nt) >= 0.55
+
+
 async def resolve_task_ref(
     *,
     user_id: str,
@@ -374,7 +413,14 @@ async def resolve_task_ref(
 
     Category-level cancel/complete (「取消吃药提醒」) with ≥2 active tasks
     always returns ``many`` — never bind to a single generic 「吃药」 title.
+
+    Specific medicine tokens (「降压药我吃过了」) must NOT broaden to unrelated
+    active tasks when zero pending matches — return ``none`` (optionally
+    ``already_done`` when a terminal task matches the same token).
     """
+    if not task_id:
+        task_id = extract_task_id_from_query(query)
+
     if task_id:
         rows = await list_care_tasks(user_id=user_id, include_terminal=False, limit=50)
         for row in rows:
@@ -390,28 +436,30 @@ async def resolve_task_ref(
     # No clear referent / category-level med phrasing → clarify when ≥2.
     if not hint or is_generic_med_hint(hint):
         if len(active) == 0:
-            return ResolveResult(kind="none")
+            return ResolveResult(kind="none", hint=hint or None)
         if len(active) == 1:
-            return ResolveResult(kind="one", task=active[0])
-        return ResolveResult(kind="many", candidates=active)
+            return ResolveResult(kind="one", task=active[0], hint=hint or None)
+        return ResolveResult(kind="many", candidates=active, hint=hint or None)
 
-    matched = [
-        r
-        for r in active
-        if hint in normalize_title(r["title"])
-        or normalize_title(r["title"]) in hint
-        or _token_overlap(hint, r["title"]) >= 0.55
-    ]
+    matched = [r for r in active if _title_matches_hint(hint, r["title"])]
     if len(matched) == 1:
-        return ResolveResult(kind="one", task=matched[0])
+        return ResolveResult(kind="one", task=matched[0], hint=hint)
     if len(matched) >= 2:
-        return ResolveResult(kind="many", candidates=matched)
-    if len(active) == 0:
-        return ResolveResult(kind="none")
-    if len(active) == 1:
-        return ResolveResult(kind="one", task=active[0])
-    # Specific hint matched nothing among ≥2 actives — ask, never silent pick.
-    return ResolveResult(kind="many", candidates=active)
+        return ResolveResult(kind="many", candidates=matched, hint=hint)
+
+    # Specific referent matched no pending task — never offer unrelated meds.
+    terminal_rows = await list_care_tasks(user_id=user_id, include_terminal=True, limit=50)
+    done_match = [
+        r
+        for r in terminal_rows
+        if r.get("status") == "done" and _title_matches_hint(hint, r["title"])
+    ]
+    return ResolveResult(
+        kind="none",
+        hint=hint,
+        already_done=bool(done_match),
+        candidates=done_match[:3] if done_match else None,
+    )
 
 
 async def create_care_task(

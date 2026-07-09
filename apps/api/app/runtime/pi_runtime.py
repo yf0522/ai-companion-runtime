@@ -100,18 +100,34 @@ class PiExperimentalRuntime:
         ttft_ms = 0
         sidecar_error: str | None = None
         seen_done = False
-        tools_used: list[dict[str, str]] = []
+        tools_used: list[dict] = []
         honesty_tool_results: list = []
         sidecar_start = time.monotonic()
 
-        def _upsert_tool(tool: str, status: str, action: str | None = None) -> None:
+        def _upsert_tool(
+            tool: str,
+            status: str,
+            action: str | None = None,
+            *,
+            candidates: list | None = None,
+            clarify_verb: str | None = None,
+        ) -> None:
             if not tool:
                 return
-            entry: dict[str, str] = {"tool": tool, "status": status}
+            entry: dict = {"tool": tool, "status": status}
             if action:
                 entry["action"] = action
+            if candidates and status == "needs_clarification":
+                entry["candidates"] = candidates
+            if clarify_verb:
+                entry["clarify_verb"] = clarify_verb
             for i, existing in enumerate(tools_used):
                 if existing.get("tool") == tool:
+                    # Preserve clarify payload if a later done/status event omits it.
+                    if "candidates" not in entry and existing.get("candidates"):
+                        entry["candidates"] = existing["candidates"]
+                    if "clarify_verb" not in entry and existing.get("clarify_verb"):
+                        entry["clarify_verb"] = existing["clarify_verb"]
                     tools_used[i] = entry
                     return
             tools_used.append(entry)
@@ -187,12 +203,26 @@ class PiExperimentalRuntime:
                         text = str(event.get("text", ""))
                         status = str(event.get("status", "success"))
                         action = event.get("action")
+                        candidates = event.get("candidates")
+                        event_data = event.get("data")
                         if text:
-                            await stream_mgr.send_tool_result(tool, text)
+                            await stream_mgr.send_tool_result(
+                                tool,
+                                text,
+                                status=status,
+                                action=str(action) if action else None,
+                                candidates=candidates if isinstance(candidates, list) else None,
+                                data=event_data if isinstance(event_data, dict) else None,
+                            )
+                        clarify_verb = None
+                        if isinstance(event_data, dict):
+                            clarify_verb = event_data.get("clarify_verb")
                         _upsert_tool(
                             tool,
                             status,
                             str(action) if action else None,
+                            candidates=candidates if isinstance(candidates, list) else None,
+                            clarify_verb=str(clarify_verb) if clarify_verb else None,
                         )
                         if status in {"failed", "timeout", "needs_clarification"}:
                             _record_honesty_result(
@@ -203,6 +233,8 @@ class PiExperimentalRuntime:
                             )
                         elif status == "success" and (
                             action in {"caretask_reuse", "caretask_schedule_updated"}
+                            or "没有重复创建" in text
+                            or "帮您沿用" in text
                             or "未重复创建" in text
                             or "已有相同" in text
                         ):
@@ -212,7 +244,15 @@ class PiExperimentalRuntime:
                                 display_text=text,
                                 action=str(action)
                                 if action
-                                else ("caretask_reuse" if "未重复创建" in text else None),
+                                else (
+                                    "caretask_reuse"
+                                    if (
+                                        "没有重复创建" in text
+                                        or "帮您沿用" in text
+                                        or "未重复创建" in text
+                                    )
+                                    else None
+                                ),
                             )
                     elif event_type == "error":
                         sidecar_error = str(event.get("message", "pi sidecar error"))

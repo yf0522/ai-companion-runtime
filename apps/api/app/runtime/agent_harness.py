@@ -304,19 +304,26 @@ class AgentHarness:
             if isinstance(t, dict):
                 name = t.get("tool_name", "")
                 status = t.get("status", "success")
-                action = (t.get("data") or {}).get("action") if isinstance(t.get("data"), dict) else None
+                data = t.get("data") if isinstance(t.get("data"), dict) else {}
+                action = data.get("action") if data else None
+                candidates = data.get("candidates") if data else None
             elif hasattr(t, "tool_name"):
                 name = t.tool_name
                 status = getattr(t, "status", "success")
                 data = getattr(t, "data", None) or {}
                 action = data.get("action") if isinstance(data, dict) else None
+                candidates = data.get("candidates") if isinstance(data, dict) else None
             else:
                 continue
             if not name:
                 continue
-            entry = {"tool": name, "status": status}
+            entry: dict = {"tool": name, "status": status}
             if action:
                 entry["action"] = action
+            if candidates and status == "needs_clarification":
+                entry["candidates"] = candidates
+                if isinstance(data, dict) and data.get("clarify_verb"):
+                    entry["clarify_verb"] = data["clarify_verb"]
             tools_used.append(entry)
 
         prompt_tokens = 0

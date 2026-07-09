@@ -248,10 +248,14 @@ async function streamAgentChat({ res, body }) {
       const status =
         details.status || (isError ? "failed" : "success");
       const action = details?.data?.action || null;
+      const candidates = details?.data?.candidates || null;
+      const clarifyVerb = details?.data?.clarify_verb || null;
       toolsUsed.push({
         tool: toolCall.name,
         status,
         ...(action ? { action } : {}),
+        ...(candidates ? { candidates } : {}),
+        ...(clarifyVerb ? { clarify_verb: clarifyVerb } : {}),
       });
       writeNdjson(res, {
         type: "tool_status",
@@ -259,12 +263,15 @@ async function streamAgentChat({ res, body }) {
         status,
       });
       if (details.display_text) {
+        const candidates = details?.data?.candidates || null;
         writeNdjson(res, {
           type: "tool_result",
           tool: toolCall.name,
           text: details.display_text,
           status,
           ...(action ? { action } : {}),
+          ...(candidates ? { candidates } : {}),
+          ...(details.data ? { data: details.data } : {}),
         });
       }
       // Clarification: not a hard error — model should ask user to pick, not invent success.

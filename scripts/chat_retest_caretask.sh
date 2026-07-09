@@ -5,19 +5,29 @@
 # Usage:
 #   ./scripts/chat_retest_caretask.sh
 #   AGENT_RUNTIME=harness ./scripts/chat_retest_caretask.sh
+#   AGENT_RUNTIME=pi_experimental ./scripts/chat_retest_caretask.sh
+#
+# Clears stale pending CareTasks for DEMO_USER before chatting (demo_* only).
 
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="${BASE_URL:-http://127.0.0.1:8001}"
 WS_URL="${WS_URL:-ws://127.0.0.1:8001/ws/chat}"
 RUNTIME="${AGENT_RUNTIME:-harness}"
 USER="${DEMO_USER:-demo_elder}"
 PASS="${DEMO_PASS:-demo1234}"
+SKIP_RESET="${SKIP_CARETASK_RESET:-0}"
 
-cd "$(dirname "$0")/../apps/api"
+cd "$ROOT/apps/api"
 set -a
 # shellcheck disable=SC1091
 source ../../.env
 set +a
+
+if [[ "$SKIP_RESET" != "1" ]]; then
+  echo "=== reset stale caretasks for $USER ==="
+  uv run python ../../scripts/demo_reset_caretasks.py --user "$USER" --apply --reminders
+fi
 
 uv run --with websocket-client python - "$BASE" "$WS_URL" "$RUNTIME" "$USER" "$PASS" <<'PY'
 import json, sys, time
@@ -121,19 +131,17 @@ r2 = chat_turn(token, "提醒我吃降糖药")
 print("tools", r2["tools"], r2["tools_used"])
 print("content", (r2["content"] or "")[:180])
 
-print("\n=== 3 reuse 降压药 (must not claim new create) ===")
+print("\n=== 3 reuse 降压药 (must not claim new create / no tech jargon) ===")
 r3 = chat_turn(token, "帮我记一下吃降压药")
 print("tools", r3["tools"], r3["tools_used"])
 print("content", (r3["content"] or "")[:220])
-reuse_ok = any(
-    (t.get("status") == "success" and (t.get("action") or "") in {"caretask_reuse", "caretask_schedule_updated"})
-    or t.get("status") == "success"
-    for t in (r3["tools_used"] or [])
-)
-if "已经为您记录了" in (r3["content"] or "") and "未重复创建" not in (r3["content"] or "") and "已有相同" not in (r3["content"] or ""):
+content3 = r3["content"] or ""
+if "已经为您记录了" in content3 and "沿用" not in content3 and "已经有" not in content3:
     fails.append("reuse_copy_claims_new_create")
-if "我已经提醒你" in (r3["content"] or ""):
+if "我已经提醒你" in content3 or "我已经提醒您" in content3:
     fails.append("reuse_copy_sounds_fired_now")
+if "pending" in content3.lower() or "未重复创建" in content3 or "状态 " in content3:
+    fails.append("reuse_copy_has_tech_jargon")
 
 print("\n=== 4 P0 cancel ambiguous (must clarify, no silent cancel) ===")
 r4 = chat_turn(token, "取消吃药提醒")
