@@ -100,9 +100,21 @@ class PiExperimentalRuntime:
         ttft_ms = 0
         sidecar_error: str | None = None
         seen_done = False
-        tools_used: list[str] = []
+        tools_used: list[dict[str, str]] = []
         failed_tool_results: list = []
         sidecar_start = time.monotonic()
+
+        def _upsert_tool(tool: str, status: str, action: str | None = None) -> None:
+            if not tool:
+                return
+            entry: dict[str, str] = {"tool": tool, "status": status}
+            if action:
+                entry["action"] = action
+            for i, existing in enumerate(tools_used):
+                if existing.get("tool") == tool:
+                    tools_used[i] = entry
+                    return
+            tools_used.append(entry)
 
         async with httpx.AsyncClient(timeout=_SIDECAR_TIMEOUT_S) as client:
             async with client.stream("POST", url, json=payload) as response:
@@ -141,16 +153,19 @@ class PiExperimentalRuntime:
                         tool = str(event.get("tool", "caretask"))
                         status = str(event.get("status", "calling"))
                         await stream_mgr.send_tool_status(tool, status)
-                        if tool and tool not in tools_used:
-                            tools_used.append(tool)
-                        if status in {"failed", "timeout"}:
+                        _upsert_tool(tool, status)
+                        if status in {"failed", "timeout", "needs_clarification"}:
                             from app.tools.base import ToolResult
 
                             failed_tool_results.append(
                                 ToolResult(
                                     tool_name=tool,
                                     status=status,
-                                    display_text=f"{tool} 未能完成",
+                                    display_text=(
+                                        "需要确认具体任务"
+                                        if status == "needs_clarification"
+                                        else f"{tool} 未能完成"
+                                    ),
                                 )
                             )
                     elif event_type == "tool_result":
@@ -159,9 +174,8 @@ class PiExperimentalRuntime:
                         status = str(event.get("status", "success"))
                         if text:
                             await stream_mgr.send_tool_result(tool, text)
-                        if tool and tool not in tools_used:
-                            tools_used.append(tool)
-                        if status in {"failed", "timeout"}:
+                        _upsert_tool(tool, status)
+                        if status in {"failed", "timeout", "needs_clarification"}:
                             from app.tools.base import ToolResult
 
                             failed_tool_results.append(
@@ -175,9 +189,15 @@ class PiExperimentalRuntime:
                         sidecar_error = str(event.get("message", "pi sidecar error"))
                         break
                     elif event_type == "done":
-                        for name in event.get("tools_used") or []:
-                            if name and name not in tools_used:
-                                tools_used.append(str(name))
+                        for item in event.get("tools_used") or []:
+                            if isinstance(item, dict):
+                                _upsert_tool(
+                                    str(item.get("tool") or ""),
+                                    str(item.get("status") or "success"),
+                                    str(item["action"]) if item.get("action") else None,
+                                )
+                            elif item:
+                                _upsert_tool(str(item), "success")
                         seen_done = True
                         break
 

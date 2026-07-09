@@ -299,12 +299,25 @@ class AgentHarness:
 
         # Step 5: Final
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
-        tools_used = []
+        tools_used: list[dict] = []
         for t in tool_results or []:
             if isinstance(t, dict):
-                tools_used.append(t.get("tool_name", ""))
+                name = t.get("tool_name", "")
+                status = t.get("status", "success")
+                action = (t.get("data") or {}).get("action") if isinstance(t.get("data"), dict) else None
             elif hasattr(t, "tool_name"):
-                tools_used.append(t.tool_name)
+                name = t.tool_name
+                status = getattr(t, "status", "success")
+                data = getattr(t, "data", None) or {}
+                action = data.get("action") if isinstance(data, dict) else None
+            else:
+                continue
+            if not name:
+                continue
+            entry = {"tool": name, "status": status}
+            if action:
+                entry["action"] = action
+            tools_used.append(entry)
 
         prompt_tokens = 0
         output_tokens = 0
@@ -429,17 +442,10 @@ class AgentHarness:
         user_id: str,
     ):
         """Handle high/critical risk: send alert and safe response."""
-        await stream_mgr.send_risk_alert(risk.level, "")
+        from app.runtime.risk_gate import load_safety_message
 
-        # Load safety messages from risk_rules.yaml
-        try:
-            path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
-            with open(path) as f:
-                rules = yaml.safe_load(f)
-            safety_msg = rules.get("safety_messages", {}).get(risk.level, "")
-        except Exception as e:
-            logger.error(f"Failed to load safety messages from risk_rules.yaml: {e}")
-            safety_msg = "如果你正在经历困难，请拨打心理援助热线：400-161-9995"
+        safety_msg = load_safety_message(risk.level, risk.category)
+        await stream_mgr.send_risk_alert(risk.level, safety_msg)
 
         ttft_ms = int((time.monotonic() - start_time) * 1000)
         await stream_mgr.send_first_reply(safety_msg, ttft_ms)
@@ -551,6 +557,9 @@ class AgentHarness:
 
         if risk.category == "health_emergency":
             return "高危健康信号：检测到胸闷/头晕/呼吸困难类风险，建议立即联系家属并协助就医。"
+
+        if risk.category == "emotional_crisis":
+            return "情绪危机：检测到自杀意念相关表述，请尽快联系老人并确认安全。"
 
         if risk.category == "emotional_low":
             return "用户情绪偏低：建议家属主动关怀并保持持续陪伴，观察言语变化。"

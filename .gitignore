@@ -45,3 +45,7 @@ pgdata/
 miniodata/
 grafdata/
 .superpowers/
+
+# OMX local agent state
+.omx/
+**/.omx/

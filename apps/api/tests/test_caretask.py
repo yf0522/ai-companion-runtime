@@ -11,7 +11,9 @@ from app.tools.caretask_service import (
     assert_transition,
     can_transition,
     infer_initial_status,
+    normalize_title,
     refresh_status,
+    title_fingerprint,
 )
 from app.tools.caretask_tool import CareTaskTool
 from app.tools.honesty import enforce_no_verbal_promise, response_claims_tool_success
@@ -103,6 +105,197 @@ async def test_intent_snooze_routes_to_caretask():
     assert "caretask" in result.tool_needs
 
 
+def test_normalize_title_and_fingerprint():
+    assert normalize_title("提醒我吃降压药") == normalize_title("帮我吃降压药")
+    assert "降压药" in normalize_title("每天晚上提醒我吃降压药吧")
+    fp1 = title_fingerprint("吃降压药", "medication", None)
+    fp2 = title_fingerprint("提醒我吃降压药", "medication", None)
+    assert fp1 == fp2
+
+
+@pytest.mark.asyncio
+async def test_caretask_create_reuses_active_duplicate(monkeypatch):
+    tool = CareTaskTool()
+    calls = {"n": 0}
+
+    async def fake_create(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "title": kwargs["title"],
+                "task_type": kwargs["task_type"],
+                "status": "pending",
+                "due_at": None,
+                "reminder_id": None,
+                "snooze_until": None,
+                "notes": None,
+                "created_by": "chat",
+                "completed_at": None,
+                "created_at": None,
+                "user_id": kwargs["user_id"],
+                "_action": "caretask_create",
+            }
+        return {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "title": kwargs["title"],
+            "task_type": kwargs["task_type"],
+            "status": "pending",
+            "due_at": None,
+            "reminder_id": None,
+            "snooze_until": None,
+            "notes": None,
+            "created_by": "chat",
+            "completed_at": None,
+            "created_at": None,
+            "user_id": kwargs["user_id"],
+            "_action": "caretask_reuse",
+        }
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
+    uid = "4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf"
+    first = await tool.execute(
+        {"action": "create", "query": "提醒我吃降压药", "user_id": uid}
+    )
+    second = await tool.execute(
+        {"action": "create", "query": "帮我记一下吃降压药", "user_id": uid}
+    )
+    assert first.status == "success"
+    assert first.data["action"] == "caretask_create"
+    assert second.status == "success"
+    assert second.data["action"] == "caretask_reuse"
+    assert "未重复创建" in second.display_text
+
+
+@pytest.mark.asyncio
+async def test_caretask_create_clarifies_near_duplicate_different_due(monkeypatch):
+    tool = CareTaskTool()
+
+    async def fake_create(**kwargs):
+        return {
+            "_action": "caretask_clarify_create",
+            "candidates": [
+                {
+                    "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "title": "吃降压药",
+                    "status": "pending",
+                    "due_at": "2026-07-09T20:00:00",
+                    "task_type": "medication",
+                }
+            ],
+            "proposed": {
+                "title": kwargs["title"],
+                "task_type": kwargs["task_type"],
+                "due_at": kwargs["due_at"].isoformat() if kwargs.get("due_at") else None,
+            },
+        }
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
+    result = await tool.execute(
+        {
+            "action": "create",
+            "query": "明天晚上提醒我吃降压药",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+    assert result.status == "needs_clarification"
+    assert result.data["action"] == "caretask_clarify_create"
+    assert result.data["candidates"]
+
+
+@pytest.mark.asyncio
+async def test_complete_ambiguous_returns_needs_clarification_no_mutation(monkeypatch):
+    tool = CareTaskTool()
+    mutated = {"called": False}
+
+    async def fake_resolve(**kwargs):
+        from app.tools.caretask_service import ResolveResult
+
+        return ResolveResult(
+            kind="many",
+            candidates=[
+                {
+                    "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "title": "吃降压药",
+                    "status": "pending",
+                    "due_at": None,
+                    "task_type": "medication",
+                },
+                {
+                    "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "title": "吃降糖药",
+                    "status": "pending",
+                    "due_at": None,
+                    "task_type": "medication",
+                },
+            ],
+        )
+
+    async def fake_complete(**kwargs):
+        mutated["called"] = True
+        raise AssertionError("should not mutate on ambiguous ref")
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.resolve_task_ref", fake_resolve)
+    monkeypatch.setattr("app.tools.caretask_tool.svc.complete_care_task", fake_complete)
+    result = await tool.execute(
+        {"action": "complete", "query": "药我吃过了", "user_id": str(uuid.uuid4())}
+    )
+    assert result.status == "needs_clarification"
+    assert mutated["called"] is False
+    assert "多个" in result.display_text
+
+
+@pytest.mark.asyncio
+async def test_cancel_without_id_lists_candidates(monkeypatch):
+    tool = CareTaskTool()
+
+    async def fake_resolve(**kwargs):
+        from app.tools.caretask_service import ResolveResult
+
+        return ResolveResult(
+            kind="many",
+            candidates=[
+                {
+                    "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "title": "吃降压药",
+                    "status": "pending",
+                    "due_at": None,
+                    "task_type": "medication",
+                },
+                {
+                    "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "title": "复诊",
+                    "status": "pending",
+                    "due_at": None,
+                    "task_type": "appointment",
+                },
+            ],
+        )
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.resolve_task_ref", fake_resolve)
+    result = await tool.execute(
+        {"action": "cancel", "query": "取消吃药提醒", "user_id": str(uuid.uuid4())}
+    )
+    assert result.status == "needs_clarification"
+    assert len(result.data["candidates"]) == 2
+
+
+def test_honesty_does_not_claim_success_on_clarification():
+    clarify = [
+        ToolResult(
+            tool_name="caretask",
+            status="needs_clarification",
+            display_text="找到多个照护任务，请告诉我要取消哪一个",
+            data={"action": "caretask_cancel"},
+        )
+    ]
+    text = "好的，已帮你取消吃药任务了"
+    out = enforce_no_verbal_promise(text, clarify)
+    assert out != text
+    assert "已帮你取消" not in out
+    assert "多个" in out or "确认" in out or "取消" in out
+
+
 @pytest.mark.asyncio
 async def test_caretask_create_links_reminder(monkeypatch):
     tool = CareTaskTool()
@@ -123,6 +316,7 @@ async def test_caretask_create_links_reminder(monkeypatch):
             "completed_at": None,
             "created_at": None,
             "user_id": kwargs["user_id"],
+            "_action": "caretask_create",
         }
 
     monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
@@ -144,59 +338,46 @@ async def test_caretask_create_links_reminder(monkeypatch):
 @pytest.mark.asyncio
 async def test_caretask_complete_and_snooze(monkeypatch):
     tool = CareTaskTool()
+    task = {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "title": "吃降压药",
+        "status": "due",
+        "task_type": "medication",
+        "due_at": None,
+        "reminder_id": None,
+        "snooze_until": None,
+        "notes": None,
+        "created_by": "chat",
+        "completed_at": None,
+        "created_at": None,
+        "user_id": "u",
+    }
 
-    async def fake_list(**kwargs):
-        return [
-            {
-                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "title": "吃降压药",
-                "status": "due",
-                "task_type": "medication",
-                "due_at": None,
-                "reminder_id": None,
-                "snooze_until": None,
-                "notes": None,
-                "created_by": "chat",
-                "completed_at": None,
-                "created_at": None,
-                "user_id": kwargs["user_id"],
-            }
-        ]
+    async def fake_resolve(**kwargs):
+        from app.tools.caretask_service import ResolveResult
+
+        return ResolveResult(kind="one", task={**task, "user_id": kwargs["user_id"]})
 
     async def fake_complete(**kwargs):
         return {
+            **task,
             "id": kwargs["task_id"],
-            "title": "吃降压药",
             "status": "done",
-            "task_type": "medication",
-            "due_at": None,
-            "reminder_id": None,
-            "snooze_until": None,
-            "notes": None,
-            "created_by": "chat",
             "completed_at": datetime.utcnow().isoformat(),
-            "created_at": None,
             "user_id": kwargs["user_id"],
         }
 
     async def fake_snooze(**kwargs):
         return {
-            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "title": "吃降压药",
+            **task,
             "status": "snoozed",
-            "task_type": "medication",
             "due_at": (datetime.utcnow() + timedelta(minutes=30)).isoformat(),
-            "reminder_id": None,
             "snooze_until": (datetime.utcnow() + timedelta(minutes=30)).isoformat(),
-            "notes": None,
-            "created_by": "chat",
-            "completed_at": None,
-            "created_at": None,
             "user_id": kwargs["user_id"],
             "snooze_minutes": kwargs["minutes"],
         }
 
-    monkeypatch.setattr("app.tools.caretask_tool.svc.list_care_tasks", fake_list)
+    monkeypatch.setattr("app.tools.caretask_tool.svc.resolve_task_ref", fake_resolve)
     monkeypatch.setattr("app.tools.caretask_tool.svc.complete_care_task", fake_complete)
     monkeypatch.setattr("app.tools.caretask_tool.svc.snooze_care_task", fake_snooze)
 

@@ -40,7 +40,7 @@ async def run_risk_gate(
     risk = await _analyze_risk(user_id, session_id, message, trace_id, timeout_ms)
 
     if risk.level in ("critical", "high"):
-        await _emit_risk_block(risk, stream_mgr, trace_id, start)
+        await _emit_risk_block(risk, stream_mgr, trace_id, start, user_id=user_id)
         return RiskGateOutcome(
             blocked=True,
             risk=risk,
@@ -89,9 +89,11 @@ async def _emit_risk_block(
     stream_mgr: StreamManager,
     trace_id: str,
     start: float,
+    *,
+    user_id: str | None = None,
 ) -> None:
-    await stream_mgr.send_risk_alert(risk.level, "")
-    safety_msg = _load_safety_message(risk.level)
+    safety_msg = load_safety_message(risk.level, risk.category)
+    await stream_mgr.send_risk_alert(risk.level, safety_msg)
     ttft_ms = int((time.monotonic() - start) * 1000)
     await stream_mgr.send_first_reply(safety_msg, ttft_ms)
     total_latency_ms = int((time.monotonic() - start) * 1000)
@@ -103,21 +105,84 @@ async def _emit_risk_block(
         tools_used=[],
         memory_updated=False,
     )
+    if user_id:
+        await _dispatch_family_notify(user_id, risk, trace_id)
 
 
-def _load_safety_message(level: str) -> str:
+def load_safety_message(level: str, category: str | None = None) -> str:
+    """Load CN-safe template; prefer category-specific copy for emotional crisis."""
     try:
         path = Path(__file__).parent.parent / "config" / "risk_rules.yaml"
         with open(path) as f:
-            rules = yaml.safe_load(f)
-        return rules.get("safety_messages", {}).get(level, "") or _default_safety_message()
+            rules = yaml.safe_load(f) or {}
+        messages = rules.get("safety_messages", {}) or {}
+        if category:
+            for key in (f"{level}_{category}", category):
+                msg = messages.get(key)
+                if msg:
+                    return str(msg)
+        msg = messages.get(level)
+        if msg:
+            return str(msg)
     except Exception as e:
         logger.error("Failed to load safety messages: %s", e)
-        return _default_safety_message()
+    return _default_safety_message()
 
 
 def _default_safety_message() -> str:
-    return "如果你正在经历困难，请拨打心理援助热线：400-161-9995"
+    return (
+        "如果你正在经历困难，请拨打全国统一心理援助热线 12356，"
+        "或希望24小时热线 400-161-9995"
+    )
+
+
+async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str) -> None:
+    """Best-effort family notify for high/critical (Pi path shares gate with harness)."""
+    try:
+        from app.config.settings import settings
+        import uuid as _uuid_mod
+
+        try:
+            normalized_user_id = str(_uuid_mod.UUID(user_id))
+        except (ValueError, AttributeError):
+            normalized_user_id = str(_uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, user_id))
+
+        summary = _family_summary(risk)
+        if not settings.enable_celery_tasks:
+            from app.workers.notification_worker import process_risk_notification
+
+            await process_risk_notification(
+                normalized_user_id,
+                risk.level,
+                risk.category or "",
+                summary,
+                trace_id,
+            )
+            return
+
+        from app.workers.notification_worker import send_risk_notification
+
+        send_risk_notification.delay(
+            normalized_user_id,
+            risk.level,
+            risk.category or "",
+            summary,
+            trace_id,
+        )
+    except Exception as e:
+        logger.warning("Risk gate family notify failed: %s", e)
+
+
+def _family_summary(risk: RiskResult) -> str:
+    if risk.category == "emotional_crisis":
+        return "情绪危机：检测到自杀意念相关表述，请尽快联系老人并确认安全。"
+    if risk.category == "scam_alert":
+        return "疑似反诈：检测到高风险表述，建议家属尽快确认。"
+    if risk.category == "health_emergency":
+        return "高危健康信号：建议立即联系家属并协助就医。"
+    if risk.level in {"high", "critical"}:
+        return "检测到高风险行为，建议先与家属确认后再处理后续动作。"
+    return "检测到风险内容，请关注并适时回访。"
 
 
 def _generate_trace_id(user_id: str) -> str:

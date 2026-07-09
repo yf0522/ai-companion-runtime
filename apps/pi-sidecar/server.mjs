@@ -205,7 +205,12 @@ async function streamAgentChat({ res, body }) {
       const details = result?.details || {};
       const status =
         details.status || (isError ? "failed" : "success");
-      toolsUsed.push(toolCall.name);
+      const action = details?.data?.action || null;
+      toolsUsed.push({
+        tool: toolCall.name,
+        status,
+        ...(action ? { action } : {}),
+      });
       writeNdjson(res, {
         type: "tool_status",
         tool: toolCall.name,
@@ -218,6 +223,20 @@ async function streamAgentChat({ res, body }) {
           text: details.display_text,
           status,
         });
+      }
+      // Clarification: not a hard error — model should ask user to pick, not invent success.
+      if (status === "needs_clarification") {
+        return {
+          isError: false,
+          content: [
+            {
+              type: "text",
+              text:
+                result?.content?.[0]?.text ||
+                `[needs_clarification] ${details.display_text || "请让用户选择具体任务"}`,
+            },
+          ],
+        };
       }
       // If tool failed, force isError so the model sees failure clearly.
       if (status !== "success") {
@@ -251,7 +270,7 @@ async function streamAgentChat({ res, body }) {
       writeNdjson(res, {
         type: "done",
         reason: "agent_end",
-        tools_used: [...new Set(toolsUsed)],
+        tools_used: toolsUsed,
       });
     }
   });

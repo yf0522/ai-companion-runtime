@@ -55,7 +55,8 @@ class RiskEngine(BaseEngine):
         """Check if a keyword is preceded by a negation word.
 
         e.g. "我没有想死" → "想死" is negated → not a real risk signal.
-        But "我不想活了" → "不想活了" itself is a risk keyword, handled at YAML level.
+        "我不想死" → immediate 不 before 想死 → suppressed.
+        But "我不想活了" → keyword is "不想活了" itself (YAML), not negated.
         """
         idx = message.find(keyword)
         if idx < 0:
@@ -66,6 +67,11 @@ class RiskEngine(BaseEngine):
         for neg in self._negation_words:
             if neg in prefix:
                 return True
+            if idx >= len(neg) and message[idx - len(neg) : idx] == neg:
+                return True
+        # Immediate 不/没/别 before keyword (我不想死)
+        if idx > 0 and message[idx - 1] in ("不", "没", "别"):
+            return True
         return False
 
     async def analyze(self, input: AnalyzerInput) -> RiskResult:

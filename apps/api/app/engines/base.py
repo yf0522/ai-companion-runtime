@@ -26,7 +26,7 @@ class EmotionResult(BaseModel):
 
 class RiskResult(BaseModel):
     level: str = "low"           # low / medium / high / critical
-    category: str = "none"       # scam_alert / health_emergency / emotional_low / none
+    category: str = "none"       # scam_alert / health_emergency / emotional_crisis / emotional_low / none
     confidence: float = 0.0
     triggered_rules: list[str] = []
 
