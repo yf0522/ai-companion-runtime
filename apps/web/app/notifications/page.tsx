@@ -111,6 +111,8 @@ export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [ackingId, setAckingId] = useState<string | null>(null);
+  const [ackingReminderId, setAckingReminderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -155,6 +157,68 @@ export default function NotificationsPage() {
     load();
   }, [token, clearAuth, router]);
 
+  const ackNotification = async (id: string) => {
+    if (!token) return;
+    setAckingId(id);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/notifications/${id}/ack`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        clearAuth();
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        throw new Error("确认失败");
+      }
+      const payload = await res.json();
+      const updated = payload.item as NotificationItem | undefined;
+      if (updated?.id) {
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)),
+        );
+      } else {
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === id ? { ...n, status: "acknowledged" } : n)),
+        );
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "确认失败");
+    } finally {
+      setAckingId(null);
+    }
+  };
+
+  const ackReminder = async (id: string) => {
+    if (!token) return;
+    setAckingReminderId(id);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/reminders/${id}/ack`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        clearAuth();
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        throw new Error("提醒确认失败");
+      }
+      setReminders((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, status: "acknowledged" } : r)),
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "提醒确认失败");
+    } finally {
+      setAckingReminderId(null);
+    }
+  };
+
   return (
     <div className="mx-auto min-h-screen max-w-4xl px-4 py-6">
       <div className="mb-5 flex items-center justify-between">
@@ -197,6 +261,20 @@ export default function NotificationsPage() {
                   {item.hour != null && item.minute != null ? `时间: ${item.hour}:${String(item.minute).padStart(2, "0")} ` : ""}
                   {item.duration_sec > 0 ? `倒计时: ${item.duration_sec}s` : ""}
                 </div>
+                <div className="mt-2 flex justify-end">
+                  {item.status !== "acknowledged" ? (
+                    <button
+                      type="button"
+                      disabled={ackingReminderId === item.id}
+                      onClick={() => ackReminder(item.id)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {ackingReminderId === item.id ? "确认中..." : "确认已吃药/已处理"}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-green-600">已确认</span>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -224,8 +302,22 @@ export default function NotificationsPage() {
                   </div>
                   <div className="text-sm font-medium text-gray-700">{item.title}</div>
                   <p className="mt-1 text-sm text-gray-500">{item.message}</p>
-                  <div className="mt-2 text-xs text-gray-400">
-                    severity: {item.severity} · {formatTime(item.created_at)}
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <div className="text-xs text-gray-400">
+                      severity: {item.severity} · {formatTime(item.created_at)}
+                    </div>
+                    {item.status !== "acknowledged" ? (
+                      <button
+                        type="button"
+                        disabled={ackingId === item.id}
+                        onClick={() => ackNotification(item.id)}
+                        className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {ackingId === item.id ? "确认中..." : "确认已处理"}
+                      </button>
+                    ) : (
+                      <span className="text-xs text-green-600">已确认</span>
+                    )}
                   </div>
                 </div>
               );

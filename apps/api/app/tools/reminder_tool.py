@@ -13,6 +13,35 @@ logger = logging.getLogger(__name__)
 DAILY_KEYWORDS = ["吃药", "量血压", "测血糖", "吃饭", "喝水", "做操", "散步", "锻炼", "吃早饭", "吃午饭", "吃晚饭"]
 ONCE_KEYWORDS = ["打电话", "买", "取", "寄", "明天", "后天", "下周"]
 
+SNOOZE_PATTERNS = [
+    r"晚点再吃",
+    r"等会儿再吃",
+    r"一会儿再吃",
+    r"过一会儿再提醒",
+    r"晚点再提醒",
+    r"再提醒我",
+    r"推迟.*提醒",
+    r"半小时后再说",
+    r"(\d+)\s*分钟后再",
+    r"半小时后再提醒",
+]
+
+
+def detect_snooze(text: str) -> Optional[int]:
+    """Return snooze minutes if text is a snooze request, else None."""
+    if not text:
+        return None
+    if not any(re.search(p, text) for p in SNOOZE_PATTERNS):
+        return None
+    m = re.search(r"(\d+)\s*分钟", text)
+    if m:
+        return max(1, min(int(m.group(1)), 24 * 60))
+    if "半小时" in text:
+        return 30
+    if "一小时" in text or "1小时" in text:
+        return 60
+    return 30
+
 
 def detect_schedule_type(text: str) -> Optional[str]:
     for kw in DAILY_KEYWORDS:
@@ -64,6 +93,10 @@ class ReminderTool(ToolBase):
 
     async def execute(self, params: dict) -> ToolResult:
         query = params.get("query", "")
+        snooze_minutes = detect_snooze(query)
+        if snooze_minutes is not None:
+            return await self._execute_snooze(params, snooze_minutes)
+
         content, remind_time = self._parse_reminder(query)
 
         if not content:
@@ -131,6 +164,93 @@ class ReminderTool(ToolBase):
             data=payload,
             display_text=f"已设置提醒：{content}（{time_str}）",
         )
+
+    async def _execute_snooze(self, params: dict, snooze_minutes: int) -> ToolResult:
+        user_id = params.get("user_id")
+        if not user_id:
+            return ToolResult(
+                tool_name=self.name,
+                status="failed",
+                display_text="无法推迟提醒：缺少用户信息",
+                data={"reason": "missing_user", "action": "reminder_snooze"},
+            )
+        try:
+            reminder_id, title, next_fire = await self._snooze_reminder(
+                user_id=str(user_id),
+                snooze_minutes=snooze_minutes,
+            )
+        except LookupError:
+            return ToolResult(
+                tool_name=self.name,
+                status="failed",
+                display_text="还没有可推迟的提醒，请先设置吃药或复诊提醒",
+                data={"reason": "no_reminder", "action": "reminder_snooze"},
+            )
+        except Exception as e:
+            logger.error(f"Reminder snooze failed: {e}")
+            return ToolResult(
+                tool_name=self.name,
+                status="failed",
+                display_text="推迟提醒失败，请稍后重试",
+                data={"reason": "snooze_failed", "error": str(e), "action": "reminder_snooze"},
+            )
+
+        label = title or "提醒"
+        display = f"好的，我{snooze_minutes}分钟后再提醒您{label}"
+        return ToolResult(
+            tool_name=self.name,
+            status="success",
+            display_text=display,
+            data={
+                "action": "reminder_snooze",
+                "reminder_id": reminder_id,
+                "label": label,
+                "snooze_minutes": snooze_minutes,
+                "next_fire_at": next_fire.isoformat() if next_fire else None,
+            },
+        )
+
+    async def _snooze_reminder(
+        self,
+        user_id: str,
+        snooze_minutes: int,
+    ) -> tuple[str, str, datetime]:
+        from sqlalchemy import or_, select
+
+        from app.db.session import async_session
+        from app.db.models import Reminder
+
+        db_user_id = _normalize_user_id(user_id)
+        next_fire = datetime.utcnow() + timedelta(minutes=snooze_minutes)
+
+        async with async_session() as db:
+            med = await db.execute(
+                select(Reminder)
+                .where(
+                    Reminder.user_id == db_user_id,
+                    Reminder.is_active.is_(True),
+                    or_(Reminder.title.contains("药"), Reminder.title.contains("吃药")),
+                )
+                .order_by(Reminder.created_at.desc())
+                .limit(1)
+            )
+            row = med.scalar_one_or_none()
+            if not row:
+                any_r = await db.execute(
+                    select(Reminder)
+                    .where(Reminder.user_id == db_user_id, Reminder.is_active.is_(True))
+                    .order_by(Reminder.created_at.desc())
+                    .limit(1)
+                )
+                row = any_r.scalar_one_or_none()
+            if not row:
+                raise LookupError("no active reminder")
+
+            row.next_fire_at = next_fire
+            row.is_active = True
+            await db.commit()
+            await db.refresh(row)
+            return str(row.id), row.title, next_fire
 
     async def _persist_reminder(
         self,

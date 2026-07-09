@@ -65,6 +65,18 @@ async def ws_chat(websocket: WebSocket):
     user_id = payload["sub"]
     session_id = data.get("session_id")
 
+    # Family accounts receive risk summaries / confirmation tasks only —
+    # they must not open the elder's private chat WebSocket.
+    if payload.get("role") == "family":
+        await websocket.send_json({
+            "type": "error",
+            "code": "family_chat_forbidden",
+            "message": "家属账号只能查看通知与提醒确认，不能进入老人私聊",
+            "retry": False,
+        })
+        await websocket.close(code=4003, reason="Family chat forbidden")
+        return
+
     # --- Phase 2: Rate-limit connections ---
     connect_allowed = await ws_connect_limiter.check(f"ws_connect:{user_id}")
     if not connect_allowed:
