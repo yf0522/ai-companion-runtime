@@ -9,6 +9,7 @@ import yaml
 
 from app.config.settings import settings
 from app.models.adapters.base import ModelAdapter
+from app.models.adapters.gemini_adapter import GeminiAdapter
 from app.models.adapters.openai_adapter import OpenAICompatibleAdapter
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ _API_KEY_MAP = {
     "qwen": lambda: settings.qwen_api_key,
     "deepseek": lambda: settings.deepseek_api_key,
     "openai": lambda: settings.openai_api_key,
-    "gemini": lambda: settings.gemini_api_key,
+    "gemini": lambda: settings.gemini_api_key or settings.google_api_key,
     "local": lambda: "not-needed",
 }
 
@@ -29,6 +30,32 @@ _DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "local": "http://localhost:8080/v1",
 }
+
+
+def _create_adapter(
+    provider: str,
+    model_name: str,
+    api_key: str,
+    base_url: str,
+    max_tokens: int,
+    temperature: float,
+) -> ModelAdapter:
+    if provider == "gemini":
+        return GeminiAdapter(
+            provider=provider,
+            model_name=model_name,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    return OpenAICompatibleAdapter(
+        provider=provider,
+        model_name=model_name,
+        api_key=api_key,
+        base_url=base_url,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
 
 
 def _resolve_api_key(provider: str, api_key_env: str) -> str:
@@ -97,7 +124,7 @@ class ModelRegistry:
                 adapter_key = f"{provider}:{model_name}"
 
                 if adapter_key not in self._adapters:
-                    self._adapters[adapter_key] = OpenAICompatibleAdapter(
+                    self._adapters[adapter_key] = _create_adapter(
                         provider=provider,
                         model_name=model_name,
                         api_key=api_key,
