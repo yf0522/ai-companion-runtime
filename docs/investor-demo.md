@@ -5,6 +5,10 @@ Target length: 3 minutes
 This is an **eldercare risk-gated runtime demo**, not an entertainment chatbot demo.
 The goal is to prove: companionship + memory + safety interception + family handoff + traceability in one interaction loop.
 
+## Scenario visuals
+
+For investor-facing scenario mockups (voice trust, daily memory summary, hardware phone intercept, labor-saved overview), see [`docs/evidence/`](./evidence/README.md). These are **Mock UI · scenario demo** assets, not production screenshots.
+
 ## Setup
 
 - Backend API running: `http://localhost:8000`
