@@ -17,6 +17,15 @@ type Reminder = {
   status: string;
 };
 
+type ReminderApiItem = {
+  id: string;
+  title: string;
+  schedule_type?: string | null;
+  time_of_day?: string | null;
+  next_fire_at?: string | null;
+  is_active?: boolean;
+};
+
 type NotificationItem = {
   id: string;
   category: string;
@@ -41,6 +50,57 @@ function formatTime(value: string) {
   } catch {
     return value;
   }
+}
+
+function mapReminders(payload: unknown): Reminder[] {
+  const source = Array.isArray(payload)
+    ? payload
+    : typeof payload === "object" && payload !== null && Array.isArray((payload as { items?: unknown[] }).items)
+      ? (payload as { items: unknown[] }).items
+      : [];
+
+  const items = source
+    .map((item): Reminder | null => {
+      if (!item || typeof item !== "object") return null;
+
+      const raw = item as Partial<Reminder> & Partial<ReminderApiItem>;
+
+      // Backward-compatible placeholder schema
+      if (typeof raw.label === "string" && typeof raw.timer_type === "string") {
+        return {
+          id: raw.id || "",
+          label: raw.label,
+          timer_type: raw.timer_type,
+          repeat_mode: raw.repeat_mode || "",
+          duration_sec: raw.duration_sec || 0,
+          hour: raw.hour == null ? null : Number(raw.hour),
+          minute: raw.minute == null ? null : Number(raw.minute),
+          created_at: raw.created_at || "",
+          status: raw.status || "active",
+        };
+      }
+
+      // DB-backed reminder schema
+      if (typeof raw.title === "string") {
+        const status = raw.is_active === false ? "inactive" : "active";
+        return {
+          id: raw.id || "",
+          label: raw.title,
+          timer_type: "reminder",
+          repeat_mode: (raw.schedule_type || "once").replace(/^once$/, "一次").replace(/^daily$/, "每天").replace(/^weekly$/, "每周").replace(/^interval$/, "间隔"),
+          duration_sec: 0,
+          hour: null,
+          minute: null,
+          created_at: raw.next_fire_at || raw.id || "",
+          status,
+        };
+      }
+
+      return null;
+    })
+    .filter((item): item is Reminder => item !== null && Boolean(item.id));
+
+  return items;
 }
 
 export default function NotificationsPage() {
@@ -80,7 +140,7 @@ export default function NotificationsPage() {
 
         const reminderData = await r1.json();
         const notificationData = await r2.json();
-        setReminders(reminderData.items || []);
+        setReminders(mapReminders(reminderData));
         setNotifications(notificationData.items || []);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "加载失败");

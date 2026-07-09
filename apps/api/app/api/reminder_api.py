@@ -230,30 +230,3 @@ async def get_reminder_history(reminder_id: str, user: dict = Depends(get_curren
             for h in history
         ]
 
-
-@router.get("/notifications")
-async def list_notifications(user: dict = Depends(get_current_user)):
-    elder_id = await _get_managed_elder_id(user)
-
-    from app.db.session import async_session
-    from app.db.models import NotificationLog
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(NotificationLog)
-            .where(NotificationLog.user_id == elder_id)
-            .order_by(NotificationLog.created_at.desc())
-            .limit(50)
-        )
-        logs = result.scalars().all()
-        return [
-            {
-                "id": str(n.id),
-                "risk_level": n.risk_level,
-                "risk_category": n.risk_category,
-                "summary": n.summary,
-                "webhook_status": n.webhook_status,
-                "created_at": n.created_at.isoformat() if n.created_at else None,
-            }
-            for n in logs
-        ]
