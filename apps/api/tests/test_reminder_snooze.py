@@ -66,6 +66,45 @@ async def test_execute_snooze_updates_next_fire(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_then_snooze_flow(monkeypatch):
+    """Regression: evening Chinese hour create must persist before snooze works."""
+    tool = ReminderTool()
+    stored: dict = {}
+
+    async def fake_persist(**kwargs):
+        stored.update(kwargs)
+        return "55555555-5555-5555-5555-555555555555", kwargs["remind_time"]
+
+    async def fake_snooze(**kwargs):
+        assert stored, "create should have persisted a reminder first"
+        return stored.get("reminder_id", "55555555-5555-5555-5555-555555555555"), "吃降压药", next_fire
+
+    next_fire = datetime.utcnow() + timedelta(minutes=30)
+    monkeypatch.setattr(tool, "_persist_reminder", fake_persist)
+    monkeypatch.setattr(tool, "_snooze_reminder", fake_snooze)
+
+    create = await tool.execute(
+        {
+            "query": "提醒我晚上八点吃降压药",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+    assert create.status == "success"
+    assert create.data["action"] == "reminder_create"
+    stored["reminder_id"] = create.data["reminder_id"]
+
+    snooze = await tool.execute(
+        {
+            "query": "晚点再吃",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+    assert snooze.status == "success"
+    assert snooze.data["action"] == "reminder_snooze"
+    assert "no_reminder" not in (snooze.data.get("reason") or "")
+
+
+@pytest.mark.asyncio
 async def test_execute_snooze_no_reminder(monkeypatch):
     tool = ReminderTool()
 

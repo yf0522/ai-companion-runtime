@@ -10,6 +10,61 @@ from app.tools.base import ToolBase, ToolResult
 
 logger = logging.getLogger(__name__)
 
+_CN_DIGIT_MAP: dict[str, int] = {
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+_HOUR_TOKEN = r"([一二三四五六七八九十两\d]{1,3})"
+
+
+def _parse_hour_token(token: str) -> int | None:
+    """Parse Arabic or Chinese hour token (1-24)."""
+    token = token.strip()
+    if not token:
+        return None
+    if token.isdigit():
+        hour = int(token)
+        return hour if 1 <= hour <= 24 else None
+
+    if len(token) == 1 and token in _CN_DIGIT_MAP:
+        hour = _CN_DIGIT_MAP[token]
+        return hour if hour else None
+    if token == "十":
+        return 10
+    if token.startswith("十") and len(token) == 2 and token[1] in _CN_DIGIT_MAP:
+        return 10 + _CN_DIGIT_MAP[token[1]]
+    if token.endswith("十") and len(token) == 2 and token[0] in _CN_DIGIT_MAP:
+        return _CN_DIGIT_MAP[token[0]] * 10
+    if "十" in token:
+        tens_s, ones_s = token.split("十", 1)
+        tens = _CN_DIGIT_MAP.get(tens_s, 1 if tens_s == "" else None)
+        ones = _CN_DIGIT_MAP.get(ones_s, 0 if ones_s == "" else None)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    return _CN_DIGIT_MAP.get(token)
+
+
+def _evening_hour(hour_token: str) -> int | None:
+    hour = _parse_hour_token(hour_token)
+    if hour is None:
+        return None
+    return hour + 12 if hour < 12 else hour
+
+
+def _apply_time_of_day(now: datetime, hour: int, minute: int = 0) -> datetime:
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
 DAILY_KEYWORDS = ["吃药", "量血压", "测血糖", "吃饭", "喝水", "做操", "散步", "锻炼", "吃早饭", "吃午饭", "吃晚饭"]
 ONCE_KEYWORDS = ["打电话", "买", "取", "寄", "明天", "后天", "下周"]
 
@@ -54,21 +109,35 @@ def detect_schedule_type(text: str) -> Optional[str]:
 
 
 def parse_time_from_text(text: str) -> Optional[time]:
-    m = re.search(r"下午\s*(\d{1,2})\s*(?:点|:)\s*(\d{1,2})?", text)
+    m = re.search(rf"下午\s*{_HOUR_TOKEN}\s*(?:点|:)\s*(\d{{1,2}})?", text)
     if m:
-        h = int(m.group(1))
+        h = _evening_hour(m.group(1))
+        if h is None:
+            return None
         mi = int(m.group(2)) if m.group(2) else 0
-        if h < 12:
-            h += 12
         return time(h, mi)
 
-    m = re.search(r"上午\s*(\d{1,2})\s*(?:点|:)\s*(\d{1,2})?", text)
+    m = re.search(rf"晚上\s*{_HOUR_TOKEN}\s*(?:点|:)\s*(\d{{1,2}})?", text)
     if m:
-        return time(int(m.group(1)), int(m.group(2)) if m.group(2) else 0)
+        h = _evening_hour(m.group(1))
+        if h is None:
+            return None
+        mi = int(m.group(2)) if m.group(2) else 0
+        return time(h, mi)
 
-    m = re.search(r"(\d{1,2})\s*(?:点|:)\s*(\d{1,2})?", text)
+    m = re.search(rf"上午\s*{_HOUR_TOKEN}\s*(?:点|:)\s*(\d{{1,2}})?", text)
     if m:
-        return time(int(m.group(1)), int(m.group(2)) if m.group(2) else 0)
+        h = _parse_hour_token(m.group(1))
+        if h is None:
+            return None
+        return time(h, int(m.group(2)) if m.group(2) else 0)
+
+    m = re.search(rf"{_HOUR_TOKEN}\s*(?:点|:)\s*(\d{{1,2}})?", text)
+    if m:
+        h = _parse_hour_token(m.group(1))
+        if h is None:
+            return None
+        return time(h, int(m.group(2)) if m.group(2) else 0)
 
     return None
 
@@ -303,24 +372,31 @@ class ReminderTool(ToolBase):
              lambda m: now + timedelta(hours=int(m.group(1)))),
             (r"(\d+)\s*秒后", "countdown", "once",
              lambda m: now + timedelta(seconds=int(m.group(1)))),
-            (r"每天[早上早晨]+(\d{1,2})点", "alarm", "daily",
-             lambda m: now.replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
-            (r"每天[下午晚上]+(\d{1,2})点", "alarm", "daily",
-             lambda m: now.replace(hour=int(m.group(1)) + 12, minute=0, second=0, microsecond=0)),
-            (r"每天(\d{1,2})点(\d{2})分", "alarm", "daily",
-             lambda m: now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)),
-            (r"每天(\d{1,2})点", "alarm", "daily",
-             lambda m: now.replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
-            (r"明天[早上早晨]*(\d{1,2})点", "alarm", "once",
-             lambda m: (now + timedelta(days=1)).replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
-            (r"今天[早上早晨]*(\d{1,2})点", "alarm", "once",
-             lambda m: now.replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
-            (r"[下午晚上]+(\d{1,2})点", "alarm", "once",
-             lambda m: now.replace(hour=int(m.group(1)) + 12, minute=0, second=0, microsecond=0)),
-            (r"(\d{1,2})点(\d{2})分", "alarm", "once",
-             lambda m: now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)),
-            (r"(\d{1,2})点", "alarm", "once",
-             lambda m: now.replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
+            (rf"每天[早上早晨]+{_HOUR_TOKEN}点", "alarm", "daily",
+             lambda m: _apply_time_of_day(now, h) if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"每天[下午晚上]+{_HOUR_TOKEN}点", "alarm", "daily",
+             lambda m: _apply_time_of_day(now, h) if (h := _evening_hour(m.group(1))) else None),
+            (rf"每天{_HOUR_TOKEN}点(\d{{2}})分", "alarm", "daily",
+             lambda m: _apply_time_of_day(now, h, int(m.group(2)))
+             if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"每天{_HOUR_TOKEN}点", "alarm", "daily",
+             lambda m: _apply_time_of_day(now, h) if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"明天[早上早晨]*{_HOUR_TOKEN}点", "alarm", "once",
+             lambda m: _apply_time_of_day(now + timedelta(days=1), h)
+             if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"今天[早上早晨]*{_HOUR_TOKEN}点", "alarm", "once",
+             lambda m: _apply_time_of_day(now, h) if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"[下午晚上]+{_HOUR_TOKEN}点半", "alarm", "once",
+             lambda m: _apply_time_of_day(now, h, 30) if (h := _evening_hour(m.group(1))) else None),
+            (rf"[下午晚上]+{_HOUR_TOKEN}点", "alarm", "once",
+             lambda m: _apply_time_of_day(now, h) if (h := _evening_hour(m.group(1))) else None),
+            (rf"{_HOUR_TOKEN}点(\d{{2}})分", "alarm", "once",
+             lambda m: _apply_time_of_day(now, h, int(m.group(2)))
+             if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"{_HOUR_TOKEN}点半", "alarm", "once",
+             lambda m: _apply_time_of_day(now, h, 30) if (h := _parse_hour_token(m.group(1))) else None),
+            (rf"{_HOUR_TOKEN}点", "alarm", "once",
+             lambda m: _apply_time_of_day(now, h) if (h := _parse_hour_token(m.group(1))) else None),
         ]
 
         matched_pattern = None
@@ -328,10 +404,13 @@ class ReminderTool(ToolBase):
             match = re.search(pattern, query)
             if match:
                 try:
-                    remind_time = time_fn(match)
+                    candidate = time_fn(match)
+                    if candidate is None:
+                        continue
+                    remind_time = candidate
                     matched_pattern = (timer_type, repeat_mode, pattern)
-                except (ValueError, OverflowError):
-                    pass
+                except (ValueError, OverflowError, TypeError):
+                    continue
                 break
 
         content = query
