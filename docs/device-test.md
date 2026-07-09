@@ -21,6 +21,12 @@ The runtime now treats `https://github.com/yf0522/ai-companion-runtime` as the c
 | TTS audio stream back to device | 协议行为已验证（测试桩/替身） | 用桩化 TTS 验证返回 PCM 与 `tts_done`。 |
 | Empty speech handling | 协议行为已验证（测试桩/替身） | 空转录返回 `no_speech`，不调用模型/TTS。 |
 | TTS API contract | 集成依赖前提（测试桩/替身） | `apps/api/tests/test_tts_api.py` 通过 monkeypatch 约束请求参数与返回；未覆盖真实 DashScope 可用性。 |
+| ASR HTTP JWT auth | Verified by automated test | `apps/api/tests/test_asr_api.py` — 401 without/invalid token; 200 with elder JWT. |
+| ASR request size limit | Verified by automated test | `max_asr_bytes` enforced (413 on oversize body). |
+| ASR per-user rate limit | Verified by automated test | `asr_rate_limit_per_minute` returns 429 when exceeded. |
+| TTS HTTP JWT auth | Verified by automated test | `apps/api/tests/test_tts_api.py` — 401 without/invalid token. |
+| TTS text size limit | Verified by automated test | `max_tts_chars` enforced (413 on oversize text). |
+| TTS per-user rate limit | Verified by automated test | `tts_rate_limit_per_minute` returns 429 when exceeded. |
 | Risk detection engine | 协议行为已验证（测试桩/替身） | `apps/api/tests/test_risk_engine.py` 覆盖 fraud / health / emotional 的分类、否定词与安全上下文。 |
 | Prompt-injection wrapper | 已验证（测试桩/替身） | `apps/api/tests/test_prompt_injection.py` 覆盖指令注入与优先级。 |
 | Reminder structured output | 已实现 | `apps/api/app/tools/reminder_tool.py` 输出 `reminder_create` 结构体，用于设备侧闹钟/倒计时消费。 |
@@ -48,7 +54,7 @@ This repo now includes a protocol-aligned firmware skeleton under `firmware/`. T
 | Reminder local trigger on ESP32 | Firmware persists `reminder_create` to NVS; replace annotated evidence with real serial fire logs. |
 | Fraud detection full demo path | Risk/rule detection exists; investor demo flow should be run against a scripted scenario and captured in Trace. |
 | Family notification delivery | `NotificationLog` 事件已落库；推送 provider 与真实回执/送达链路仍在 roadmap。 |
-| Production device auth for ASR/TTS HTTP endpoints | Needs hardening: token checks, request size limits, per-device quota, and audit logs. |
+| Device-scoped ASR/TTS auth & audit | JWT + per-user quota + size limits are verified; still need device-bound tokens, per-device audit trail, and production hardening. |
 | Audio format contract | Needs one documented device format. Recommended target: raw PCM 16-bit mono, 24 kHz for playback. |
 
 ## Recommended Next Test Pass
