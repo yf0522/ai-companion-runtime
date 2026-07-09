@@ -30,25 +30,25 @@ Mock UI · scenario demo. These visuals illustrate intended eldercare flows and 
 
 ![Voice profile and trust reminder demo](docs/evidence/01-voice-clone-trust.png)
 
-This mock shows a two-sided reminder flow: the child records a short voice profile once, and the elder receives a more familiar reminder on a large-text device surface. The product claim is higher daily medication compliance with fewer manual reminder calls from family.
+这张图展示的是“双端提醒”场景：子女在手机端录一次声音样本，老人侧在大字硬件界面上收到更熟悉、更愿意配合的提醒。它想表达的核心价值不是语音炫技，而是提升日常服药配合度，减少子女反复打电话催药。
 
 ### 2. Daily memory and family summary
 
 ![Daily memory and family summary demo](docs/evidence/02-daily-memory-summary.png)
 
-This mock shows how casual elder conversation can be turned into structured family summaries. The intended value is not more chat, but fewer repeated check-in calls and faster visibility into medication, mood, and symptom trends.
+这张图展示的是“日常记忆写入 + 家属摘要查看”场景：老人随口说当天状态，系统沉淀为可供家属查看的结构化总结。它强调的不是多聊几轮，而是让家属少重复追问，能更快看到用药、情绪和身体状态的变化趋势。
 
 ### 3. Hardware-assisted phone intercept
 
 ![Hardware-assisted phone intercept demo](docs/evidence/03-hardware-phone-intercept.png)
 
-This mock illustrates the strongest safety thesis in the set: a companion device intervenes around a suspicious call before the elder completes the risky action. It should be read as a concept for upstream anti-fraud assistance, not as proof of production phone OS interception.
+这张图展示的是“硬件反向干预手机”的反诈概念：当老人接到疑似诈骗来电时，陪伴设备在高风险动作发生前先介入，尽量把复杂判断压缩成老人能理解的简单选择。这里表达的是上游反诈保护方向，不应表述成已在生产环境完成手机系统级拦截能力。
 
 ### 4. Labor saved overview
 
 ![Labor saved overview demo](docs/evidence/04-labor-saved-overview.png)
 
-This summary mock ties the three pillars together: voice-profile reminders, long-term memory summaries, and hardware-assisted fraud prevention. The business framing is simple: elders do small daily actions, and children spend less time chasing reminders, re-asking status, or cleaning up after scams.
+这张图把三条主线放在同一页里：亲属音色提醒、长期记忆摘要、硬件辅助反诈。它对应的商业表达很直接：老人只做小动作，子女少做苦差，少催药、少重复打听近况、也少在诈骗发生后被动善后。
 
 ## 架构总览
 
