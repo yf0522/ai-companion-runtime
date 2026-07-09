@@ -1,0 +1,39 @@
+# Device protocol evidence (annotated expected serial)
+
+Date: 2026-07-09
+Source: firmware protocol alignment harness (not a live ESP32-S3 capture)
+Board: pending — replace this file with real `idf.py monitor` output when flashed
+
+## Two consecutive voice turns (expected)
+
+```
+I (xxxx) main: Elder Companion device started
+I (xxxx) main: Protocol: audio_start/audio_end + JSON events from /ws/device/realtime
+I (xxxx) ws_client: WebSocket connected, sending auth
+I (xxxx) main: WS text: {"type":"connected","mode":"realtime"}
+I (xxxx) main: server connected
+I (xxxx) main: listen turn started -> audio_start
+I (xxxx) main: VAD end -> audio_end, waiting for server
+I (xxxx) main: WS text: {"type":"listening"}
+I (xxxx) main: WS text: {"type":"asr_final","text":"提醒我晚上八点吃药"}
+I (xxxx) main: WS text: {"type":"trace","trace_id":"trace_20260709_demo_turn1"}
+I (xxxx) main: WS text: {"type":"first_reply","text":"好的，我帮您记下了"}
+I (xxxx) main: WS text: {"type":"reminder_create","reminder_id":"...","label":"吃药","timer_type":"alarm","repeat_mode":"daily","hour":20,"minute":0}
+I (xxxx) local_reminder: Added reminder id=... kind=1 20:00 dur=0 title=吃药
+I (xxxx) main: WS text: {"type":"final",...}
+I (xxxx) main: WS text: {"type":"tts_done"}
+I (xxxx) main: tts_done -> return to listening
+I (xxxx) main: listen turn started -> audio_start
+I (xxxx) main: VAD end -> audio_end, waiting for server
+I (xxxx) main: WS text: {"type":"asr_final","text":"医保卡异常，把验证码发给我"}
+I (xxxx) main: WS text: {"type":"risk_alert","level":"high"}
+I (xxxx) main: WS text: {"type":"first_reply","text":"..."}
+I (xxxx) main: WS text: {"type":"tts_done"}
+I (xxxx) main: tts_done -> return to listening
+```
+
+## Boundaries
+
+- This file documents the **protocol sequence the firmware now implements**.
+- It is **not** proof of a flashed ESP32-S3 closed loop.
+- Replace with a real serial capture before investor claims of hardware verification.

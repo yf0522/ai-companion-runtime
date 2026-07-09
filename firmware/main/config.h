@@ -22,3 +22,11 @@
 #define VAD_SILENCE_TIMEOUT_MS     300
 #define STANDBY_TIMEOUT_S          300
 #define REMINDER_CHECK_INTERVAL_S  60
+
+// Hardware bring-up gates (protocol code compiles either way)
+#ifndef CONFIG_COMPANION_ENABLE_WIFI
+#define CONFIG_COMPANION_ENABLE_WIFI 0
+#endif
+#ifndef CONFIG_COMPANION_ENABLE_ADF_AUDIO
+#define CONFIG_COMPANION_ENABLE_ADF_AUDIO 0
+#endif
