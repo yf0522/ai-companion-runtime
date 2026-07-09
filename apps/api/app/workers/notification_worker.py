@@ -10,12 +10,24 @@ logger = logging.getLogger(__name__)
 
 
 @app.task(name="app.workers.notification_worker.send_risk_notification")
-def send_risk_notification(user_id: str, risk_level: str, risk_category: str, message_summary: str):
+def send_risk_notification(
+    user_id: str,
+    risk_level: str,
+    risk_category: str,
+    message_summary: str,
+    trace_id: str | None = None,
+):
     import asyncio
-    asyncio.run(process_risk_notification(user_id, risk_level, risk_category, message_summary))
+    asyncio.run(process_risk_notification(user_id, risk_level, risk_category, message_summary, trace_id))
 
 
-async def process_risk_notification(user_id: str, risk_level: str, risk_category: str, summary: str) -> None:
+async def process_risk_notification(
+    user_id: str,
+    risk_level: str,
+    risk_category: str,
+    summary: str,
+    trace_id: str | None = None,
+) -> None:
     """Persist risk events and notify emergency contacts if configured."""
     db_user_id = uuid.UUID(user_id)
     from datetime import datetime
@@ -42,13 +54,14 @@ async def process_risk_notification(user_id: str, risk_level: str, risk_category
         ]
 
         if not matched_contacts:
-            db.add(
-                NotificationLog(
-                    user_id=db_user_id,
-                    contact_id=None,
-                    risk_level=risk_level,
-                    risk_category=risk_category,
-                    summary=summary,
+                db.add(
+                    NotificationLog(
+                        user_id=db_user_id,
+                        contact_id=None,
+                        trace_id=trace_id,
+                        risk_level=risk_level,
+                        risk_category=risk_category,
+                        summary=summary,
                     webhook_status="no_contact",
                 )
             )
@@ -63,6 +76,7 @@ async def process_risk_notification(user_id: str, risk_level: str, risk_category
                     "user_id": user_id,
                     "risk_level": risk_level,
                     "category": risk_category,
+                    "trace_id": trace_id,
                     "summary": summary,
                     "timestamp": datetime.utcnow().isoformat(),
                     "contact_name": contact.name,
@@ -72,6 +86,7 @@ async def process_risk_notification(user_id: str, risk_level: str, risk_category
                 NotificationLog(
                     user_id=db_user_id,
                     contact_id=contact.id,
+                    trace_id=trace_id,
                     risk_level=risk_level,
                     risk_category=risk_category,
                     summary=summary,

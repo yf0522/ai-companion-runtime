@@ -252,6 +252,7 @@ class NotificationLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     contact_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("emergency_contacts.id"))
+    trace_id: Mapped[str | None] = mapped_column(nullable=True)
     risk_level: Mapped[str] = mapped_column(nullable=False)
     risk_category: Mapped[str | None] = mapped_column()
     summary: Mapped[str | None] = mapped_column(Text)

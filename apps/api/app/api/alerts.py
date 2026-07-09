@@ -22,6 +22,7 @@ class NotificationItem(BaseModel):
     category: str
     title: str
     message: str
+    trace_id: str | None = None
     severity: str
     status: str = "pending"
     created_at: str
@@ -100,6 +101,7 @@ async def list_notifications(user: dict = Depends(get_current_user)):
             id=str(log.id),
             user_id=uid,
             category=log.risk_category or "none",
+            trace_id=log.trace_id,
             title=_title(log.risk_level, log.risk_category),
             message=log.summary or "风险事件已生成通知记录",
             severity=log.risk_level,
@@ -115,4 +117,3 @@ async def list_notifications(user: dict = Depends(get_current_user)):
         "total": len(items),
         "status": "persisted",
     }
-

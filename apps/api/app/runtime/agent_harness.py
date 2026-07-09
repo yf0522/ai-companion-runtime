@@ -150,7 +150,13 @@ class AgentHarness:
             return {"trace_id": trace_id, "blocked_by_risk": True}
 
         if risk.level == "medium":
-            await self._dispatch_risk_notification(user_id, "medium", risk.category, message[:100])
+            await self._dispatch_risk_notification(
+                user_id,
+                "medium",
+                risk.category,
+                self._build_family_notification_summary(risk),
+                trace_id,
+            )
 
         # Step 3: Personality + Fast Reply (non-blocking, first-sentence-first)
         step += 1
@@ -382,11 +388,13 @@ class AgentHarness:
             memory_updated=False,
         )
 
+        summary = self._build_family_notification_summary(risk)
         await self._dispatch_risk_notification(
             user_id,
             risk.level,
             risk.category,
-            f"触发规则: {risk.triggered_rules}",
+            summary,
+            trace_id,
         )
 
     async def _dispatch_risk_notification(
@@ -395,6 +403,7 @@ class AgentHarness:
         risk_level: str,
         risk_category: str | None,
         summary: str,
+        trace_id: str,
     ) -> None:
         try:
             from app.config.settings import settings
@@ -402,14 +411,37 @@ class AgentHarness:
             if not settings.enable_celery_tasks:
                 from app.workers.notification_worker import process_risk_notification
 
-                asyncio.create_task(process_risk_notification(user_id, risk_level, risk_category or "", summary))
+                asyncio.create_task(process_risk_notification(user_id, risk_level, risk_category or "", summary, trace_id))
                 return
 
             from app.workers.notification_worker import send_risk_notification
 
-            send_risk_notification.delay(user_id, risk_level, risk_category or "", summary)
+            send_risk_notification.delay(user_id, risk_level, risk_category or "", summary, trace_id)
         except Exception as e:
             logger.debug(f"Notification dispatch skipped: {e}")
+
+    def _build_family_notification_summary(self, risk: RiskResult) -> str:
+        if risk.category == "scam_alert":
+            keyword_text = " ".join(
+                r.replace("keyword:", "").replace("pattern:", "")
+                for r in (risk.triggered_rules or [])
+            )
+            if "验证码" in keyword_text:
+                return "疑似反诈：检测到验证码索要行为，建议先电话确认，不要转账、不报验证码。"
+            if "转账" in keyword_text or "汇款" in keyword_text:
+                return "疑似反诈：检测到可疑转账/汇款风险，建议先与家属或官方确认，再执行任何转账。"
+            return "疑似反诈：检测到可疑理财/支付引导，建议先电话确认，避免立即付款。"
+
+        if risk.category == "health_emergency":
+            return "高危健康信号：检测到胸闷/头晕/呼吸困难类风险，建议立即联系家属并协助就医。"
+
+        if risk.category == "emotional_low":
+            return "用户情绪偏低：建议家属主动关怀并保持持续陪伴，观察言语变化。"
+
+        if risk.level in {"high", "critical"}:
+            return "检测到高风险行为，建议先与家属确认后再处理后续动作。"
+
+        return "检测到中等风险内容，请关注并适时回访。"
 
     async def _fast_reply_race(
         self, message: str, emotion: EmotionResult, personality: PersonalityConfig,

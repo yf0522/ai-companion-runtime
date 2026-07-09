@@ -18,7 +18,7 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Reminder output for devices | Implemented: reminder tool emits structured timer/alarm/countdown fields; full ESP32 local trigger evidence still needs a captured hardware test pass. |
 | Device realtime WebSocket | 已落地，并在单测中验证关键行为（JWT、PCM 收发、ASR 回退、模型/TTS 流转）。依赖如 DashScope 的集成验证需补充完整运行环境。 |
 | Hardware device validation | 先前仓库中有 ESP32-S3 构建与二次唤醒验证记录；当前仓未包含可复现硬件日志文件，需补充后再标为完全通过。 |
-| Family notification | `/api/notifications` 保留为告警占位链路（`/api/reminders` 已接入 DB CRUD）；真实通知 provider 下发与回执仍在 roadmap。 |
+| Family notification | `/api/notifications` 已接入持久化通知事件（`notification_log`）；手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
 | Investor demo material | 已补充在 `docs/investor-demo.md`；设备验证清单在 `docs/device-test.md`，按当前依赖条件区分“协议验证”和“真实链路验证”。 |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 
@@ -265,7 +265,7 @@ ai-companion-runtime/
 | POST | `/api/auth/register` | 用户注册 |
 | POST | `/api/auth/login` | 用户登录 |
 | GET / POST / PUT / DELETE | `/api/reminders` | 提醒事件 CRUD（已接入 DB 路径，演示与生产回路需持续验证） |
-| GET | `/api/notifications` | 家属通知查询（演示占位，待通知 provider） |
+| GET | `/api/notifications` | 家属通知查询（事件已落库；手机推送/webhook provider 与回执待接入） |
 | GET | `/api/memory/{user_id}/profile` | 用户画像 |
 | GET | `/api/memory/{user_id}/memories` | 记忆列表 |
 | GET | `/health` | 健康检查 |

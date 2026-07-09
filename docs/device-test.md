@@ -44,7 +44,7 @@ Because the firmware project and serial logs are not bundled in this repository,
 | End-to-end hardware loop in this repo | Not yet fully automated. Needs a repeatable device test script and captured serial log. |
 | Reminder local trigger on ESP32 | Backend emits structured timer data, but device-side local trigger verification should be documented with firmware logs. |
 | Fraud detection full demo path | Risk/rule detection exists; investor demo flow should be run against a scripted scenario and captured in Trace. |
-| Family notification delivery | 接口已上，当前返回占位项；待接入通知 provider 与真实回执/送达验证。 |
+| Family notification delivery | `NotificationLog` 事件已落库；推送 provider 与真实回执/送达链路仍在 roadmap。 |
 | Production device auth for ASR/TTS HTTP endpoints | Needs hardening: token checks, request size limits, per-device quota, and audit logs. |
 | Audio format contract | Needs one documented device format. Recommended target: raw PCM 16-bit mono, 24 kHz for playback. |
 
@@ -55,5 +55,5 @@ Because the firmware project and serial logs are not bundled in this repository,
 3. Run two consecutive voice turns and capture serial logs.
 4. Verify `connected -> listening -> asr_final -> first_reply/delta -> tts_done` for both turns.
 5. Trigger a reminder command and verify the device creates and fires the local alarm/countdown.
-6. Run a scripted fraud-risk utterance and verify risk classification, family-notification placeholder behavior, and Trace timeline.
+6. Run a scripted fraud-risk utterance and verify risk classification, family-notification persistence (`/api/notifications`), and Trace timeline.
 7. Save logs or screenshots under `docs/evidence/` before presenting as fully hardware verified.
