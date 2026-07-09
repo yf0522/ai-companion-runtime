@@ -38,3 +38,12 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Local default; CI workflow uses a narrower --select for merge-safe green builds.
+select = ["E", "F"]
+ignore = ["E501"]

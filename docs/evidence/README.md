@@ -15,6 +15,16 @@ Use them to explain the product thesis, interaction model, and value loop. Do no
 3. [03-hardware-phone-intercept.png](./03-hardware-phone-intercept.png)
 4. [04-labor-saved-overview.png](./04-labor-saved-overview.png)
 
+### Related diligence artifacts (non-Mock)
+
+| Artifact | Meaning |
+|---|---|
+| `device-protocol-expected-sequence-*.txt` | Annotated expected protocol sequence — **not** a live ESP32 serial capture |
+| `device-serial-log-*.txt` (if present) | Only treat as live board evidence if the file header says so |
+| `demo-run-*.md` | Smoke checklist output; dry-run ≠ live API proof |
+
+The software runtime loop is verified for chat. Device-routed transcripts and firmware protocol alignment land as separate workstreams. Hardware execution evidence remains separate from Mock UI.
+
 ## 01. Voice profile and trust reminder
 
 ![Voice profile and trust reminder demo](./01-voice-clone-trust.png)

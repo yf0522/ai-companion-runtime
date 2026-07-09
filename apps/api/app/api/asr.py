@@ -6,6 +6,7 @@ via WebSocket realtime protocol (no file_urls needed).
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -31,9 +32,11 @@ except Exception:  # pragma: no cover - optional dependency in local tests
         def call(self, wav_path: str) -> RecognitionResult:  # noqa: ARG002
             raise RuntimeError("dashscope package is not available in this environment")
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from app.api.auth import get_current_user
+from app.api.rate_limiter import get_asr_limiter
 from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -115,16 +118,41 @@ def _transcribe_sync(wav_data: bytes, sample_rate: int) -> str:
             pass
 
 
+async def _enforce_asr_quota(request: Request, user: dict) -> None:
+    user_key = user.get("sub") or (request.client.host if request.client else "unknown")
+    allowed = await get_asr_limiter().check(f"asr:{user_key}")
+    if not allowed:
+        raise HTTPException(status_code=429, detail="ASR rate limit exceeded")
+
+
 @router.post("/v1/recognize")
-async def recognize(request: Request):
+async def recognize(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    if settings.audio_endpoint_auth_required and not user:
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    await _enforce_asr_quota(request, user)
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > settings.max_asr_bytes:
+                raise HTTPException(status_code=413, detail="ASR payload too large")
+        except ValueError:
+            pass
+
+    pcm_data = await request.body()
+    if len(pcm_data) > settings.max_asr_bytes:
+        raise HTTPException(status_code=413, detail="ASR payload too large")
+    if len(pcm_data) < 640:  # minimum ~20ms of audio
+        return JSONResponse({"text": ""})
+
     api_key = settings.qwen_api_key
     if not api_key:
         logger.error("ASR: QWEN_API_KEY not configured")
         return JSONResponse({"text": ""}, status_code=500)
-
-    pcm_data = await request.body()
-    if len(pcm_data) < 640:  # minimum ~20ms of audio
-        return JSONResponse({"text": ""})
 
     sample_rate = 16000
     content_type = request.headers.get("content-type", "")
@@ -139,7 +167,6 @@ async def recognize(request: Request):
     wav_data = _build_wav(pcm_data, sample_rate=sample_rate)
 
     # Run blocking SDK call in thread pool
-    import asyncio
     loop = asyncio.get_running_loop()
     text = await loop.run_in_executor(_executor, _transcribe_sync, wav_data, sample_rate)
 

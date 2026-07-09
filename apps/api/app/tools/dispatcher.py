@@ -42,6 +42,8 @@ class ToolDispatcher:
         message: str,
         trace_id: str,
         stream_mgr: StreamManager,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> list[ToolResult]:
         tasks = []
         for name in tool_needs[: self._max_tool_calls]:
@@ -95,15 +97,12 @@ class ToolDispatcher:
 
         try:
             result = await asyncio.wait_for(
-                tool.execute({"query": message}),
+                tool.execute(params),
                 timeout=self._tool_timeout_ms / 1000,
             )
             latency = int((time.monotonic() - start) * 1000)
             result.latency_ms = latency
 
-            # Check for WS actions embedded in tool result data.
-            # Tools can request the dispatcher send structured messages to the
-            # ESP32 without knowing about WebSocket themselves.
             if result.data and result.data.get("action"):
                 action = result.data["action"]
                 if action == "reminder_create":

@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://jaeger:4317"
     otel_service_name: str = "companion-runtime"
 
+    # Audio HTTP endpoints (/v1/recognize, /v1/synthesize)
+    max_asr_bytes: int = 2_000_000
+    max_tts_chars: int = 300
+    audio_endpoint_auth_required: bool = True
+    asr_rate_limit_per_minute: int = 20
+    tts_rate_limit_per_minute: int = 30
+
     model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 
     def validate_security(self):

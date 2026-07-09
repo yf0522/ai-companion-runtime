@@ -20,13 +20,17 @@ static const char *TAG = "audio_pipeline";
 static bool vad_active = false;
 
 void audio_pipeline_init(void) {
-    ESP_LOGI(TAG, "Audio pipeline init (AEC filter=%d, NS mode=%d, SR=%d)",
-             AEC_FILTER_LENGTH, NS_MODE, SAMPLE_RATE);
-    // TODO: Initialize ESP-ADF pipeline with:
+    ESP_LOGI(TAG, "Audio pipeline init (AEC filter=%d, NS mode=%d, SR=%d, adf=%d)",
+             AEC_FILTER_LENGTH, NS_MODE, SAMPLE_RATE, CONFIG_COMPANION_ENABLE_ADF_AUDIO);
+#if CONFIG_COMPANION_ENABLE_ADF_AUDIO
+    // Initialize ESP-ADF pipeline with:
     // - i2s_stream_reader (microphone, 16kHz mono)
     // - algorithm_stream (AEC + NS + VAD)
     // - raw_stream_reader (for reading processed audio)
     // - i2s_stream_writer (speaker output)
+#else
+    ESP_LOGW(TAG, "ADF audio gated off; protocol harness uses stub read/play/VAD");
+#endif
 }
 
 void audio_pipeline_start(void) {

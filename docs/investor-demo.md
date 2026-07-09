@@ -5,6 +5,10 @@ Target length: 3 minutes
 This is an **eldercare risk-gated runtime demo**, not an entertainment chatbot demo.
 The goal is to prove: companionship + memory + safety interception + family handoff + traceability in one interaction loop.
 
+## Scenario visuals
+
+For investor-facing scenario mockups (voice trust, daily memory summary, hardware phone intercept, labor-saved overview), see [`docs/evidence/`](./evidence/README.md). These are **Mock UI · scenario demo** assets, not production screenshots.
+
 ## Setup
 
 - Backend API running: `http://localhost:8000`
@@ -17,6 +21,21 @@ The goal is to prove: companionship + memory + safety interception + family hand
   - 家属联系人已开启
 - Prepared expected categories:
   - `health_emergency`, `scam_alert`, `emotional_low`
+
+### Repeatable smoke (optional but recommended)
+
+```bash
+# Structure check (no server)
+python scripts/demo_smoke.py --dry-run
+python scripts/device_ws_smoke.py --dry-run
+
+# Live against local API
+python scripts/demo_smoke.py --base-url http://127.0.0.1:8000 --record
+python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000
+```
+
+`--record` writes `docs/evidence/demo-run-YYYYMMDD.md` for diligence follow-up.
+Scenario mockups remain under `docs/evidence/` (Mock UI, not production screenshots).
 
 ## 0:00-0:18 Opening
 
@@ -121,9 +140,24 @@ Open Trace detail and walk:
 
 Closing:
 
-“This demo shows one closed loop: companionship, memory, safety interception, family escalation, and auditable execution. That is the difference between a chatbot and a care runtime.”
+“This demo shows a software closed loop for companionship, memory-aware reminders, safety interception, family escalation events, and auditable Trace. Hardware execution evidence is tracked separately under `docs/evidence` and firmware notes — do not equate Mock UI or protocol stubs with a production device closed loop.”
 
 ---
+
+### Verified now vs roadmap (demo narration)
+
+**Verified now**
+- Browser `/ws/chat` risk-gated loop with Trace IDs
+- Risk categories: `scam_alert` / `health_emergency` / `emotional_low`
+- Family notification **events** persisted and listable via `/api/notifications`
+- Reminder tool structured `reminder_create` for devices
+- Device WS route protocol tests (JWT + audio frames)
+
+**Roadmap / do not overclaim**
+- Voice clone / family voice enrollment as shipped product
+- Phone OS intercept / carrier-level call blocking
+- Full ESP32 hardware closed loop without real serial evidence
+- Push-provider delivery receipts beyond NotificationLog persistence
 
 ### Demo checkpoint mapping (technical anchors)
 
@@ -131,3 +165,4 @@ Closing:
 - Risk-aware output behavior in backend: `risk_engine` + `risk_rules.yaml`
 - Family path: `/api/notifications`, `/api/reminders`
 - Auditability: trace timeline and tool/result events in `/api/traces`
+- Repeatable smoke (when scripts are present): `python scripts/demo_smoke.py --dry-run`
