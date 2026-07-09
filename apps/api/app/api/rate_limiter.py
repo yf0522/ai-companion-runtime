@@ -60,6 +60,29 @@ ws_message_limiter = RateLimiter(max_requests=30, window_seconds=60)  # 30 messa
 ws_connect_limiter = RateLimiter(max_requests=5, window_seconds=60)   # 5 connections per minute
 
 
+def get_asr_limiter() -> RateLimiter:
+    from app.config.settings import settings
+
+    return RateLimiter(
+        max_requests=settings.asr_rate_limit_per_minute,
+        window_seconds=60,
+    )
+
+
+def get_tts_limiter() -> RateLimiter:
+    from app.config.settings import settings
+
+    return RateLimiter(
+        max_requests=settings.tts_rate_limit_per_minute,
+        window_seconds=60,
+    )
+
+
+def clear_memory_store() -> None:
+    """Test helper: reset in-memory rate-limit buckets."""
+    _mem_store.clear()
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Apply rate limiting to auth endpoints via middleware."""
 

@@ -8,9 +8,11 @@ import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
+from app.api.auth import get_current_user
+from app.api.rate_limiter import get_tts_limiter
 from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -27,12 +29,22 @@ def _has_pronounceable_text(text: str) -> bool:
     return any(unicodedata.category(ch)[0] in {"L", "N", "P", "Z"} for ch in text)
 
 
+async def _enforce_tts_quota(request: Request, user: dict) -> None:
+    user_key = user.get("sub") or (request.client.host if request.client else "unknown")
+    allowed = await get_tts_limiter().check(f"tts:{user_key}")
+    if not allowed:
+        raise HTTPException(status_code=429, detail="TTS rate limit exceeded")
+
+
 @router.post("/v1/synthesize")
-async def synthesize(request: Request):
-    api_key = settings.qwen_api_key
-    if not api_key:
-        logger.error("TTS: QWEN_API_KEY not configured")
-        return Response(status_code=500)
+async def synthesize(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    if settings.audio_endpoint_auth_required and not user:
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    await _enforce_tts_quota(request, user)
 
     try:
         body = await request.json()
@@ -42,8 +54,15 @@ async def synthesize(request: Request):
     text = body.get("text", "").strip()
     if not text:
         return Response(content=b"", media_type="audio/pcm")
+    if len(text) > settings.max_tts_chars:
+        raise HTTPException(status_code=413, detail="TTS text too long")
     if not _has_pronounceable_text(text):
         return Response(content=b"", media_type="audio/pcm")
+
+    api_key = settings.qwen_api_key
+    if not api_key:
+        logger.error("TTS: QWEN_API_KEY not configured")
+        return Response(status_code=500)
 
     try:
         audio_data = await synthesize_pcm(text)
