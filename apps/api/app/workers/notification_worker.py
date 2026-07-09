@@ -54,14 +54,14 @@ async def process_risk_notification(
         ]
 
         if not matched_contacts:
-                db.add(
-                    NotificationLog(
-                        user_id=db_user_id,
-                        contact_id=None,
-                        trace_id=trace_id,
-                        risk_level=risk_level,
-                        risk_category=risk_category,
-                        summary=summary,
+            db.add(
+                NotificationLog(
+                    user_id=db_user_id,
+                    contact_id=None,
+                    trace_id=trace_id,
+                    risk_level=risk_level,
+                    risk_category=risk_category,
+                    summary=summary,
                     webhook_status="no_contact",
                 )
             )
