@@ -1,5 +1,7 @@
 # Production Development Plan
 
+> Status: foundational plan executed through the production-accountability merge at `fa7d9b9` on 2026-07-10. Keep this document for architectural invariants and historical rationale. Use `docs/product-roadmap-2026-h2.md` for current product sequencing and next PRs.
+
 ## 1. Decision
 
 Build AI Companion Runtime as a production eldercare coordination product. The investor walkthrough is a demonstration of the production pilot environment, not a separate demo implementation.
