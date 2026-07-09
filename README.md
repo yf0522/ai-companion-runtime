@@ -23,7 +23,8 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Audio HTTP endpoints | Implemented: `/v1/recognize` and `/v1/synthesize` require JWT and enforce size/rate limits. |
 | Family notification | `/api/notifications` reads persisted `notification_log` events; high/critical escalations await persistence and record Trace `family_notification`. 手机推送/webhook provider 与多渠道回执仍在 roadmap。 |
 | Firmware protocol | `firmware/` source aligns to `audio_start`/`audio_end` + backend event parse + NVS reminders. Expected protocol sequence docs are annotated harness text — live board serial capture still required before claiming hardware closed loop. |
-| Demo / CI | Repeatable smoke scripts under `scripts/`; GitHub Actions run backend pytest/ruff and web build on PRs. |
+| Demo / CI | Repeatable smoke scripts under `scripts/`; GitHub Actions run backend pytest/ruff, web build, and latency regression on PRs. |
+| Agent runtime | Production default: `AgentHarness`. Optional experimental `pi_experimental` via WS auth `agent_runtime` + frontend toggle (Pi sidecar stub until `ENABLE_PI_RUNTIME=1`). Risk gate always runs before Pi path. |
 | Investor demo material | [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单 [docs/device-test.md](docs/device-test.md)；Mock 场景图 [docs/evidence/README.md](docs/evidence/README.md)。 |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
 

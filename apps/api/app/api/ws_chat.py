@@ -6,6 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.auth import decode_token
 from app.api.rate_limiter import ws_connect_limiter, ws_message_limiter
+from app.runtime.agent_runtime import normalize_runtime_name
 from app.runtime.websocket_gateway import WebSocketGateway
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,20 @@ async def ws_chat(websocket: WebSocket):
     user_id = payload["sub"]
     session_id = data.get("session_id")
 
+    try:
+        agent_runtime = normalize_runtime_name(
+            data.get("agent_runtime") or data.get("runtime")
+        )
+    except ValueError as exc:
+        await websocket.send_json({
+            "type": "error",
+            "code": "invalid_runtime",
+            "message": str(exc),
+            "retry": False,
+        })
+        await websocket.close(code=4002, reason="Invalid agent runtime")
+        return
+
     # Family accounts receive risk summaries / confirmation tasks only —
     # they must not open the elder's private chat WebSocket.
     if payload.get("role") == "family":
@@ -90,7 +105,9 @@ async def ws_chat(websocket: WebSocket):
 
     # --- Phase 3: Establish connection ---
     try:
-        conn = await gateway.connect(websocket, user_id, session_id)
+        conn = await gateway.connect(
+            websocket, user_id, session_id, agent_runtime=agent_runtime
+        )
     except RuntimeError as e:
         await websocket.send_json({
             "type": "error", "code": "session_error",
@@ -104,6 +121,7 @@ async def ws_chat(websocket: WebSocket):
         await websocket.send_json({
             "type": "connected",
             "session_id": conn.session_id,
+            "agent_runtime": conn.agent_runtime,
         })
 
         # --- Phase 4: Message loop ---

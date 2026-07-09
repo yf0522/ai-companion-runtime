@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import { CompanionWsClient } from "@/lib/ws-client";
 import { useChatStore } from "./chatStore";
+import { AgentRuntimeId, useAgentRuntimeStore } from "./agentRuntimeStore";
 
 type WsStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
 
 interface WsState {
   status: WsStatus;
   sessionId: string | null;
+  activeRuntime: AgentRuntimeId;
   client: CompanionWsClient | null;
 
   connect: (token?: string) => void;
@@ -19,6 +21,7 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 export const useWsStore = create<WsState>((set, get) => ({
   status: "disconnected",
   sessionId: null,
+  activeRuntime: "harness",
   client: null,
 
   connect: (token?: string) => {
@@ -30,6 +33,7 @@ export const useWsStore = create<WsState>((set, get) => ({
     const existing = get().client;
     if (existing) existing.disconnect();
 
+    const agentRuntime = useAgentRuntimeStore.getState().runtime;
     const client = new CompanionWsClient(WS_URL);
 
     // Status changes
@@ -44,7 +48,11 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Connected
     client.on("connected", (data) => {
-      set({ sessionId: data.session_id, status: "connected" });
+      set({
+        sessionId: data.session_id,
+        status: "connected",
+        activeRuntime: data.agent_runtime || agentRuntime,
+      });
     });
 
     // Trace ID
@@ -90,7 +98,7 @@ export const useWsStore = create<WsState>((set, get) => ({
     });
 
     set({ client, status: "connecting" });
-    client.connect(token);
+    client.connect(token, undefined, undefined, agentRuntime);
   },
 
   disconnect: () => {

@@ -1,5 +1,7 @@
 type MessageHandler = (data: any) => void;
 
+export type AgentRuntimeId = "harness" | "pi_experimental";
+
 export class CompanionWsClient {
   private ws: WebSocket | null = null;
   private url: string;
@@ -11,15 +13,22 @@ export class CompanionWsClient {
   private token: string = "";
   private sessionId: string | null = null;
   private lastMsgId: string | null = null;
+  private agentRuntime: AgentRuntimeId = "harness";
 
   constructor(baseUrl: string) {
     this.url = baseUrl;
   }
 
-  connect(token: string, sessionId?: string, lastMsgId?: string) {
+  connect(
+    token: string,
+    sessionId?: string,
+    lastMsgId?: string,
+    agentRuntime: AgentRuntimeId = "harness",
+  ) {
     this.token = token;
     this.sessionId = sessionId || null;
     this.lastMsgId = lastMsgId || null;
+    this.agentRuntime = agentRuntime;
     this.shouldReconnect = true;
     this._doConnect();
   }
@@ -35,6 +44,7 @@ export class CompanionWsClient {
         type: "auth",
         token: this.token,
         session_id: this.sessionId,
+        agent_runtime: this.agentRuntime,
       });
       this._emit("_status", { status: "connected" });
     };
@@ -122,5 +132,9 @@ export class CompanionWsClient {
 
   setLastMsgId(id: string) {
     this.lastMsgId = id;
+  }
+
+  setAgentRuntime(runtime: AgentRuntimeId) {
+    this.agentRuntime = runtime;
   }
 }

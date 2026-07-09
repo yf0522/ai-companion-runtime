@@ -70,7 +70,7 @@ def test_device_realtime_auth_and_audio_roundtrip(monkeypatch):
     monkeypatch.setattr(ws_device_realtime, "RealtimeAsrSession", FakeRealtimeAsrSession)
     monkeypatch.setattr(ws_device_realtime, "transcribe_pcm", fake_transcribe)
     monkeypatch.setattr(device_stream_manager, "stream_synthesize_pcm", fake_stream_tts)
-    monkeypatch.setattr(ws_device_realtime, "AgentHarness", lambda: harness)
+    monkeypatch.setattr(ws_device_realtime, "get_agent_runtime", lambda _name=None: harness)
     async def fake_increment(sid: str) -> None:
         return None
 
@@ -133,7 +133,7 @@ def test_device_realtime_empty_asr_does_not_call_harness(monkeypatch):
         return "22222222-2222-2222-2222-222222222222"
 
     monkeypatch.setattr(ws_device_realtime, "RealtimeAsrSession", FakeRealtimeAsrSession)
-    monkeypatch.setattr(ws_device_realtime, "AgentHarness", lambda: harness)
+    monkeypatch.setattr(ws_device_realtime, "get_agent_runtime", lambda _name=None: harness)
     monkeypatch.setattr(ws_device_realtime.session_service, "ensure_session", fake_ensure)
 
     app = FastAPI()
@@ -202,7 +202,7 @@ def test_device_realtime_falls_back_to_batch_asr_when_realtime_returns_empty(mon
     async def fake_increment(sid: str) -> None:
         return None
 
-    monkeypatch.setattr(ws_device_realtime, "AgentHarness", lambda: harness)
+    monkeypatch.setattr(ws_device_realtime, "get_agent_runtime", lambda _name=None: harness)
     monkeypatch.setattr(ws_device_realtime.session_service, "ensure_session", fake_ensure)
     monkeypatch.setattr(
         ws_device_realtime.session_service,
@@ -250,7 +250,7 @@ def test_device_scam_utterance_goes_through_harness_risk_path(monkeypatch):
     async def fake_increment(sid: str) -> None:
         return None
 
-    monkeypatch.setattr(ws_device_realtime, "AgentHarness", lambda: harness)
+    monkeypatch.setattr(ws_device_realtime, "get_agent_runtime", lambda _name=None: harness)
     monkeypatch.setattr(ws_device_realtime.session_service, "ensure_session", fake_ensure)
     monkeypatch.setattr(
         ws_device_realtime.session_service,
@@ -299,7 +299,7 @@ def test_device_reminder_utterance_emits_reminder_create(monkeypatch):
     async def fake_increment(sid: str) -> None:
         return None
 
-    monkeypatch.setattr(ws_device_realtime, "AgentHarness", lambda: harness)
+    monkeypatch.setattr(ws_device_realtime, "get_agent_runtime", lambda _name=None: harness)
     monkeypatch.setattr(ws_device_realtime.session_service, "ensure_session", fake_ensure)
     monkeypatch.setattr(
         ws_device_realtime.session_service,
