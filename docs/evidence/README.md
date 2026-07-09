@@ -22,6 +22,20 @@ Use them to explain the product thesis, interaction model, and value loop. Do no
 | `device-protocol-expected-sequence-*.txt` | Annotated expected protocol sequence — **not** a live ESP32 serial capture |
 | `device-serial-log-*.txt` (if present) | Only treat as live board evidence if the file header says so |
 | `demo-run-*.md` | Smoke checklist output; dry-run ≠ live API proof |
+| `latency-baseline.json` | Mocked AgentHarness p50/p95 latency baseline for CI regression checks |
+
+## Latency baseline (CI)
+
+`latency-baseline.json` stores p50/p95 timings from `scripts/latency_bench.py` using **mocked** model adapters (no API keys). GitHub Actions workflow `.github/workflows/latency.yml` fails PRs when p95 regresses more than **20%** vs this file, or exceeds absolute ceilings.
+
+Update after intentional harness changes:
+
+```bash
+cd apps/api && pip install -e ".[dev]"
+python scripts/latency_bench.py --iterations 5 --update-baseline docs/evidence/latency-baseline.json
+pytest -q tests/test_latency_bench.py
+git add docs/evidence/latency-baseline.json
+```
 
 The software runtime loop is verified for chat. Device-routed transcripts and firmware protocol alignment land as separate workstreams. Hardware execution evidence remains separate from Mock UI.
 

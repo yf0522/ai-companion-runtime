@@ -32,6 +32,9 @@ docs/
 docs/*
 !docs/device-test.md
 !docs/investor-demo.md
+!docs/evidence/
+!docs/evidence/README.md
+!docs/evidence/latency-baseline.json
 *.html
 
 # Data
