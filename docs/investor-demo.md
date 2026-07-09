@@ -2,100 +2,132 @@
 
 Target length: 3 minutes
 
-Demo theme: an eldercare AI companion that combines voice companionship, medication reminders, fraud-risk recognition, family escalation, and traceable runtime observability.
+This is an **eldercare risk-gated runtime demo**, not an entertainment chatbot demo.
+The goal is to prove: companionship + memory + safety interception + family handoff + traceability in one interaction loop.
 
 ## Setup
 
-- Backend API running on `http://localhost:8000`.
-- Web console running on `http://localhost:3000`.
-- Device or simulated device connected through WebSocket.
-- Trace view open in the browser.
-- Prepared user profile: elderly user living alone, family contact enabled.
+- Backend API running: `http://localhost:8000`
+- Web console running: `http://localhost:3000`
+- Trace view open, waiting for a new trace ID
+- Device or device-simulated WS client connected
+- Pre-configured elderly user profile in memory:
+  - 慢病用药：晚上 20:00 吃降压药
+  - 近期就诊提醒/作息
+  - 家属联系人已开启
+- Prepared expected categories:
+  - `health_emergency`, `scam_alert`, `emotional_low`
 
-## 0:00-0:20 Opening
+## 0:00-0:18 Opening
 
-"This is AI Companion Runtime, a realtime companion and safety runtime for eldercare devices. The key point is not just chat. It can respond quickly, recognize risk, trigger tools such as reminders or notifications, and leave a trace of what happened."
+> “AI Companion Runtime is not just conversational AI.
+> It is a reusable runtime for eldercare: realtime dialogue, memory-driven reminders, risk-gated routing, tool execution, and trace observability.
+> Today we show the complete safety loop.”
 
-Show the device or chat console connected, then show the Trace panel waiting for a new session.
+Show:
+- `/ws/device/realtime` connect result (or `/ws/chat` with token)
+- Trace panel empty state
 
-## 0:20-1:00 Medication Reminder
+## 0:18-0:48 Memory + companionship + reminder
 
 User says:
+
+```text
+我今天有点头晕，药是不是还没吃？
+```
+
+Expected behavior:
+
+- Analyzer marks intent and emotion, then memory recall supplements context.
+- The runtime responds as eldercare companion with a warm reminder style, not a generic one-shot answer.
+- It confirms whether the medication should be taken based on remembered schedule.
+
+Narration:
+
+“This is not generic small talk. The response is bound to long-term memory and designed for eldercare outcomes.”
+
+## 0:48-1:30 Preventive reminder path
+
+User says (or system proactively confirms):
 
 ```text
 提醒我晚上八点吃降压药。
 ```
 
-Expected demo behavior:
+Expected behavior:
 
-- Runtime recognizes reminder intent.
-- Assistant confirms the medication reminder in natural language.
-- Tool result includes structured reminder data such as label, time, timer type, and repeat mode.
-- Device path can use the structured data to create a local alarm/countdown.
+- Reminder tool is invoked and structured output is returned (timer type/repeat/type/label).
+- Device-side actionability is demonstrated by structured data, not plain text.
+
+Show:
+- `/api/reminders` result or event list
 
 Narration:
 
-"The reminder is not only text. The tool returns structured timer data so the device can trigger locally even if the network is unstable later."
+“Reminder output is machine action-ready. Even if network is unstable later, the local device can execute from structured data.”
 
-## 1:00-1:45 Fraud Recognition
+## 1:30-2:16 Fraud risk interception
 
 User says:
 
 ```text
-刚才有人打电话说我银行卡有风险，让我把验证码告诉他，还要我马上转账到安全账户。
+刚才有人说我医保卡异常，让我发验证码，还要我马上转账到安全账户。
 ```
 
-Expected demo behavior:
+Expected behavior:
 
-- Assistant switches from casual companionship to safety guidance.
-- It identifies suspicious fraud indicators: verification code request, urgent transfer, and 'safe account'.
-- It tells the user not to share codes or transfer money.
-- It proposes calling family or an official bank number.
+- Risk engine resolves to `scam_alert` (high / critical gate).
+- Safety response interrupts normal companion mode immediately.
+- The assistant blocks risky action recommendations and gives a concrete prevention script:
+  - 不转账
+  - 不报验证码
+  - 先与家属/官方确认
 
 Narration:
 
-"This is where eldercare differs from a generic chatbot. The runtime treats certain intents as safety-sensitive and changes the response policy immediately."
+“This is the key technical edge: not faster answers, but **risk-first interception**.”
 
-## 1:45-2:25 Family Notification
+## 2:16-2:46 Family escalation
 
-Assistant/tool flow:
+Triggered by the same conversation or by the assistant guidance, show family summary generation:
 
 ```text
-我可以帮你通知家属，让他们确认这通电话是否可信。
+家属提醒：用户出现疑似反诈语言行为，检测到验证码索要与转账要求。建议尽快电话核实。Trace: <trace_id>
 ```
 
-Expected demo behavior:
+Expected behavior:
 
-- If notification adapter is enabled: send a family alert with summary and trace ID.
-- If adapter is not enabled yet: show the notification as a roadmap placeholder and explain the adapter boundary.
-
-Suggested alert content:
-
-```text
-家属提醒：用户收到疑似诈骗电话，对方要求验证码和转账。建议尽快电话确认。Trace: <trace_id>
-```
+- `/api/notifications` returns warning payload with:
+  - category `scam_alert`
+  - severity / status fields
+  - trace linkage
+- If provider adapter is connected, send path is executed.
+- If adapter not connected yet (current roadmap), clearly state “已生成审计事件，待 provider 接入后下发” in UI/Narration.
 
 Narration:
 
-"For families, the product value is the escalation path. The assistant does not just answer; it creates an auditable handoff."
+“Family handoff is not a UX feature only — it is a workflow boundary with escalation state.”
 
-## 2:25-3:00 Trace
+## 2:46-3:00 Trace audit
 
-Open the Trace detail.
+Open Trace detail and walk:
 
-Show:
+- `trace_id` + 时间线
+- intent → emotion → risk
+- memory recall summary
+- tool call (`reminder` / notification payload)
+- model latency (`ttft_ms`, total latency)
+- final output and action outcome
 
-- `trace_id`
-- Intent and risk analysis
-- First reply latency
-- Tool call status and result
-- Final response
-- Cost and latency fields if available
+Closing:
 
-Narration:
+“This demo shows one closed loop: companionship, memory, safety interception, family escalation, and auditable execution. That is the difference between a chatbot and a care runtime.”
 
-"Every critical interaction can be inspected after the fact. That matters for safety, debugging, model cost, and trust with care providers."
+---
 
-## Close
+### Demo checkpoint mapping (technical anchors)
 
-"The current repo contains the realtime runtime, model routing, risk engine, tool dispatch, trace observability, and the device realtime WebSocket path. The roadmap is to harden device auth, finish family notification adapters, and collect repeatable hardware evidence for the full ESP32-S3 flow."
+- Realtime channels: `/ws/chat`, `/ws/device/realtime`
+- Risk-aware output behavior in backend: `risk_engine` + `risk_rules.yaml`
+- Family path: `/api/notifications`, `/api/reminders`
+- Auditability: trace timeline and tool/result events in `/api/traces`
