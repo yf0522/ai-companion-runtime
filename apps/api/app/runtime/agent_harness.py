@@ -388,13 +388,31 @@ class AgentHarness:
             memory_updated=False,
         )
 
+        import uuid as _uuid
+
         summary = self._build_family_notification_summary(risk)
-        await self._dispatch_risk_notification(
+        notify_status = await self._dispatch_risk_notification(
             user_id,
             risk.level,
             risk.category,
             summary,
             trace_id,
+        )
+        try:
+            db_user_id = str(_uuid.UUID(user_id))
+        except (ValueError, AttributeError):
+            db_user_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, user_id))
+        await _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="family_notification",
+            step_index=4,
+            user_id=db_user_id,
+            output_json=notify_status,
+            status=(
+                "success"
+                if notify_status.get("status") in {"persisted", "queued"}
+                else "failed"
+            ),
         )
 
     async def _dispatch_risk_notification(
@@ -404,21 +422,54 @@ class AgentHarness:
         risk_category: str | None,
         summary: str,
         trace_id: str,
-    ) -> None:
+    ) -> dict:
         try:
             from app.config.settings import settings
+            import uuid as _uuid_mod
+
+            try:
+                normalized_user_id = str(_uuid_mod.UUID(user_id))
+            except (ValueError, AttributeError):
+                normalized_user_id = str(
+                    _uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, user_id)
+                )
 
             if not settings.enable_celery_tasks:
                 from app.workers.notification_worker import process_risk_notification
 
-                asyncio.create_task(process_risk_notification(user_id, risk_level, risk_category or "", summary, trace_id))
-                return
+                # Await high/critical (and any explicit dispatch) so demos cannot
+                # silently claim success when persistence failed.
+                return await process_risk_notification(
+                    normalized_user_id,
+                    risk_level,
+                    risk_category or "",
+                    summary,
+                    trace_id,
+                )
 
             from app.workers.notification_worker import send_risk_notification
 
-            send_risk_notification.delay(user_id, risk_level, risk_category or "", summary, trace_id)
+            send_risk_notification.delay(
+                normalized_user_id,
+                risk_level,
+                risk_category or "",
+                summary,
+                trace_id,
+            )
+            return {
+                "status": "queued",
+                "records": 0,
+                "webhook_status": None,
+                "error": None,
+            }
         except Exception as e:
-            logger.debug(f"Notification dispatch skipped: {e}")
+            logger.error(f"Notification dispatch failed: {e}")
+            return {
+                "status": "failed",
+                "records": 0,
+                "webhook_status": None,
+                "error": str(e),
+            }
 
     def _build_family_notification_summary(self, risk: RiskResult) -> str:
         if risk.category == "scam_alert":
