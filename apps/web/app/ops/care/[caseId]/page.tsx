@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import RoleShell from "@/components/RoleShell";
 import { EmptyState, ErrorState, LoadingState, StatusBanner } from "@/components/SurfaceStates";
 import {
@@ -47,7 +47,9 @@ function evidencePreview(evidence: Record<string, unknown> | null | undefined): 
   return JSON.stringify(evidence, null, 2);
 }
 
-export default function OpsCareDetailPage({ params }: { params: { caseId: string } }) {
+export default function OpsCareDetailPage() {
+  const params = useParams<{ caseId: string }>();
+  const caseId = params.caseId;
   const router = useRouter();
   const [item, setItem] = useState<OperatorCaseDetail | null>(null);
   const [activities, setActivities] = useState<OperatorCaseActivity[]>([]);
@@ -61,8 +63,8 @@ export default function OpsCareDetailPage({ params }: { params: { caseId: string
     setError(null);
     try {
       const [caseData, activityData] = await Promise.all([
-        fetchOperatorCase(params.caseId),
-        fetchOperatorCaseActivities(params.caseId),
+        fetchOperatorCase(caseId),
+        fetchOperatorCaseActivities(caseId),
       ]);
       setItem(caseData);
       setActivities(activityData.items || []);
@@ -75,7 +77,7 @@ export default function OpsCareDetailPage({ params }: { params: { caseId: string
     } finally {
       setLoading(false);
     }
-  }, [params.caseId, router]);
+  }, [caseId, router]);
 
   useEffect(() => {
     load();
@@ -87,7 +89,7 @@ export default function OpsCareDetailPage({ params }: { params: { caseId: string
     setSubmitting(true);
     setError(null);
     try {
-      await createOperatorCaseActivity(params.caseId, {
+      await createOperatorCaseActivity(caseId, {
         activity_type: "operator_note",
         summary: note.trim(),
       });
@@ -105,7 +107,7 @@ export default function OpsCareDetailPage({ params }: { params: { caseId: string
     setError(null);
     try {
       if (!item) return;
-      await transitionOperatorCase(params.caseId, {
+      await transitionOperatorCase(caseId, {
         status,
         expected_state_version: item.state_version || 1,
       });
@@ -118,7 +120,7 @@ export default function OpsCareDetailPage({ params }: { params: { caseId: string
   }
 
   return (
-    <RoleShell role="operator" title="案件详情" subtitle={params.caseId}>
+    <RoleShell role="operator" title="案件详情" subtitle={caseId}>
       <div className="grid gap-4">
         {error && <ErrorState description={error} onRetry={load} />}
         {loading ? (

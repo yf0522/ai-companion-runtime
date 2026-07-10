@@ -27,7 +27,9 @@ async function json(page: Page, matcher: string | RegExp, body: unknown) {
 test("login keeps the real action in the first mobile viewport", async ({ page }, testInfo) => {
   await page.goto("/login");
   await expect(page.getByRole("heading", { name: "进入照护空间" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "安全登录" })).toBeVisible();
+  await page.getByLabel("用户名").pressSequentially("elder-review");
+  await page.getByLabel("密码").pressSequentially("companion-test-password");
+  await expect(page.getByRole("button", { name: "安全登录" })).toBeEnabled();
   if (testInfo.project.name === "mobile") {
     const box = await page.getByRole("button", { name: "安全登录" }).boundingBox();
     expect(box?.y).toBeLessThan(844);

@@ -2,20 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUp, BellRing, CalendarCheck2, PhoneCall, ShieldAlert } from "lucide-react";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { ChatComposer, ChatComposerInput, ChatLayout, ChatMessageList } from "@astryxdesign/core/Chat";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Text } from "@astryxdesign/core/Text";
+import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, ShieldAlert } from "lucide-react";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
-import { useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
+import { AGENT_RUNTIME_OPTIONS, useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
 import CompanionSignal from "./CompanionSignal";
 import MessageBubble from "./MessageBubble";
+import SignalField from "./SignalField";
 import type { CareTaskCandidate } from "./CareTaskClarifyCard";
 
-const clarifyVerbLabels: Record<string, string> = {
-  取消: "取消任务",
-  完成: "完成任务",
-};
-
+const clarifyVerbLabels: Record<string, string> = { 取消: "取消任务", 完成: "完成任务" };
 const quickActions = [
   { title: "看看今天的安排", message: "我今天需要做什么", icon: CalendarCheck2 },
   { title: "设置吃药提醒", message: "提醒我晚上八点吃药", icon: BellRing },
@@ -25,156 +27,106 @@ const quickActions = [
 
 export default function ChatWindow() {
   const [input, setInput] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chatLayoutRef = useRef<HTMLDivElement>(null);
   const messages = useChatStore((state) => state.messages);
   const isStreaming = useChatStore((state) => state.isStreaming);
   const wsStatus = useWsStore((state) => state.status);
   const connect = useWsStore((state) => state.connect);
   const sendMessage = useWsStore((state) => state.sendMessage);
+  const stopGeneration = useWsStore((state) => state.stopGeneration);
   const token = useAuthStore((state) => state.token);
   const authHydrated = useAuthStore((state) => state.hydrated);
   const setAuthHydrated = useAuthStore((state) => state.setHydrated);
+  const runtime = useAgentRuntimeStore((state) => state.runtime);
   const runtimeHydrated = useAgentRuntimeStore((state) => state.hydrated);
   const hydrateRuntime = useAgentRuntimeStore((state) => state.hydrate);
   const router = useRouter();
 
   useEffect(() => {
-    if (useAuthStore.persist.hasHydrated()) {
-      setAuthHydrated();
-      return;
-    }
+    if (useAuthStore.persist.hasHydrated()) { setAuthHydrated(); return; }
     void Promise.resolve(useAuthStore.persist.rehydrate()).finally(setAuthHydrated);
   }, [setAuthHydrated]);
-
+  useEffect(() => { hydrateRuntime(); }, [hydrateRuntime]);
   useEffect(() => {
-    hydrateRuntime();
-  }, [hydrateRuntime]);
-
-  useEffect(() => {
-    if (!authHydrated) return;
-    if (!runtimeHydrated) return;
-    if (!token) {
-      router.push("/login");
-      return;
-    }
+    if (!authHydrated || !runtimeHydrated) return;
+    if (!token) { router.push("/login"); return; }
     connect(token);
     return () => useWsStore.getState().disconnect();
   }, [authHydrated, runtimeHydrated, connect, token, router]);
-
   useEffect(() => {
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth" });
-  }, [messages]);
+    if (messages.length > 0) return;
+    const resetEmptyStateScroll = () => {
+      if (chatLayoutRef.current) chatLayoutRef.current.scrollTop = 0;
+    };
+    const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(resetEmptyStateScroll));
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, wsStatus]);
 
-  useEffect(() => {
-    const element = textareaRef.current;
-    if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
-  }, [input]);
-
-  const handleSend = () => {
-    const trimmed = input.trim();
+  function handleSend(value = input) {
+    const trimmed = value.trim();
     if (!trimmed || isStreaming || wsStatus !== "connected") return;
     sendMessage(trimmed);
     setInput("");
-  };
+  }
 
-  const handleClarifySelect = (candidate: CareTaskCandidate, verb: string) => {
+  function handleClarifySelect(candidate: CareTaskCandidate, verb: string) {
     if (isStreaming || wsStatus !== "connected") return;
     const action = clarifyVerbLabels[verb] || "选择任务";
     sendMessage(`${action} ${candidate.title} id=${candidate.id}`);
-  };
+  }
 
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleSend();
-    }
-  };
+  const runtimeLabel = AGENT_RUNTIME_OPTIONS.find((option) => option.id === runtime)?.label || "标准 Harness";
+  const emptyState = (
+    <div className="companion-empty">
+      <SignalField />
+      <div className="companion-empty-content">
+        <div className="companion-presence"><HeartHandshake size={26} /></div>
+        <h2>现在想先处理哪件事？</h2>
+        <p className="companion-empty-copy">你可以直接说身体不舒服、提醒、联系家人，或把可疑电话和转账要求告诉我。</p>
+        <div className="companion-prompts">
+          {quickActions.map(({ title, message, icon: PromptIcon }) => (
+            <button key={title} type="button" className="companion-prompt" disabled={wsStatus !== "connected"} onClick={() => handleSend(message)}>
+              <PromptIcon size={21} />
+              <span><strong style={{ display: "block" }}>{title}</strong><small style={{ display: "block", marginTop: 6, color: "var(--companion-muted)", lineHeight: 1.5 }}>“{message}”</small></span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border bg-surface shadow-panel">
-      <div className="border-b border-border bg-[#f8fbfa] px-4 py-4 sm:px-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="eyebrow">Companion Signal</div>
-            <p className="mt-1 text-base font-semibold text-ink">先说一件最需要确认的事，我会一步一步陪你处理。</p>
-          </div>
-          <CompanionSignal status={wsStatus} />
+    <section className="companion-workspace">
+      <div className="companion-stage">
+        <div className="companion-stage-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}><CompanionSignal status={wsStatus} /><Badge label={runtimeLabel} variant="neutral" /></div>
+          <Button label="今日事项" href="/elder/today" variant="ghost" size="md" icon={<Icon icon={CalendarCheck2} size="sm" />} />
         </div>
-      </div>
-
-      <div className="min-h-[430px] max-h-[calc(100vh-340px)] overflow-y-auto bg-surface">
-        {messages.length === 0 ? (
-          <div className="mx-auto flex min-h-[430px] max-w-4xl flex-col justify-center px-4 py-10 sm:px-6">
-            <div className="max-w-2xl">
-              <div className="eyebrow">今天的下一步</div>
-              <h2 className="mt-2 text-[26px] font-bold leading-tight text-ink sm:text-[32px]">现在想先处理哪件事？</h2>
-              <p className="mt-3 text-lg leading-8 text-muted">可以直接说身体不舒服、提醒、联系家人，或者把可疑电话和转账要求告诉我。</p>
-            </div>
-            <div className="mt-7 grid gap-3 sm:grid-cols-2">
-              {quickActions.map(({ title, message, icon: Icon }) => (
-                <button
-                  key={title}
-                  type="button"
-                  disabled={wsStatus !== "connected"}
-                  onClick={() => sendMessage(message)}
-                  className="group flex min-h-[84px] items-center gap-4 rounded-lg border border-border bg-surface p-4 text-left transition hover:border-primary hover:bg-primary-soft disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary-strong group-hover:bg-surface">
-                    <Icon size={22} aria-hidden="true" />
-                  </span>
-                  <span>
-                    <strong className="block text-base text-ink">{title}</strong>
-                    <span className="mt-1 block text-sm leading-6 text-muted">“{message}”</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <>
-            {messages.map((message) => (
-              <MessageBubble
-                key={message.id}
-                message={message}
-                isStreaming={isStreaming}
-                onClarifySelect={handleClarifySelect}
+        <div className="companion-chat">
+          <ChatLayout
+            ref={chatLayoutRef}
+            density="spacious"
+            emptyState={messages.length === 0 ? emptyState : undefined}
+            composer={
+              <ChatComposer
+                value={input}
+                onChange={setInput}
+                onSubmit={handleSend}
+                isStopShown={isStreaming}
+                onStop={stopGeneration}
+                isDisabled={wsStatus !== "connected"}
+                density="spacious"
+                placeholder={wsStatus === "connected" ? "说说现在最需要确认的事…" : "连接恢复后可以继续对话"}
+                input={<ChatComposerInput value={input} onChange={setInput} onSubmit={handleSend} label="输入给陪伴助手的消息" isDisabled={wsStatus !== "connected"} placeholder={wsStatus === "connected" ? "说说现在最需要确认的事…" : "连接恢复后可以继续对话"} maxRows={6} />}
+                headerContext={<Text type="supporting" color="secondary">{isStreaming ? "Companion 正在回应" : "风险、记忆与工具会自动检查"}</Text>}
+                footerActions={<Badge label="不会替代急救、医生或银行" variant="neutral" />}
+                status={wsStatus === "failed" ? { type: "error", message: "陪伴服务暂时不可用，请联系家人或稍后重试。" } : undefined}
               />
-            ))}
-            <div ref={messagesEndRef} />
-          </>
-        )}
-      </div>
-
-      <div className="border-t border-border bg-[#f8fbfa] p-3 sm:p-4">
-        <div className="chat-composer relative mx-auto max-w-3xl">
-          <label htmlFor="elder-message" className="sr-only">输入给陪伴助手的消息</label>
-          <textarea
-            id="elder-message"
-            ref={textareaRef}
-            className="w-full resize-none rounded-lg bg-transparent py-3.5 pl-4 pr-16 text-lg leading-relaxed text-ink outline-none"
-            rows={1}
-            placeholder={wsStatus === "connected" ? "说说现在最想确认的事..." : "连接恢复后可以继续对话"}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={wsStatus !== "connected"}
-            style={{ minHeight: "56px", maxHeight: "200px" }}
-          />
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={!input.trim() || isStreaming || wsStatus !== "connected"}
-            aria-label="发送消息"
-            className="absolute bottom-1.5 right-1.5 flex h-11 w-11 items-center justify-center rounded-md bg-primary text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-status-offline"
+            }
           >
-            <ArrowUp size={21} aria-hidden="true" />
-          </button>
+            {messages.length > 0 ? <ChatMessageList>{messages.map((message) => <MessageBubble key={message.id} message={message} isStreaming={isStreaming} onClarifySelect={handleClarifySelect} />)}</ChatMessageList> : null}
+          </ChatLayout>
         </div>
-        <p className="mt-2 text-center text-sm leading-6 text-muted">涉及急救、转账或用药变更时，请同时联系家人或专业人员。</p>
       </div>
     </section>
   );

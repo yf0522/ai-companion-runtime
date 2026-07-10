@@ -1,86 +1,36 @@
-import Link from "next/link";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Text } from "@astryxdesign/core/Text";
+import { ArrowUpRight, Clock3, RadioTower } from "lucide-react";
 import type { NotificationItem } from "@/lib/api-client";
 
-const categoryLabel: Record<string, string> = {
-  scam_alert: "诈骗风险",
-  emotional_low: "情绪关怀",
-  health_emergency: "健康风险",
-  none: "照护提醒",
-};
+const categoryLabel: Record<string, string> = { scam_alert: "诈骗风险", emotional_low: "情绪关怀", health_emergency: "健康风险", none: "照护提醒" };
+const statusLabel: Record<string, string> = { pending: "等待投递", queued: "已排队", sent: "已发送", delivered: "已送达", read: "已读", failed: "投递失败", acknowledged: "已确认" };
 
-const statusLabel: Record<string, string> = {
-  pending: "等待投递",
-  queued: "已排队",
-  sent: "已发送",
-  delivered: "已送达",
-  read: "已读",
-  failed: "投递失败",
-  acknowledged: "已确认",
-};
+function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN"); }
+function severityVariant(severity: string): "error" | "warning" | "info" { return severity === "critical" || severity === "high" ? "error" : severity === "medium" ? "warning" : "info"; }
+function statusVariant(status: string): "success" | "warning" | "error" | "neutral" { if (status === "delivered" || status === "read" || status === "acknowledged") return "success"; if (status === "failed") return "error"; if (status === "pending" || status === "queued") return "warning"; return "neutral"; }
 
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN");
-}
-
-function severityTone(severity: string): string {
-  if (severity === "critical" || severity === "high") {
-    return "border-status-critical bg-status-critical-soft text-ink";
-  }
-  if (severity === "medium") {
-    return "border-status-warning bg-status-warning-soft text-ink";
-  }
-  return "border-status-info bg-status-info-soft text-ink";
-}
-
-export default function AlertCaseCard({
-  item,
-  onAcknowledge,
-  busy,
-  showTraceLink = false,
-}: {
-  item: NotificationItem;
-  onAcknowledge?: () => void;
-  busy?: boolean;
-  showTraceLink?: boolean;
-}) {
+export default function AlertCaseCard({ item, onAcknowledge, busy, showTraceLink = false }: { item: NotificationItem; onAcknowledge?: () => void; busy?: boolean; showTraceLink?: boolean; }) {
   return (
     <article className="care-card">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="flex flex-wrap gap-2">
-            <span className={`status-pill ${severityTone(item.severity)}`}>
-              {categoryLabel[item.category] || "照护告警"}
-            </span>
-            <span className="status-pill border-border bg-canvas text-ink">
-              {statusLabel[item.status] || "状态待确认"}
-            </span>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 20, alignItems: "start" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <Badge label={categoryLabel[item.category] || "照护告警"} variant={severityVariant(item.severity)} />
+            <Badge label={statusLabel[item.status] || "状态待确认"} variant={statusVariant(item.status)} />
           </div>
-          <h3 className="mt-3 text-lg font-semibold text-ink">{item.title}</h3>
-          <p className="mt-1 max-w-3xl text-base leading-7 text-muted">
-            {item.message}
-          </p>
-          <p className="mt-2 text-sm text-muted">
-            记录时间：{formatTime(item.created_at)}
-          </p>
+          <h3 style={{ margin: "14px 0 0", fontSize: 20, lineHeight: 1.3 }}>{item.title}</h3>
+          <Text display="block" color="secondary" style={{ marginTop: 7, lineHeight: 1.65 }}>{item.message}</Text>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 14 }}>
+            <Text type="supporting" color="secondary"><Icon icon={Clock3} size="xsm" /> {formatTime(item.created_at)}</Text>
+            {item.trace_id && <Text type="code" color="secondary">trace {item.trace_id.slice(0, 10)}</Text>}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2 sm:justify-end">
-          {showTraceLink && item.trace_id && (
-            <Link href={`/ops/traces/${item.trace_id}`} className="btn-secondary">
-              查看追踪
-            </Link>
-          )}
-          {onAcknowledge && item.status !== "acknowledged" && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onAcknowledge}
-              className="btn-primary"
-            >
-              {busy ? "确认中" : "确认已处理"}
-            </button>
-          )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" }}>
+          {showTraceLink && item.trace_id && <Button label="查看追踪" href={`/ops/traces/${item.trace_id}`} variant="secondary" icon={<Icon icon={RadioTower} size="sm" />} />}
+          {onAcknowledge && item.status !== "acknowledged" && <Button label={busy ? "确认中" : "确认已处理"} variant="primary" isLoading={busy} onClick={onAcknowledge} endContent={<Icon icon={ArrowUpRight} size="sm" />} />}
         </div>
       </div>
     </article>

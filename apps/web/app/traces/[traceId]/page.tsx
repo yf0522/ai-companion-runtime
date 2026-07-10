@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
-export default function TraceRedirect({ params }: { params: { traceId: string } }) {
-  redirect(`/ops/traces/${params.traceId}`);
+export default async function TraceRedirect({ params }: { params: Promise<{ traceId: string }> }) {
+  const { traceId } = await params;
+  redirect(`/ops/traces/${traceId}`);
 }

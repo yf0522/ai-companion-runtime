@@ -14,6 +14,7 @@ interface WsState {
   connect: (token?: string) => void;
   disconnect: () => void;
   sendMessage: (message: string) => void;
+  stopGeneration: () => void;
 }
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
@@ -125,5 +126,12 @@ export const useWsStore = create<WsState>((set, get) => ({
       useChatStore.getState().addUserMessage(message);
       client.sendMessage(message);
     }
+  },
+
+  stopGeneration: () => {
+    const { client } = get();
+    const traceId = useChatStore.getState().currentTraceId;
+    if (client && traceId) client.stopGeneration(traceId);
+    useChatStore.getState().resetStreaming();
   },
 }));

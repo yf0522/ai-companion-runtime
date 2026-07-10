@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import RoleShell from "@/components/RoleShell";
 import { ErrorState, LoadingState } from "@/components/SurfaceStates";
 import { ApiError, fetchTrace, userFacingApiError } from "@/lib/api-client";
@@ -79,7 +79,9 @@ function preview(value: unknown): string | null {
   }
 }
 
-export default function OpsTracePage({ params }: { params: { traceId: string } }) {
+export default function OpsTracePage() {
+  const params = useParams<{ traceId: string }>();
+  const traceId = params.traceId;
   const [trace, setTrace] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +93,7 @@ export default function OpsTracePage({ params }: { params: { traceId: string } }
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchTrace(params.traceId);
+        const data = await fetchTrace(traceId);
         if (!cancelled) setTrace(data);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -113,17 +115,17 @@ export default function OpsTracePage({ params }: { params: { traceId: string } }
     return () => {
       cancelled = true;
     };
-  }, [params.traceId, router]);
+  }, [router, traceId]);
 
   return (
     <RoleShell
       role="operator"
       title="追踪详情"
-      subtitle={params.traceId}
+      subtitle={traceId}
     >
       {loading && <LoadingState label="正在加载追踪详情" />}
       {error && <ErrorState description={error} />}
-      {trace !== null && <TraceWorkspace trace={trace as TraceData} fallbackTraceId={params.traceId} />}
+      {trace !== null && <TraceWorkspace trace={trace as TraceData} fallbackTraceId={traceId} />}
     </RoleShell>
   );
 }
