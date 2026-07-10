@@ -10,12 +10,9 @@ const toneClass: Record<SurfaceTone, string> = {
 
 export function LoadingState({ label = "正在加载" }: { label?: string }) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="rounded-md border border-border bg-surface p-4 text-base text-muted"
-    >
-      {label}
+    <div role="status" aria-live="polite" className="care-card flex items-center gap-3 text-base text-muted">
+      <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-status-info" />
+      <span>{label}</span>
     </div>
   );
 }
@@ -30,7 +27,7 @@ export function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-md border border-border bg-surface p-5">
+    <div className="care-card p-5">
       <h2 className="text-lg font-semibold text-ink">{title}</h2>
       <p className="mt-1 text-base leading-7 text-muted">{description}</p>
       {action && <div className="mt-4">{action}</div>}

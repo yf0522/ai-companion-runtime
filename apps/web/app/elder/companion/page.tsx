@@ -5,8 +5,8 @@ export default function ElderCompanionPage() {
   return (
     <RoleShell
       role="elder"
-      title="陪伴"
-      subtitle="用对话确认今日事项、设置提醒、说明风险，或请求联系家人。"
+      title="陪伴助手"
+      subtitle="先说一件最需要确认的事。系统会在执行提醒、通知或风险操作前明确说明结果。"
     >
       <ChatWindow />
     </RoleShell>

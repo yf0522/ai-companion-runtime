@@ -80,7 +80,7 @@ export default function FamilyAlertsPage() {
       title="告警"
       subtitle="展示风险事件、通知状态和处理动作；未确认的投递不会写成已通知。"
     >
-      <div className="grid gap-4">
+      <div className="product-grid">
         {status === "unavailable" && (
           <StatusBanner tone="warning" title="通知服务暂时不可用">
             当前无法确认通知记录。请稍后重试或联系照护运营。
@@ -92,14 +92,34 @@ export default function FamilyAlertsPage() {
         ) : alerts.length === 0 && !error ? (
           <EmptyState title="暂无告警" description="没有新的风险事件或通知记录。" />
         ) : (
-          alerts.map((item) => (
-            <AlertCaseCard
-              key={item.id}
-              item={item}
-              busy={ackingId === item.id}
-              onAcknowledge={() => handleAcknowledge(item.id)}
-            />
-          ))
+          <section className="grid gap-3">
+            <div className="product-panel flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="eyebrow">Alert evidence</p>
+                <h2 className="section-heading">待确认与历史告警</h2>
+              </div>
+              <div className="metric-strip" aria-label="告警统计">
+                <div>
+                  <p className="eyebrow">Total</p>
+                  <p className="text-2xl font-semibold text-ink">{alerts.length}</p>
+                </div>
+                <div>
+                  <p className="eyebrow">Open</p>
+                  <p className="text-2xl font-semibold text-ink">
+                    {alerts.filter((item) => item.status !== "acknowledged").length}
+                  </p>
+                </div>
+              </div>
+            </div>
+            {alerts.map((item) => (
+              <AlertCaseCard
+                key={item.id}
+                item={item}
+                busy={ackingId === item.id}
+                onAcknowledge={() => handleAcknowledge(item.id)}
+              />
+            ))}
+          </section>
         )}
       </div>
     </RoleShell>

@@ -75,7 +75,16 @@ export default function ElderTodayPage() {
       title="今日事项"
       subtitle="只显示需要确认的照护事项；确认成功后才会记录为已处理。"
     >
-      <div className="grid gap-4">
+      <div className="product-grid">
+        <section className="product-panel">
+          <div className="eyebrow">Next action</div>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-ink">{activeTasks.length > 0 ? `有 ${activeTasks.length} 件事项等待确认` : "当前没有待确认事项"}</h2>
+              <p className="mt-1 text-base leading-7 text-muted">只有确认成功后，系统才会记录为已处理。</p>
+            </div>
+          </div>
+        </section>
         {offline && (
           <StatusBanner tone="offline" title="当前离线">
             可以先用电话联系家人。页面恢复连接前，不会把事项标记为已确认。
@@ -96,15 +105,17 @@ export default function ElderTodayPage() {
             description="如果需要新增提醒，可以在陪伴对话中说明任务、日期和时间。"
           />
         ) : (
-          activeTasks.map((task) => (
-            <CareTaskCard
-              key={task.id}
-              task={task}
-              actionLabel="确认已处理"
-              actionBusy={ackingId === task.id}
-              onAction={() => handleAcknowledge(task)}
-            />
-          ))
+          <section className="grid gap-3">
+            {activeTasks.map((task) => (
+              <CareTaskCard
+                key={task.id}
+                task={task}
+                actionLabel="确认已处理"
+                actionBusy={ackingId === task.id}
+                onAction={() => handleAcknowledge(task)}
+              />
+            ))}
+          </section>
         )}
       </div>
     </RoleShell>

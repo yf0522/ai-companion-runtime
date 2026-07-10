@@ -19,6 +19,8 @@ build/
 
 # Test
 .pytest_cache/
+test-results/
+playwright-report/
 
 # IDE
 .vscode/
