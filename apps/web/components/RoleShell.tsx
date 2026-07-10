@@ -172,7 +172,7 @@ export default function RoleShell({
         height="fill"
         variant="section"
       >
-        <div className="product-shell-main" data-role={role}>
+        <div className="product-shell-main" data-role={role} data-companion={isCompanion ? "true" : "false"}>
           <header className="product-topbar">
             <div className="product-topbar-copy">
               <h1 className="product-topbar-title">{title}</h1>
