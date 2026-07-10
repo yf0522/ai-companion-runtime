@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
-export default function RemindersRedirect() {
+export default function LegacyCareTasksRedirect() {
   redirect("/family/tasks");
 }

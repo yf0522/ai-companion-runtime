@@ -108,8 +108,8 @@ export default function OpsCarePage() {
                         投递 {item.notification_outbox_id.slice(0, 8)}
                       </span>
                     )}
-                    <Link href="/ops/traces" className="btn-secondary">
-                      查看追踪
+                    <Link href={`/ops/care/${item.id}`} className="btn-secondary">
+                      查看案件
                     </Link>
                   </div>
                 </div>

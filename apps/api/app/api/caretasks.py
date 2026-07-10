@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.auth import get_current_user
+from app.api.family_auth import get_managed_elder_id
 from app.tools import caretask_service as svc
 
 router = APIRouter(tags=["care-tasks"])
@@ -64,33 +65,7 @@ class CareTaskClarify(BaseModel):
     proposed: CareTaskCreate | None = None
 
 
-async def _get_managed_elder_id(user: dict, *, permission: str) -> uuid.UUID:
-    role = user.get("role", "elder")
-    user_id = uuid.UUID(user["sub"])
-
-    if role == "elder":
-        return user_id
-
-    if role == "family":
-        from app.db.models import FamilyBinding
-        from app.db.session import async_session
-
-        async with async_session() as db:
-            result = await db.execute(
-                select(FamilyBinding)
-                .where(FamilyBinding.family_user_id == user_id)
-                .order_by(FamilyBinding.created_at.desc())
-                .limit(1)
-            )
-            binding = result.scalar_one_or_none()
-            if not binding:
-                raise HTTPException(status_code=403, detail="No elder binding found for this family account")
-            permissions = set(binding.permissions or [])
-            if permission not in permissions:
-                raise HTTPException(status_code=403, detail="Family account lacks CareTask permission")
-            return binding.elder_user_id
-
-    raise HTTPException(status_code=403, detail="CareTask access denied")
+_get_managed_elder_id = get_managed_elder_id
 
 
 def _request_hash(payload: dict[str, Any]) -> str:

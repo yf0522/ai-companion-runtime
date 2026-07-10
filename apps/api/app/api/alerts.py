@@ -6,11 +6,12 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.auth import get_current_user
+from app.api.family_auth import get_managed_elder_id
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,15 @@ class ProviderReceiptIn(BaseModel):
 
 
 class OperatorCaseUpdate(BaseModel):
-    status: Literal["open", "assigned", "resolved", "closed"]
+    status: Literal["unstaffed", "open", "assigned", "resolved", "closed"]
+    expected_state_version: int
     resolution: str | None = None
+
+
+class CaseActivityCreate(BaseModel):
+    activity_type: str = Field(min_length=1, max_length=80)
+    summary: str = Field(min_length=1, max_length=2000)
+    metadata: dict = Field(default_factory=dict)
 
 
 def _notification_title(level: str, category: str | None) -> str:
@@ -69,40 +77,49 @@ def _notification_title(level: str, category: str | None) -> str:
 
 
 async def _get_managed_elder_id(user: dict, *, permission: str = "view_notifications") -> uuid.UUID:
-    role = user.get("role", "elder")
-    user_id = uuid.UUID(user["sub"])
-
-    if role == "elder":
-        return user_id
-
-    if role == "family":
-        from app.db.session import async_session
-        from app.db.models import FamilyBinding
-
-        async with async_session() as db:
-            result = await db.execute(
-                select(FamilyBinding)
-                .where(FamilyBinding.family_user_id == user_id)
-                .order_by(FamilyBinding.created_at.desc())
-                .limit(1)
-            )
-            binding = result.scalar_one_or_none()
-            if not binding:
-                raise HTTPException(
-                    status_code=403,
-                    detail="No elder binding found for this family account",
-                )
-            if permission not in set(binding.permissions or []):
-                raise HTTPException(status_code=403, detail="Family account lacks notification permission")
-            return binding.elder_user_id
-
-    raise HTTPException(status_code=403, detail="Unknown role")
+    return await get_managed_elder_id(user, permission=permission)
 
 
 def _require_operator(user: dict) -> uuid.UUID:
     if user.get("role") != "operator":
         raise HTTPException(status_code=403, detail="Operator role required")
     return uuid.UUID(user["sub"])
+
+
+def _operator_case_json(row) -> dict:
+    return {
+        "id": str(row.id),
+        "user_id": str(row.user_id),
+        "elder_user_id": str(row.user_id),
+        "safety_decision_id": str(row.safety_decision_id) if row.safety_decision_id else None,
+        "notification_outbox_id": str(row.notification_outbox_id) if row.notification_outbox_id else None,
+        "status": row.status,
+        "severity": row.severity,
+        "owner_id": str(row.owner_id) if row.owner_id else None,
+        "summary": row.summary,
+        "resolution": row.resolution,
+        "due_at": row.due_at.isoformat() if row.due_at else None,
+        "state_version": row.state_version,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+        "next_action": (
+            "Assign an operator before handling" if row.status == "unstaffed" else None
+        ),
+    }
+
+
+def _case_activity_json(row) -> dict:
+    payload = row.payload_json or {}
+    return {
+        "id": str(row.id),
+        "case_id": str(row.case_id),
+        "actor_type": "operator" if row.actor_user_id else "system",
+        "actor_id": str(row.actor_user_id) if row.actor_user_id else None,
+        "activity_type": row.activity_type,
+        "summary": payload.get("summary") or row.activity_type,
+        "created_at": row.created_at.isoformat() if row.created_at else datetime.utcnow().isoformat(),
+        "metadata": payload,
+    }
 
 
 @router.get("/notifications")
@@ -248,6 +265,40 @@ async def record_notification_receipt(
         raise HTTPException(status_code=404, detail="Notification outbox not found")
 
 
+@router.post("/notification-outbox/webhook-receipts")
+async def record_signed_notification_receipt(
+    request: Request,
+    x_companion_timestamp: str | None = Header(default=None, alias="X-Companion-Timestamp"),
+    x_companion_signature: str | None = Header(default=None, alias="X-Companion-Signature"),
+    x_companion_event_id: str | None = Header(default=None, alias="X-Companion-Event-Id"),
+):
+    import json
+
+    from app.workers.notification_outbox_worker import (
+        record_signed_provider_receipt,
+    )
+
+    raw_body = await request.body()
+    try:
+        body = json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON receipt") from exc
+    try:
+        return await record_signed_provider_receipt(
+            body=body,
+            raw_body=raw_body,
+            timestamp_header=x_companion_timestamp,
+            signature_header=x_companion_signature,
+            event_id=x_companion_event_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/operator/cases")
 async def list_operator_cases(user: dict = Depends(get_current_user)):
     _require_operator(user)
@@ -258,31 +309,76 @@ async def list_operator_cases(user: dict = Depends(get_current_user)):
         rows = (
             await db.execute(
                 select(OperatorCase)
-                .where(OperatorCase.status.in_(["open", "assigned"]))
+                .where(OperatorCase.status.in_(["unstaffed", "open", "assigned"]))
                 .order_by(OperatorCase.created_at.asc())
                 .limit(100)
             )
         ).scalars().all()
     return {
-        "items": [
-            {
-                "id": str(row.id),
-                "user_id": str(row.user_id),
-                "safety_decision_id": str(row.safety_decision_id) if row.safety_decision_id else None,
-                "notification_outbox_id": str(row.notification_outbox_id) if row.notification_outbox_id else None,
-                "status": row.status,
-                "severity": row.severity,
-                "owner_id": str(row.owner_id) if row.owner_id else None,
-                "summary": row.summary,
-                "resolution": row.resolution,
-                "due_at": row.due_at.isoformat() if row.due_at else None,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-                "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
-            }
-            for row in rows
-        ],
+        "items": [_operator_case_json(row) for row in rows],
         "total": len(rows),
     }
+
+
+@router.get("/operator/cases/{case_id}")
+async def get_operator_case(case_id: uuid.UUID, user: dict = Depends(get_current_user)):
+    _require_operator(user)
+    from app.db.models import OperatorCase
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        row = await db.get(OperatorCase, case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Operator case not found")
+    return _operator_case_json(row)
+
+
+@router.get("/operator/cases/{case_id}/activities")
+async def list_operator_case_activities(case_id: uuid.UUID, user: dict = Depends(get_current_user)):
+    _require_operator(user)
+    from app.db.models import CaseActivity, OperatorCase
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        case = await db.get(OperatorCase, case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Operator case not found")
+        rows = (
+            await db.execute(
+                select(CaseActivity)
+                .where(CaseActivity.case_id == case_id)
+                .order_by(CaseActivity.created_at.asc())
+            )
+        ).scalars().all()
+    return {"items": [_case_activity_json(row) for row in rows], "total": len(rows)}
+
+
+@router.post("/operator/cases/{case_id}/activities")
+async def create_operator_case_activity(
+    case_id: uuid.UUID,
+    body: CaseActivityCreate,
+    user: dict = Depends(get_current_user),
+):
+    operator_id = _require_operator(user)
+    from app.db.models import CaseActivity, OperatorCase
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        case = await db.get(OperatorCase, case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Operator case not found")
+        if case.status == "unstaffed" or case.owner_id != operator_id:
+            raise HTTPException(status_code=409, detail="Assign this case to yourself before adding activity")
+        activity = CaseActivity(
+            case_id=case_id,
+            actor_user_id=operator_id,
+            activity_type=body.activity_type,
+            payload_json={"summary": body.summary, **body.metadata},
+        )
+        db.add(activity)
+        await db.commit()
+        await db.refresh(activity)
+    return _case_activity_json(activity)
 
 
 @router.patch("/operator/cases/{case_id}")
@@ -297,26 +393,78 @@ async def update_operator_case(
     except (ValueError, TypeError):
         raise HTTPException(status_code=404, detail="Operator case not found")
 
-    from app.db.models import OperatorCase
+    from app.db.models import CaseActivity, OperatorCase
     from app.db.session import async_session
 
     now = datetime.utcnow()
+    allowed = {
+        "unstaffed": {"assigned"},
+        "open": {"assigned", "closed"},
+        "assigned": {"resolved", "closed"},
+        "resolved": {"open", "closed"},
+        "closed": set(),
+    }
     async with async_session() as db:
-        row = await db.get(OperatorCase, cid)
+        row = (
+            await db.execute(select(OperatorCase).where(OperatorCase.id == cid).with_for_update())
+        ).scalar_one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail="Operator case not found")
+        if row.state_version != body.expected_state_version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "stale_case_version",
+                    "expected_state_version": body.expected_state_version,
+                    "current_state_version": row.state_version,
+                },
+            )
+        if row.owner_id is not None and row.owner_id != operator_id:
+            raise HTTPException(status_code=409, detail="Operator case is owned by another operator")
+        if body.status not in allowed.get(row.status, set()):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "invalid_case_transition", "from": row.status, "to": body.status},
+            )
+        previous = row.status
         row.status = body.status
         row.owner_id = operator_id
         row.resolution = body.resolution
         row.updated_at = now
+        row.state_version = (row.state_version or 1) + 1
+        if body.status == "assigned":
+            row.assigned_at = now
         if body.status in {"resolved", "closed"}:
             row.resolved_at = now
+        if previous == "resolved" and body.status == "open":
+            row.reopened_at = now
+            row.resolved_at = None
+        db.add(
+            CaseActivity(
+                case_id=row.id,
+                actor_user_id=operator_id,
+                activity_type="state_transition",
+                from_status=previous,
+                to_status=body.status,
+                payload_json={"resolution": body.resolution},
+            )
+        )
         await db.commit()
         await db.refresh(row)
         return {
             "id": str(row.id),
             "status": row.status,
+            "state_version": row.state_version,
             "owner_id": str(row.owner_id) if row.owner_id else None,
             "resolution": row.resolution,
             "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
         }
+
+
+@router.post("/operator/cases/{case_id}/transition")
+async def transition_operator_case(
+    case_id: str,
+    body: OperatorCaseUpdate,
+    user: dict = Depends(get_current_user),
+):
+    return await update_operator_case(case_id, body, user)

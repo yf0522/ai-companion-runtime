@@ -1,5 +1,6 @@
 from celery import Celery
 
+import time
 from urllib.parse import quote, urlparse, urlunparse
 
 from app.config.settings import settings
@@ -44,6 +45,10 @@ app.config_from_object({
 })
 
 app.conf.beat_schedule = {
+    "platform-worker-heartbeat": {
+        "task": "app.workers.celery_app.platform_heartbeat",
+        "schedule": 30.0,
+    },
     "check-due-reminders": {
         "task": "app.workers.reminder_scheduler.check_due_reminders",
         "schedule": 60.0,
@@ -51,6 +56,10 @@ app.conf.beat_schedule = {
     "deliver-notification-outbox": {
         "task": "app.workers.notification_outbox_worker.deliver_notification_outbox",
         "schedule": 30.0,
+    },
+    "reconcile-notification-outbox": {
+        "task": "app.workers.notification_outbox_worker.reconcile_notification_outbox",
+        "schedule": 300.0,
     },
 }
 
@@ -61,3 +70,24 @@ app.autodiscover_tasks([
     "app.workers.reminder_scheduler",
     "app.workers.notification_outbox_worker",
 ])
+
+
+@app.task(name="app.workers.celery_app.platform_heartbeat")
+def platform_heartbeat() -> dict[str, float | str]:
+    import redis
+
+    redis_url = settings.redis_url
+    if settings.redis_password:
+        redis_url = _inject_redis_password(redis_url, settings.redis_password)
+
+    heartbeat_at = time.time()
+    client = redis.Redis.from_url(redis_url)
+    try:
+        client.set(
+            settings.platform_worker_heartbeat_key,
+            str(heartbeat_at),
+            ex=settings.platform_worker_heartbeat_max_age_seconds * 2,
+        )
+    finally:
+        client.close()
+    return {"key": settings.platform_worker_heartbeat_key, "heartbeat_at": heartbeat_at}

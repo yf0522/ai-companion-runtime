@@ -6,6 +6,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from sqlalchemy import select
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 
@@ -21,6 +22,7 @@ class RegisterRequest(BaseModel):
     password: str
     email: Optional[str] = None
     role: Literal["elder", "family"] = "elder"
+    invite_token: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -85,10 +87,45 @@ async def get_current_user_uuid(
 @router.post("/auth/register", response_model=TokenResponse)
 async def register(req: RegisterRequest):
     from app.db.session import async_session
-    from app.db.models import User
+    from app.db.models import (
+        BindingAuditEvent,
+        CareCircleMember,
+        FamilyBinding,
+        HouseholdInvite,
+        User,
+    )
     from sqlalchemy import select
 
+    requested_role = req.role
+    if (
+        requested_role == "elder"
+        and settings.app_env.lower() == "production"
+        and settings.controlled_elder_enrollment
+    ):
+        raise HTTPException(status_code=403, detail="Elder enrollment is managed by pilot operations")
+    if requested_role == "family" and settings.app_env.lower() == "production" and not req.invite_token:
+        raise HTTPException(
+            status_code=403,
+            detail="Family pilot registration requires a household invite",
+        )
     async with async_session() as db:
+        invite = None
+        if requested_role == "family" and req.invite_token:
+            from app.api.households import _hash_token
+
+            invite = (
+                await db.execute(
+                    select(HouseholdInvite).where(
+                        HouseholdInvite.token_hash == _hash_token(req.invite_token),
+                        HouseholdInvite.status == "pending",
+                        HouseholdInvite.expires_at > datetime.utcnow(),
+                    ).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if invite is None:
+                raise HTTPException(status_code=403, detail="Valid household invite required")
+            if invite.invitee_email and req.email != invite.invitee_email:
+                raise HTTPException(status_code=403, detail="Registration email must match the household invite")
         # Check if username exists
         existing = await db.execute(
             select(User).where(User.username == req.username)
@@ -100,9 +137,47 @@ async def register(req: RegisterRequest):
             username=req.username,
             email=req.email,
             password_hash=pwd_context.hash(req.password),
-            role=req.role,
+            role=requested_role,
         )
         db.add(user)
+        await db.flush()
+
+        if invite is not None:
+            now = datetime.utcnow()
+            invite.status = "accepted"
+            invite.accepted_by_user_id = user.id
+            invite.accepted_at = now
+            invite.replay_nonce = f"registration:{user.id}"
+            invite.updated_at = now
+            binding = FamilyBinding(
+                household_id=invite.household_id,
+                family_user_id=user.id,
+                elder_user_id=invite.elder_user_id,
+                permissions=invite.permissions,
+                status="active",
+                consent_status="active",
+                version=1,
+            )
+            db.add(binding)
+            await db.flush()
+            db.add(
+                CareCircleMember(
+                    household_id=invite.household_id,
+                    user_id=user.id,
+                    role="family",
+                    status="active",
+                    permissions=invite.permissions,
+                )
+            )
+            db.add(
+                BindingAuditEvent(
+                    binding_id=binding.id,
+                    household_id=invite.household_id,
+                    actor_user_id=user.id,
+                    event_type="binding.accepted_during_registration",
+                    payload_json={"invite_id": str(invite.id)},
+                )
+            )
         await db.commit()
         await db.refresh(user)
 
@@ -142,6 +217,8 @@ _bind_codes: dict[str, tuple[str, datetime]] = {}
 
 @router.post("/auth/generate-bind-code")
 async def generate_bind_code(user: dict = Depends(get_current_user)):
+    if settings.app_env.lower() == "production":
+        raise HTTPException(status_code=410, detail="Legacy bind codes are disabled in production")
     if user.get("role") != "elder":
         raise HTTPException(status_code=403, detail="Only elder users can generate bind codes")
     code = f"{secrets.randbelow(1000000):06d}"
@@ -151,6 +228,8 @@ async def generate_bind_code(user: dict = Depends(get_current_user)):
 
 @router.post("/auth/bind-family")
 async def bind_family(code: str, user: dict = Depends(get_current_user)):
+    if settings.app_env.lower() == "production":
+        raise HTTPException(status_code=410, detail="Legacy bind codes are disabled in production")
     if user.get("role") != "family":
         raise HTTPException(status_code=403, detail="Only family users can bind")
     entry = _bind_codes.get(code)
@@ -162,11 +241,36 @@ async def bind_family(code: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=410, detail="Code expired")
     del _bind_codes[code]
 
-    from app.db.models import FamilyBinding
+    from app.db.models import BindingAuditEvent, FamilyBinding, Household
     from app.db.session import async_session
 
     async with async_session() as db:
-        binding = FamilyBinding(family_user_id=uuid.UUID(user["sub"]), elder_user_id=uuid.UUID(elder_user_id))
+        elder_uuid = uuid.UUID(elder_user_id)
+        household = (
+            await db.execute(select(Household).where(Household.elder_user_id == elder_uuid))
+        ).scalar_one_or_none()
+        if household is None:
+            household = Household(elder_user_id=elder_uuid, name="Household")
+            db.add(household)
+            await db.flush()
+        binding = FamilyBinding(
+            household_id=household.id,
+            family_user_id=uuid.UUID(user["sub"]),
+            elder_user_id=elder_uuid,
+            status="active",
+            consent_status="active",
+            version=1,
+        )
         db.add(binding)
+        await db.flush()
+        db.add(
+            BindingAuditEvent(
+                binding_id=binding.id,
+                household_id=household.id,
+                actor_user_id=uuid.UUID(user["sub"]),
+                event_type="binding.dev_code_accepted",
+                payload_json={"dev_compatibility": True},
+            )
+        )
         await db.commit()
     return {"bound_to": elder_user_id}
