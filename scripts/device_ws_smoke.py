@@ -3,7 +3,7 @@
 
 Usage:
   python scripts/device_ws_smoke.py --dry-run
-  python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000 --token <JWT>
+  python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000 --token <elder JWT>
   python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8000  # register+login
 """
 from __future__ import annotations
@@ -61,8 +61,15 @@ def format_report(report: SmokeReport) -> str:
     return "\n".join(lines)
 
 
-def _http_json(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
+def _http_json(
+    method: str,
+    url: str,
+    body: dict | None = None,
+    token: str | None = None,
+) -> tuple[int, dict]:
     headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = Request(url, data=data, headers=headers, method=method)
     try:
@@ -85,6 +92,7 @@ def run_dry() -> SmokeReport:
     )
     for name, detail in [
         ("auth", "JWT for device WS"),
+        ("enroll", "one-time credential -> enrolled device identity"),
         ("connect", "open /ws/device/realtime"),
         ("audio_start", '{"type":"audio_start","sample_rate":16000}'),
         ("pcm", "send fake PCM frames"),
@@ -93,6 +101,40 @@ def run_dry() -> SmokeReport:
     ]:
         report.add(name, True, detail)
     return report
+
+
+def build_device_auth(device_id: str, credential: str) -> dict[str, Any]:
+    return {
+        "type": "auth",
+        "auth_type": "device",
+        "device_id": device_id,
+        "credential": credential,
+        "firmware_version": "smoke-1.0.0",
+        "capabilities": {"audio": True, "receipts": True},
+    }
+
+
+def _enroll_smoke_device(base: str, token: str) -> tuple[int, dict]:
+    status, issued = _http_json(
+        "POST",
+        f"{base}/api/devices/enrollment-credentials",
+        token=token,
+    )
+    if status not in {200, 201}:
+        return status, issued
+    return _http_json(
+        "POST",
+        f"{base}/api/devices/enroll",
+        {
+            "credential_id": issued["credential_id"],
+            "secret": issued["secret"],
+            "external_id": f"device-smoke-{uuid.uuid4().hex[:10]}",
+            "display_name": "Local smoke device",
+            "capabilities": {"audio": True, "receipts": True},
+            "firmware_version": "smoke-1.0.0",
+            "ws_server_uri": base.replace("http://", "ws://").replace("https://", "wss://"),
+        },
+    )
 
 
 def run_live(base_url: str, token: str | None) -> SmokeReport:
@@ -117,6 +159,14 @@ def run_live(base_url: str, token: str | None) -> SmokeReport:
     else:
         report.add("auth", True, "token provided")
 
+    enroll_status, enrollment = _enroll_smoke_device(base, token)
+    device_id = enrollment.get("device_id")
+    device_credential = enrollment.get("credential")
+    enrolled = bool(device_id and device_credential) and enroll_status in {200, 201}
+    report.add("enroll", enrolled, f"status={enroll_status}", device_id=device_id)
+    if not enrolled:
+        return report
+
     try:
         import websocket  # type: ignore
     except ImportError as e:
@@ -130,7 +180,7 @@ def run_live(base_url: str, token: str | None) -> SmokeReport:
     try:
         ws = websocket.create_connection(ws_url, timeout=20)
         report.add("connect", True, ws_url)
-        ws.send(json.dumps({"type": "auth", "token": token}))
+        ws.send(json.dumps(build_device_auth(device_id, device_credential)))
         deadline = time.time() + 15
         while time.time() < deadline:
             raw = ws.recv()
@@ -141,13 +191,13 @@ def run_live(base_url: str, token: str | None) -> SmokeReport:
             if evt.get("type") == "connected":
                 break
 
-        ws.send(json.dumps({"type": "audio_start", "sample_rate": 16000}))
+        ws.send(json.dumps({"type": "audio_start", "seq": 1, "sample_rate": 16000}))
         report.add("audio_start", True, "sent")
         # ~100ms of silence PCM (16-bit mono 16kHz)
         pcm = b"\x00\x00" * 1600
         ws.send(pcm, opcode=websocket.ABNF.OPCODE_BINARY)
         report.add("pcm", True, f"bytes={len(pcm)}")
-        ws.send(json.dumps({"type": "audio_end"}))
+        ws.send(json.dumps({"type": "audio_end", "seq": 2}))
         report.add("audio_end", True, "sent")
 
         deadline = time.time() + 45

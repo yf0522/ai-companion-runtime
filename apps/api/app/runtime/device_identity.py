@@ -90,7 +90,9 @@ async def issue_enrollment_credential(
         user_id=user_id,
         secret_hash=_digest_secret(secret),
         state="issued",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes),
+        expires_at=(datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)).replace(
+            tzinfo=None
+        ),
     )
     db.add(credential)
     await db.commit()

@@ -41,6 +41,19 @@ def test_device_ws_smoke_dry_run_passes():
     assert "device_ws_smoke" in mod.format_report(report)
 
 
+def test_device_ws_smoke_auth_uses_device_identity():
+    mod = _load("device_ws_smoke_auth", "device_ws_smoke.py")
+    payload = mod.build_device_auth("device-1", "device-secret")
+    assert payload == {
+        "type": "auth",
+        "auth_type": "device",
+        "device_id": "device-1",
+        "credential": "device-secret",
+        "firmware_version": "smoke-1.0.0",
+        "capabilities": {"audio": True, "receipts": True},
+    }
+
+
 def test_demo_smoke_ws_user_message_payload_matches_backend():
     mod = _load("demo_smoke_payload", "demo_smoke.py")
     payload = mod.build_ws_user_message("每天晚上8点提醒我吃降压药")
