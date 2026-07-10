@@ -42,11 +42,21 @@ test("elder companion presents status, next action, safety entry, and all mobile
   await expect(page.getByText("现在想先处理哪件事？")).toBeVisible();
   await expect(page.getByText("帮我判断是否诈骗")).toBeVisible();
   await expect(page.getByLabel("输入给陪伴助手的消息")).toBeVisible();
+  const runtimeSelector = page.getByRole("radiogroup", { name: "Agent Runtime" });
+  await expect(runtimeSelector.getByRole("radio", { name: "Standard Harness" })).toBeVisible();
+  await expect(runtimeSelector.getByRole("radio", { name: "Pi Agent" })).toBeVisible();
+  await runtimeSelector.getByRole("radio", { name: "Pi Agent" }).click();
+  await expect(runtimeSelector.getByRole("radio", { name: "Pi Agent" })).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("companion.agent_runtime"))).toBe("pi_experimental");
   if (testInfo.project.name === "mobile") {
     const nav = page.getByRole("navigation", { name: "长者移动导航" });
     await expect(nav.getByText("陪伴", { exact: true })).toBeVisible();
     await expect(nav.getByText("今日事项", { exact: true })).toBeVisible();
     await expect(nav.getByText("帮助", { exact: true })).toBeVisible();
+    const composerBox = await page.locator(".astryx-chat-composer").boundingBox();
+    const navBox = await nav.boundingBox();
+    expect(composerBox?.height).toBeGreaterThanOrEqual(80);
+    expect((composerBox?.y || 0) + (composerBox?.height || 0)).toBeLessThanOrEqual(navBox?.y || 0);
   }
 });
 

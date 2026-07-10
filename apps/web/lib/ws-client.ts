@@ -41,7 +41,6 @@ export class CompanionWsClient {
     this.ws = new WebSocket(endpoint);
 
     this.ws.onopen = () => {
-      this.reconnectAttempts = 0;
       // Send auth as first message instead of URL query param
       this._sendRaw({
         type: "auth",
@@ -49,12 +48,14 @@ export class CompanionWsClient {
         session_id: this.sessionId,
         agent_runtime: this.agentRuntime,
       });
-      this._emit("_status", { status: "connected" });
     };
 
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.type === "connected") {
+          this.reconnectAttempts = 0;
+        }
         this._emit(data.type, data);
         this._emit("_any", data);
       } catch (e) {
@@ -91,6 +92,7 @@ export class CompanionWsClient {
 
   disconnect() {
     this.shouldReconnect = false;
+    this.handlers.clear();
     this.ws?.close();
     this.ws = null;
   }
