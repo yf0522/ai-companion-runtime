@@ -57,3 +57,4 @@ grafdata/
 
 # Local demo stack run state
 .local-stack/
+celerybeat-schedule*

@@ -111,14 +111,21 @@ _load_env() {
 cmd_stop() {
   echo "Stopping local stack..."
   if command -v tmux >/dev/null 2>&1; then
-    for s in companion-web companion-api companion-pi; do
+    for s in companion-web companion-api companion-pi companion-celery-worker companion-celery-beat; do
       tmux has-session -t "=$s" 2>/dev/null && tmux kill-session -t "=$s" 2>/dev/null || true
     done
   fi
   _kill_port "$WEB_PORT"
   _kill_port "$API_PORT"
   _kill_port "$PI_PORT"
-  rm -f "$(_pid_file pi)" "$(_pid_file api)" "$(_pid_file web)"
+  for name in pi api web celery-worker celery-beat; do
+    local pid_file
+    pid_file="$(_pid_file "$name")"
+    if [[ -f "$pid_file" ]]; then
+      kill "$(cat "$pid_file")" 2>/dev/null || true
+      rm -f "$pid_file"
+    fi
+  done
   echo "Stopped."
 }
 
@@ -131,6 +138,15 @@ cmd_status() {
       echo "  UP   $name :$port HTTP $code"
     else
       echo "  DOWN $name :$port"
+    fi
+  done
+  for service in celery-worker celery-beat; do
+    if tmux has-session -t "=companion-$service" 2>/dev/null; then
+      echo "  UP   $service"
+    elif [[ -f "$(_pid_file "$service")" ]] && kill -0 "$(cat "$(_pid_file "$service")")" 2>/dev/null; then
+      echo "  UP   $service"
+    else
+      echo "  DOWN $service"
     fi
   done
 }
@@ -206,6 +222,42 @@ _start_web() {
   fi
 }
 
+_run_migrations() {
+  echo "  ... database migrations"
+  (
+    cd "$ROOT/apps/api"
+    PYTHONPATH=. uv run alembic upgrade head
+  )
+}
+
+_start_celery() {
+  [[ "${ENABLE_CELERY_TASKS:-0}" == "1" || "${ENABLE_CELERY_TASKS:-0}" == "true" ]] || return 0
+
+  local worker_log beat_log beat_schedule
+  worker_log="$(_log_file celery-worker)"
+  beat_log="$(_log_file celery-beat)"
+  beat_schedule="$RUN_DIR/celerybeat-schedule"
+
+  if _have_tmux; then
+    _tmux_start companion-celery-worker "$ROOT/apps/api" \
+      "env PYTHONPATH=. uv run celery -A app.workers.celery_app worker -l info -c 2 -Q celery,memory,embedding,reflection 2>&1 | tee '$worker_log'"
+    _tmux_start companion-celery-beat "$ROOT/apps/api" \
+      "env PYTHONPATH=. uv run celery -A app.workers.celery_app beat -l info -s '$beat_schedule' 2>&1 | tee '$beat_log'"
+  else
+    (
+      cd "$ROOT/apps/api"
+      (setsid env PYTHONPATH=. uv run celery -A app.workers.celery_app worker -l info -c 2 \
+        -Q celery,memory,embedding,reflection >"$worker_log" 2>&1 &)
+      sleep 0.2
+      pgrep -f "celery -A app.workers.celery_app worker" | tail -1 >"$(_pid_file celery-worker)" || true
+      (setsid env PYTHONPATH=. uv run celery -A app.workers.celery_app beat -l info \
+        -s "$beat_schedule" >"$beat_log" 2>&1 &)
+      sleep 0.2
+      pgrep -f "celery -A app.workers.celery_app beat" | tail -1 >"$(_pid_file celery-beat)" || true
+    )
+  fi
+}
+
 cmd_start() {
   _load_env
   echo "Starting local stack in $ROOT"
@@ -220,9 +272,11 @@ cmd_start() {
     sleep 1
   fi
 
+  _run_migrations
   _start_pi
   _start_api
   _start_web
+  _start_celery
 
   local ok=0
   _wait_http "$API_URL/health" "api" || ok=1

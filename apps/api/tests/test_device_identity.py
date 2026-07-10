@@ -9,6 +9,7 @@ from fastapi import HTTPException
 import pytest
 
 from app.runtime.device_identity import (
+    issue_enrollment_credential,
     _digest_secret,
     advance_device_sequence,
     enroll_device,
@@ -16,6 +17,29 @@ from app.runtime.device_identity import (
     validate_ota_release_state,
     validate_secure_transport_config,
 )
+
+
+class _IssueCredentialSession:
+    def __init__(self):
+        self.credential = None
+
+    def add(self, item):
+        self.credential = item
+
+    async def commit(self):
+        self.credential.id = uuid.uuid4()
+
+    async def refresh(self, _item):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_enrollment_credential_uses_utc_naive_database_timestamp():
+    session = _IssueCredentialSession()
+    issued = await issue_enrollment_credential(session, user_id=uuid.uuid4())
+
+    assert issued.credential_id == str(session.credential.id)
+    assert session.credential.expires_at.tzinfo is None
 
 
 def test_device_secure_transport_rejects_ws_in_production():

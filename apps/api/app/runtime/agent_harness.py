@@ -179,8 +179,7 @@ class AgentHarness:
         analyzer_ms = int((time.monotonic() - start_time) * 1000)
 
         if risk.level in ("critical", "high"):
-            await self._handle_risk(risk, stream_mgr, trace_id, start_time, user_id)
-            asyncio.create_task(
+            analysis_trace = asyncio.create_task(
                 _record_analysis_events(
                     trace_id=trace_id,
                     user_id=db_user_id,
@@ -191,6 +190,15 @@ class AgentHarness:
                     memory=memory,
                     latency_ms=analyzer_ms,
                 )
+            )
+            await self._handle_risk(
+                risk,
+                stream_mgr,
+                trace_id,
+                start_time,
+                user_id,
+                session_id,
+                analysis_trace,
             )
             return {"trace_id": trace_id, "blocked_by_risk": True}
 
@@ -482,6 +490,8 @@ class AgentHarness:
         trace_id: str,
         start_time: float,
         user_id: str,
+        session_id: str | None = None,
+        analysis_trace: asyncio.Task | None = None,
     ):
         """Handle high/critical risk: send alert and safe response."""
         from app.runtime.risk_gate import load_safety_message
@@ -494,15 +504,6 @@ class AgentHarness:
         await stream_mgr.send_first_reply(safety_msg, ttft_ms)
 
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
-        await stream_mgr.send_final(
-            trace_id=trace_id,
-            message_id=f"m_{nanoid(size=12)}",
-            ttft_ms=ttft_ms,
-            total_latency_ms=total_latency_ms,
-            tools_used=[],
-            memory_updated=False,
-        )
-
         summary = self._build_family_notification_summary(risk)
         notify_status = await self._dispatch_risk_notification(
             user_id,
@@ -522,6 +523,34 @@ class AgentHarness:
                 if notify_status.get("status") in {"persisted", "queued"}
                 else "failed"
             ),
+        )
+
+        if analysis_trace is not None:
+            await analysis_trace
+        await _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="risk_response_final",
+            step_index=10,
+            user_id=_stable_uuid(user_id),
+            session_id=_stable_uuid(session_id) if session_id else None,
+            output_json={
+                "risk_level": risk.level,
+                "risk_category": risk.category,
+                "ttft_ms": ttft_ms,
+                "total_latency_ms": total_latency_ms,
+                "notification_status": notify_status.get("status"),
+            },
+            status="success",
+            latency_ms=total_latency_ms,
+            required=True,
+        )
+        await stream_mgr.send_final(
+            trace_id=trace_id,
+            message_id=f"m_{nanoid(size=12)}",
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            tools_used=[],
+            memory_updated=False,
         )
 
     async def _dispatch_risk_notification(
