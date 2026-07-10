@@ -1,88 +1,66 @@
-import { Bot, ShieldAlert, UserRound } from "lucide-react";
-import type { Message } from "@/stores/chatStore";
-import CareTaskClarifyCard, {
-  type CareTaskCandidate,
-} from "./CareTaskClarifyCard";
+import { Avatar } from "@astryxdesign/core/Avatar";
+import { Badge } from "@astryxdesign/core/Badge";
+import { ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatToolCalls, type ChatToolCallItem } from "@astryxdesign/core/Chat";
+import { Text } from "@astryxdesign/core/Text";
+import type { Message, ToolChipStatus } from "@/stores/chatStore";
+import CareTaskClarifyCard, { type CareTaskCandidate } from "./CareTaskClarifyCard";
 
-interface Props {
-  message: Message;
-  isStreaming?: boolean;
-  onClarifySelect?: (candidate: CareTaskCandidate, verb: string) => void;
-}
-
-const SAFE_PROVIDER_FAILURE =
-  "我现在暂时无法生成完整回复。提醒和安全功能仍然可用，请稍后再试。";
+interface Props { message: Message; isStreaming?: boolean; onClarifySelect?: (candidate: CareTaskCandidate, verb: string) => void; }
+const SAFE_PROVIDER_FAILURE = "我现在暂时无法生成完整回复。提醒和安全功能仍然可用，请稍后再试。";
 
 export function elderSafeMessage(content: string): string {
   const body = content.trim();
   if (!body) return body;
-
-  const technicalFailure =
-    /user location is not supported/i.test(body) ||
-    /provider[_\s-]?error/i.test(body) ||
-    /model[_\s-]?error/i.test(body) ||
-    /status[_\s-]?code/i.test(body) ||
-    /"error"\s*:/i.test(body) ||
-    /^\s*\{[\s\S]*\}\s*$/.test(body);
-
+  const technicalFailure = /user location is not supported/i.test(body) || /provider[_\s-]?error/i.test(body) || /model[_\s-]?error/i.test(body) || /status[_\s-]?code/i.test(body) || /"error"\s*:/i.test(body) || /^\s*\{[\s\S]*\}\s*$/.test(body);
   return technicalFailure ? SAFE_PROVIDER_FAILURE : content;
 }
 
-function RiskAlertBanner({ message, content }: { message?: string; content: string }) {
-  const alertMessage = (message || "").trim();
-  const body = content.trim();
-  if (!alertMessage || alertMessage === body) return null;
-
-  return (
-    <div className="mb-3 flex gap-3 rounded-md border border-status-critical bg-status-critical-soft p-4 text-base leading-7 text-ink">
-      <ShieldAlert className="mt-1 shrink-0" size={20} aria-hidden="true" />
-      <div>
-        <div className="font-semibold">先暂停当前操作</div>
-        <div>{alertMessage}</div>
-      </div>
-    </div>
-  );
+function toolStatus(status: ToolChipStatus): ChatToolCallItem["status"] {
+  if (status === "calling") return "running";
+  if (status === "failed" || status === "timeout") return "error";
+  if (status === "needs_clarification") return "pending";
+  return "complete";
 }
 
 export default function MessageBubble({ message, isStreaming = false, onClarifySelect }: Props) {
   const isUser = message.role === "user";
-  const clarify = message.careTaskClarify;
   const visibleContent = isUser ? message.content : elderSafeMessage(message.content);
-  const Icon = isUser ? UserRound : Bot;
+  const calls: ChatToolCallItem[] = (message.toolsUsed || []).map((tool) => ({
+    name: tool.tool,
+    status: toolStatus(tool.status),
+    target: tool.action || (tool.status === "needs_clarification" ? "等待确认" : "照护运行时"),
+    errorMessage: tool.status === "failed" || tool.status === "timeout" ? "工具未成功完成" : undefined,
+  }));
+
+  if (isUser) {
+    return (
+      <ChatMessage sender="user" className="companion-message-enter">
+        <ChatMessageBubble metadata={<ChatMessageMetadata status={message.status === "error" ? "error" : "read"} />}>
+          {visibleContent}
+        </ChatMessageBubble>
+      </ChatMessage>
+    );
+  }
 
   return (
-    <article className={`border-t border-border py-5 first:border-t-0 ${isUser ? "bg-surface" : "bg-[#f8fbfa]"}`}>
-      <div className="mx-auto flex max-w-3xl gap-3 px-4 sm:gap-4">
-        <div className={`mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${isUser ? "bg-primary-soft text-primary-strong" : "bg-[#10201d] text-white"}`}>
-          <Icon size={18} aria-hidden="true" />
+    <ChatMessage sender="assistant" avatar={<Avatar name="Companion" size="small" />} name="Companion" className="companion-message-enter">
+      {message.riskAlert && (
+        <div className="risk-interrupt">
+          <Badge label="先暂停当前操作" variant="error" />
+          <Text display="block" style={{ marginTop: 8 }}>{message.riskAlert.message}</Text>
         </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="mb-1 text-sm font-semibold text-ink">{isUser ? "你" : "陪伴助手"}</div>
-          {message.riskAlert && (
-            <RiskAlertBanner message={message.riskAlert.message} content={visibleContent} />
-          )}
-          <div className="whitespace-pre-wrap text-lg leading-8 text-ink">
-            {visibleContent}
-            {message.status === "streaming" && (
-              <span className="ml-1 inline-block h-4 w-0.5 rounded-sm bg-primary" style={{ animation: "blink 1s infinite" }} />
-            )}
-          </div>
-
-          {!isUser && clarify && clarify.candidates.length > 0 && onClarifySelect && (
-            <CareTaskClarifyCard
-              candidates={clarify.candidates}
-              verb={clarify.verb}
-              disabled={isStreaming || message.status === "streaming"}
-              onSelect={(candidate) => onClarifySelect(candidate, clarify.verb)}
-            />
-          )}
-
-          {message.status === "error" && (
-            <div className="mt-2 text-sm font-medium text-status-critical">消息尚未送达，请重新发送。</div>
-          )}
-        </div>
-      </div>
-    </article>
+      )}
+      {calls.length > 0 && <ChatToolCalls calls={calls} label="正在执行照护动作" />}
+      <ChatMessageBubble
+        variant="ghost"
+        metadata={<ChatMessageMetadata footer={<Text type="supporting">{message.totalLatencyMs ? `${message.totalLatencyMs}ms · trace ${message.traceId?.slice(0, 8) || "pending"}` : message.status === "streaming" ? "正在组织回复" : "风险与工具已检查"}</Text>} />}
+      >
+        <Text as="div" size="lg" style={{ whiteSpace: "pre-wrap", lineHeight: 1.75 }}>{visibleContent || (message.status === "streaming" ? "正在听你说…" : "")}</Text>
+      </ChatMessageBubble>
+      {message.careTaskClarify && message.careTaskClarify.candidates.length > 0 && onClarifySelect && (
+        <CareTaskClarifyCard candidates={message.careTaskClarify.candidates} verb={message.careTaskClarify.verb} disabled={isStreaming || message.status === "streaming"} onSelect={(candidate) => onClarifySelect(candidate, message.careTaskClarify!.verb)} />
+      )}
+      {message.status === "error" && <Badge label="消息尚未送达，请重新发送" variant="error" />}
+    </ChatMessage>
   );
 }

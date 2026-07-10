@@ -1,78 +1,57 @@
+"use client";
+
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { EmptyState as AstryxEmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Icon } from "@astryxdesign/core/Icon";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { Text } from "@astryxdesign/core/Text";
+import { AlertTriangle, CheckCircle2, CircleAlert, Inbox } from "lucide-react";
+
 type SurfaceTone = "info" | "success" | "warning" | "critical" | "offline";
 
-const toneClass: Record<SurfaceTone, string> = {
-  info: "border-status-info bg-status-info-soft text-ink",
-  success: "border-status-success bg-status-success-soft text-ink",
-  warning: "border-status-warning bg-status-warning-soft text-ink",
-  critical: "border-status-critical bg-status-critical-soft text-ink",
-  offline: "border-status-offline bg-status-offline-soft text-ink",
-};
+const toneConfig = {
+  info: { variant: "cyan", icon: CircleAlert },
+  success: { variant: "green", icon: CheckCircle2 },
+  warning: { variant: "yellow", icon: AlertTriangle },
+  critical: { variant: "red", icon: AlertTriangle },
+  offline: { variant: "gray", icon: CircleAlert },
+} as const;
 
 export function LoadingState({ label = "正在加载" }: { label?: string }) {
+  return <Card variant="transparent" padding={5}><Spinner size="lg" shade="subtle" label={label} /></Card>;
+}
+
+export function EmptyState({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
+  return <AstryxEmptyState icon={<Icon icon={Inbox} color="secondary" />} title={title} description={description} actions={action} />;
+}
+
+export function ErrorState({ title = "加载失败", description, onRetry }: { title?: string; description: string; onRetry?: () => void }) {
   return (
-    <div role="status" aria-live="polite" className="care-card flex items-center gap-3 text-base text-muted">
-      <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-status-info" />
-      <span>{label}</span>
-    </div>
+    <Card variant="red" padding={5} role="alert">
+      <div style={{ display: "grid", gap: 10 }}>
+        <Icon icon={AlertTriangle} color="error" />
+        <Heading level={3}>{title}</Heading>
+        <Text color="secondary">{description}</Text>
+        {onRetry && <div><Button label="重试" variant="secondary" onClick={onRetry} /></div>}
+      </div>
+    </Card>
   );
 }
 
-export function EmptyState({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string;
-  action?: React.ReactNode;
-}) {
+export function StatusBanner({ tone = "info", title, children }: { tone?: SurfaceTone; title: string; children?: React.ReactNode }) {
+  const config = toneConfig[tone];
   return (
-    <div className="care-card p-5">
-      <h2 className="text-lg font-semibold text-ink">{title}</h2>
-      <p className="mt-1 text-base leading-7 text-muted">{description}</p>
-      {action && <div className="mt-4">{action}</div>}
-    </div>
-  );
-}
-
-export function ErrorState({
-  title = "加载失败",
-  description,
-  onRetry,
-}: {
-  title?: string;
-  description: string;
-  onRetry?: () => void;
-}) {
-  return (
-    <div
-      role="alert"
-      className="rounded-md border border-status-critical bg-status-critical-soft p-5 text-ink"
-    >
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <p className="mt-1 text-base leading-7">{description}</p>
-      {onRetry && (
-        <button type="button" onClick={onRetry} className="btn-secondary mt-4">
-          重试
-        </button>
-      )}
-    </div>
-  );
-}
-
-export function StatusBanner({
-  tone = "info",
-  title,
-  children,
-}: {
-  tone?: SurfaceTone;
-  title: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className={`rounded-md border p-4 ${toneClass[tone]}`}>
-      <div className="text-base font-semibold">{title}</div>
-      {children && <div className="mt-1 text-sm leading-6">{children}</div>}
-    </div>
+    <Card variant={config.variant} padding={4}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <Icon icon={config.icon} color={tone === "critical" ? "error" : tone === "warning" ? "warning" : tone === "success" ? "success" : "secondary"} />
+        <div style={{ minWidth: 0 }}>
+          <Badge label={title} variant={tone === "critical" ? "error" : tone === "warning" ? "warning" : tone === "success" ? "success" : "neutral"} />
+          {children && <Text display="block" type="supporting" style={{ marginTop: 8 }}>{children}</Text>}
+        </div>
+      </div>
+    </Card>
   );
 }

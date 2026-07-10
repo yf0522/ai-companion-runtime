@@ -1,11 +1,11 @@
 import HouseholdReadinessView from "@/components/HouseholdReadinessView";
 
-export default function OpsHouseholdReadinessPage({
+export default async function OpsHouseholdReadinessPage({
   searchParams,
 }: {
-  searchParams: { household_id?: string };
+  searchParams: Promise<{ household_id?: string }>;
 }) {
-  const householdId = searchParams.household_id;
+  const { household_id: householdId } = await searchParams;
   return (
     <HouseholdReadinessView
       role="operator"

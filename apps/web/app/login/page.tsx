@@ -2,9 +2,21 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { HeartHandshake, LockKeyhole, Radar, ShieldCheck } from "lucide-react";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Icon } from "@astryxdesign/core/Icon";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Activity, LockKeyhole, Radar, ShieldCheck, UserRound } from "lucide-react";
+import SignalField from "@/components/SignalField";
 import { useAuthStore } from "@/stores/authStore";
 import { defaultRouteForRole } from "@/lib/role-routes.mjs";
+
+function BrandMark() {
+  return <span className="brand-mark"><span className="brand-mark-core"><span /><span /><span /><span /></span></span>;
+}
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -16,7 +28,7 @@ export default function LoginPage() {
   const router = useRouter();
   const { login, register } = useAuthStore();
 
-  const handleSubmit = async (event: React.FormEvent) => {
+  async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!username.trim() || !password.trim()) return;
     setError(null);
@@ -30,90 +42,62 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
-    <div className="min-h-screen bg-[#10201d] px-4 py-6 sm:px-6 lg:px-8">
-      <main className="mx-auto grid min-h-[calc(100vh-3rem)] max-w-6xl overflow-hidden rounded-lg border border-white/10 bg-surface shadow-[0_28px_80px_rgb(0_0_0_/_28%)] lg:grid-cols-[1.08fr_.92fr]">
-        <section className="relative order-2 flex flex-col justify-between bg-[#10201d] p-6 text-white sm:p-8 lg:order-1 lg:p-12">
-          <div>
-            <div className="flex items-center gap-3">
-              <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-white text-[#10201d]"><HeartHandshake size={23} /></span>
-              <div><strong className="block text-lg">Companion</strong><span className="text-sm text-white/60">长期陪伴与安全守护运行时</span></div>
-            </div>
-            <div className="mt-10 max-w-xl lg:mt-24">
-              <p className="text-sm font-semibold text-[#72d8cc]">CALM INTELLIGENCE</p>
-              <h1 className="mt-3 text-[30px] font-bold leading-[1.18] sm:text-[40px] lg:text-[46px]">每一次提醒、风险和求助，都有清楚的下一步。</h1>
-              <p className="mt-5 max-w-lg text-lg leading-8 text-white/70">面向长者、家属和照护运营的同一套生产工作流。AI 负责理解与执行，人始终保留确认权。</p>
+    <main className="auth-screen">
+      <SignalField />
+      <div className="auth-grid">
+        <section className="auth-story">
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <BrandMark />
+            <div>
+              <Text display="block" weight="semibold" style={{ color: "#f4fffc" }}>Companion</Text>
+              <Text display="block" type="supporting" style={{ color: "#8ea49f" }}>Ambient care runtime</Text>
             </div>
           </div>
-          <div className="mt-8 grid gap-3 sm:grid-cols-3 lg:mt-12 lg:grid-cols-1 xl:grid-cols-3">
-            {[
-              { icon: Radar, label: "风险分级", text: "优先暂停危险操作" },
-              { icon: ShieldCheck, label: "证据可追踪", text: "关键动作保留回执" },
-              { icon: LockKeyhole, label: "角色隔离", text: "隐私与权限按角色呈现" },
-            ].map(({ icon: Icon, label, text }) => (
-              <div key={label} className="border-t border-white/15 pt-3">
-                <Icon size={18} className="text-[#72d8cc]" />
-                <strong className="mt-2 block text-sm">{label}</strong>
-                <span className="mt-1 block text-sm leading-6 text-white/55">{text}</span>
-              </div>
-            ))}
+
+          <div className="auth-story-copy">
+            <Badge label="REAL-TIME CARE INTELLIGENCE" variant="teal" />
+            <h1>AI 在这里，不只是回答。</h1>
+            <p>它持续理解、执行照护任务、拦截风险、追踪投递，并在需要时把责任交给具体的人。</p>
+          </div>
+
+          <div className="auth-proof" aria-label="产品运行能力">
+            <div><Icon icon={Activity} color="cyan" /><Text display="block" weight="semibold" style={{ marginTop: 16, color: "#f4fffc" }}>实时陪伴</Text><Text display="block" type="supporting" style={{ marginTop: 6, color: "#8ea49f" }}>WebSocket 流式响应与运行状态</Text></div>
+            <div><Icon icon={Radar} color="orange" /><Text display="block" weight="semibold" style={{ marginTop: 16, color: "#f4fffc" }}>风险优先</Text><Text display="block" type="supporting" style={{ marginTop: 6, color: "#8ea49f" }}>诈骗、情绪和安全策略先于生成</Text></div>
+            <div><Icon icon={ShieldCheck} color="green" /><Text display="block" weight="semibold" style={{ marginTop: 16, color: "#f4fffc" }}>结果可追踪</Text><Text display="block" type="supporting" style={{ marginTop: 6, color: "#8ea49f" }}>任务、回执、人工处置与 Trace</Text></div>
           </div>
         </section>
 
-        <section className="order-1 flex items-center bg-[#f7faf8] p-5 sm:p-8 lg:order-2 lg:p-12">
-          <div className="mx-auto w-full max-w-md">
-            <div className="eyebrow">Secure access</div>
-            <h2 className="mt-2 text-3xl font-bold text-ink">{isRegister ? "创建照护账号" : "进入照护空间"}</h2>
-            <p className="mt-2 text-base leading-7 text-muted">{isRegister ? "选择使用身份，系统会进入对应的工作界面。" : "继续处理陪伴、任务、告警和人工协同。"}</p>
+        <section className="auth-form-plane">
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <Badge label={isRegister ? "CREATE CARE SPACE" : "SECURE ACCESS"} variant="neutral" />
+            <Heading level={1}>{isRegister ? "创建照护账号" : "进入照护空间"}</Heading>
+            <p className="auth-form-copy">{isRegister ? "选择真实使用身份。权限由服务端控制，界面只呈现对应工作流。" : "继续处理陪伴、照护任务、告警和人工协同。"}</p>
 
-            <form onSubmit={handleSubmit} className="mt-8 space-y-5">
-              <div>
-                <label htmlFor="username" className="mb-2 block text-sm font-semibold text-ink">用户名</label>
-                <input id="username" type="text" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} className="field-control" autoFocus />
-              </div>
-              <div>
-                <label htmlFor="password" className="mb-2 block text-sm font-semibold text-ink">密码</label>
-                <input id="password" type="password" autoComplete={isRegister ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)} className="field-control" />
-              </div>
+            <div className="auth-fields">
+              <TextInput label="用户名" value={username} onChange={setUsername} width="100%" hasAutoFocus startIcon={<Icon icon={UserRound} size="sm" />} />
+              <TextInput label="密码" type="password" value={password} onChange={setPassword} width="100%" startIcon={<Icon icon={LockKeyhole} size="sm" />} status={error ? { type: "error", message: error } : undefined} />
 
               {isRegister && (
-                <fieldset>
-                  <legend className="mb-2 text-sm font-semibold text-ink">使用身份</legend>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {[
-                      { value: "elder", label: "长者本人", description: "陪伴与今日事项" },
-                      { value: "family", label: "家属", description: "任务与告警管理" },
-                    ].map((option) => (
-                      <label key={option.value} className={`cursor-pointer rounded-md border p-3 ${role === option.value ? "border-primary bg-primary-soft" : "border-border bg-surface"}`}>
-                        <input type="radio" name="role" value={option.value} checked={role === option.value} onChange={() => setRole(option.value as "elder" | "family")} className="mr-2" />
-                        <span className="font-semibold text-ink">{option.label}</span>
-                        <span className="mt-1 block pl-6 text-sm text-muted">{option.description}</span>
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
+                <div>
+                  <Text display="block" type="label" style={{ marginBottom: 8 }}>使用身份</Text>
+                  <SegmentedControl value={role} onChange={(value) => setRole(value as "elder" | "family")} label="使用身份" layout="fill" size="md">
+                    <SegmentedControlItem value="elder" label="长者本人" />
+                    <SegmentedControlItem value="family" label="家属照护" />
+                  </SegmentedControl>
+                </div>
               )}
+            </div>
 
-              {error && <p role="alert" className="rounded-md border border-status-critical bg-status-critical-soft px-4 py-3 text-base text-ink">{error}</p>}
-
-              <button type="submit" disabled={loading || !username.trim() || !password.trim()} className="btn-primary w-full">
-                {loading ? "正在验证" : isRegister ? "创建并进入" : "安全登录"}
-              </button>
-            </form>
-
-            <button
-              type="button"
-              onClick={() => { setIsRegister((value) => !value); setError(null); }}
-              className="btn-quiet mt-4 w-full"
-            >
-              {isRegister ? "已有账号，返回登录" : "首次使用，创建账号"}
-            </button>
-            <p className="mt-6 border-t border-border pt-5 text-sm leading-6 text-muted">紧急情况请直接联系本地紧急服务。系统不会替代医生、急救人员或金融机构。</p>
-          </div>
+            <div className="auth-actions">
+              <Button type="submit" label={isRegister ? "创建并进入" : "安全登录"} variant="primary" size="lg" isLoading={loading} isDisabled={!username.trim() || !password.trim()} />
+              <Button type="button" label={isRegister ? "已有账号，返回登录" : "创建新账号"} variant="ghost" size="lg" onClick={() => { setIsRegister((value) => !value); setError(null); }} />
+            </div>
+          </form>
         </section>
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }
