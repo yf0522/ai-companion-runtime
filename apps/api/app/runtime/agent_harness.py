@@ -224,6 +224,16 @@ class AgentHarness:
                 trace_id,
             )
 
+        if "caretask" in intent.tool_needs:
+            return await self._run_deterministic_caretask(
+                message=message,
+                trace_id=trace_id,
+                stream_mgr=stream_mgr,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                start_time=start_time,
+            )
+
         personality = await self._get_personality(emotion, intent)
 
         fast_reply_sent = await self._fast_reply_race(
@@ -431,6 +441,58 @@ class AgentHarness:
             "total_latency_ms": total_latency_ms,
         }
 
+    async def _run_deterministic_caretask(
+        self,
+        *,
+        message: str,
+        trace_id: str,
+        stream_mgr: StreamManager,
+        user_id: str,
+        session_id: str,
+        start_time: float,
+    ) -> dict:
+        """Use backend CareTask copy as the single elder-facing response."""
+        results = await self._dispatch_tools(
+            ["caretask"],
+            message,
+            trace_id,
+            stream_mgr,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        result = results[0] if results else None
+        response_text = getattr(result, "display_text", "") or "照护任务暂时无法处理，请稍后再试。"
+        status = getattr(result, "status", "failed")
+        data = getattr(result, "data", None) or {}
+        tool_entry: dict = {"tool": "caretask", "status": status}
+        if action := data.get("action"):
+            tool_entry["action"] = action
+        if candidates := data.get("candidates"):
+            tool_entry["candidates"] = candidates
+            if clarify_verb := data.get("clarify_verb"):
+                tool_entry["clarify_verb"] = clarify_verb
+
+        ttft_ms = int((time.monotonic() - start_time) * 1000)
+        await stream_mgr.send_first_reply(response_text, ttft_ms)
+        total_latency_ms = int((time.monotonic() - start_time) * 1000)
+        message_id = f"m_{nanoid(size=12)}"
+        await stream_mgr.send_final(
+            trace_id=trace_id,
+            message_id=message_id,
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            tools_used=[tool_entry],
+            memory_updated=True,
+        )
+        await self._persist_conversation(session_id, user_id, message, response_text)
+        return {
+            "trace_id": trace_id,
+            "message_id": message_id,
+            "ttft_ms": ttft_ms,
+            "total_latency_ms": total_latency_ms,
+            "deterministic_caretask": True,
+        }
+
     async def _run_analyzers(self, input: AnalyzerInput) -> tuple:
         """Run all analyzers in parallel with individual timeouts."""
         timeout_ms = self._timeout("analyzer")
@@ -494,16 +556,8 @@ class AgentHarness:
         analysis_trace: asyncio.Task | None = None,
     ):
         """Handle high/critical risk: send alert and safe response."""
-        from app.runtime.risk_gate import load_safety_message
+        from app.runtime.risk_gate import build_safety_response, load_safety_message
 
-        safety_msg = load_safety_message(risk.level, risk.category)
-        # Level-only alert: safety copy goes once via first_reply (avoid bubble dup).
-        await stream_mgr.send_risk_alert(risk.level, "")
-
-        ttft_ms = int((time.monotonic() - start_time) * 1000)
-        await stream_mgr.send_first_reply(safety_msg, ttft_ms)
-
-        total_latency_ms = int((time.monotonic() - start_time) * 1000)
         summary = self._build_family_notification_summary(risk)
         notify_status = await self._dispatch_risk_notification(
             user_id,
@@ -512,6 +566,17 @@ class AgentHarness:
             summary,
             trace_id,
         )
+        safety_msg = build_safety_response(
+            load_safety_message(risk.level, risk.category),
+            notify_status,
+        )
+        # Level-only alert: safety copy goes once via first_reply (avoid bubble dup).
+        await stream_mgr.send_risk_alert(risk.level, "")
+
+        ttft_ms = int((time.monotonic() - start_time) * 1000)
+        await stream_mgr.send_first_reply(safety_msg, ttft_ms)
+
+        total_latency_ms = int((time.monotonic() - start_time) * 1000)
         await _trace_svc.add_event(
             trace_id=trace_id,
             step_name="family_notification",

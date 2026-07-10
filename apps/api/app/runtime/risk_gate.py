@@ -121,7 +121,15 @@ async def _emit_risk_block(
     *,
     user_id: str | None = None,
 ) -> None:
-    safety_msg = load_safety_message(risk.level, risk.category)
+    notify_status = (
+        await _dispatch_family_notify(user_id, risk, trace_id)
+        if user_id
+        else {"status": "failed", "error": "missing_user"}
+    )
+    safety_msg = build_safety_response(
+        load_safety_message(risk.level, risk.category),
+        notify_status,
+    )
     # Level-only alert: safety copy goes once via first_reply (avoid bubble dup).
     await stream_mgr.send_risk_alert(risk.level, "")
     ttft_ms = int((time.monotonic() - start) * 1000)
@@ -135,8 +143,6 @@ async def _emit_risk_block(
         tools_used=[],
         memory_updated=False,
     )
-    if user_id:
-        await _dispatch_family_notify(user_id, risk, trace_id)
 
 
 def load_safety_message(level: str, category: str | None = None) -> str:
@@ -157,7 +163,23 @@ def _default_safety_message() -> str:
     )
 
 
-async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str) -> None:
+def build_safety_response(base_message: str, notify_status: dict | None) -> str:
+    """Append truthful family-contact state without claiming unconfirmed delivery."""
+    status = notify_status or {}
+    webhook_status = str(status.get("webhook_status") or "")
+    outbox_ids = status.get("outbox_ids") or []
+    if webhook_status in {"delivered", "read", "acknowledged"}:
+        notice = "您的家人已经收到通知。"
+    elif outbox_ids:
+        notice = "我已尝试联系您的家人，消息正在发送，送达状态还在确认。"
+    elif webhook_status == "no_contact":
+        notice = "目前没有可通知的已验证家属联系人，请立即联系身边可信任的人。"
+    else:
+        notice = "我暂时无法联系到您的家人，请立即联系身边可信任的人。"
+    return f"{base_message.rstrip()} {notice}"
+
+
+async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str) -> dict:
     """Persist the shared safety/outbox pipeline before any provider delivery."""
     try:
         from app.config.settings import settings
@@ -175,8 +197,11 @@ async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str)
         )
         if settings.enable_celery_tasks and result.get("outbox_ids"):
             deliver_notification_outbox.delay()
+            result["delivery_queued"] = True
+        return result
     except Exception as exc:
         logger.warning("Risk gate family notify failed: %s", exc)
+        return {"status": "failed", "outbox_ids": [], "error": str(exc)}
 
 
 def _family_summary(risk: RiskResult) -> str:

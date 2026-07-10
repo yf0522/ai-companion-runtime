@@ -112,8 +112,8 @@ def _reuse_display(title: str, *, schedule_updated: bool) -> str:
     if "药" in label and not label.startswith("吃"):
         label = f"吃{label}"
     if schedule_updated:
-        return f"您已经有{label}的提醒了，我帮您更新了时间，没有重复创建。"
-    return f"您已经有{label}的提醒了，我帮您沿用，没有重复创建。"
+        return f"您已经有{label}的提醒了，我帮您更新了提醒时间。"
+    return f"您已经记过{label}这件事了，我会继续为您保留。"
 
 
 def _none_resolve_display(verb_cn: str, resolved: Any) -> str:
@@ -219,16 +219,9 @@ class CareTaskTool(ToolBase):
         task_type = str(params.get("task_type") or _infer_task_type(query or title))
         if not title:
             title = _infer_title(query, task_type)
-        due_at = None
-        if params.get("due_at"):
-            try:
-                due_at = datetime.fromisoformat(str(params["due_at"]).replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
-            except ValueError:
-                due_at = None
-        if due_at is None and query:
-            due_at = _parse_due_at(query)
+        # Model-provided timestamps are untrusted semantic arguments. A CareTask
+        # is scheduled only when the user's own utterance contains a parseable time.
+        due_at = _parse_due_at(query) if query else None
 
         schedule_type = params.get("schedule_type")
         row = await svc.create_care_task(
@@ -282,7 +275,7 @@ class CareTaskTool(ToolBase):
         return ToolResult(
             tool_name=self.name,
             status="success",
-            display_text=f"好的，已记下：{row['title']}{due_txt}",
+            display_text=f"已为您记下：{row['title']}{due_txt}",
             data={
                 "action": "caretask_create",
                 "task": row,

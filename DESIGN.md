@@ -150,6 +150,8 @@
   - Repeat dates, times, medication/task names, recipients, and destructive consequences before confirmation.
   - State what the system did, what remains unconfirmed, and what the user can do next.
   - Do not say “已通知家属” until a provider accepted the message; distinguish queued, sent, delivered, read, and failed.
+  - Only repeat or schedule a date/time that was present in the elder's own utterance or explicitly confirmed by them; model-generated timestamps are not user intent.
+  - CareTask mutation confirmations use backend-owned deterministic copy. Do not append a second model-written success paragraph.
 
 ## Implementation constraints
 - Framework/styling system: Next.js 14, React 18, TypeScript, Zustand, and Tailwind CSS 3. Extend existing patterns before adding a design-system dependency.

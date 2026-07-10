@@ -74,3 +74,11 @@ async def test_mixed_emotion_and_tool_prioritizes_task(engine):
     result = await engine.analyze(_input("好烦帮我算一下 100+200"))
     assert result.primary_intent == "task"
     assert "calculator" in result.tool_needs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["提醒我吃降糖药", "帮我记一下吃降糖药", "提醒我服用降脂药"])
+async def test_medication_phrasing_routes_to_caretask(engine, message):
+    result = await engine.analyze(_input(message))
+    assert "caretask" in result.tool_needs
+    assert "reminder" not in result.tool_needs
