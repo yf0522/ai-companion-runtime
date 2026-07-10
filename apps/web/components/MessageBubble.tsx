@@ -1,3 +1,4 @@
+import { Bot, ShieldAlert, UserRound } from "lucide-react";
 import type { Message } from "@/stores/chatStore";
 import CareTaskClarifyCard, {
   type CareTaskCandidate,
@@ -9,91 +10,79 @@ interface Props {
   onClarifySelect?: (candidate: CareTaskCandidate, verb: string) => void;
 }
 
-function RiskAlertBanner({
-  message,
-  content,
-}: {
-  message?: string;
-  content: string;
-}) {
-  const alertMsg = (message || "").trim();
-  const body = (content || "").trim();
-  // Elder UI: never show raw "风险等级：high". Prefer hotline body only;
-  // empty risk_alert.message means safety copy already went via first_reply.
-  if (!alertMsg) {
-    return null;
-  }
-  // Avoid rendering the same safety paragraph twice in one bubble.
-  if (alertMsg === body) {
-    return null;
-  }
+const SAFE_PROVIDER_FAILURE =
+  "我现在暂时无法生成完整回复。提醒和安全功能仍然可用，请稍后再试。";
+
+export function elderSafeMessage(content: string): string {
+  const body = content.trim();
+  if (!body) return body;
+
+  const technicalFailure =
+    /user location is not supported/i.test(body) ||
+    /provider[_\s-]?error/i.test(body) ||
+    /model[_\s-]?error/i.test(body) ||
+    /status[_\s-]?code/i.test(body) ||
+    /"error"\s*:/i.test(body) ||
+    /^\s*\{[\s\S]*\}\s*$/.test(body);
+
+  return technicalFailure ? SAFE_PROVIDER_FAILURE : content;
+}
+
+function RiskAlertBanner({ message, content }: { message?: string; content: string }) {
+  const alertMessage = (message || "").trim();
+  const body = content.trim();
+  if (!alertMessage || alertMessage === body) return null;
+
   return (
-    <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-      {alertMsg}
+    <div className="mb-3 flex gap-3 rounded-md border border-status-critical bg-status-critical-soft p-4 text-base leading-7 text-ink">
+      <ShieldAlert className="mt-1 shrink-0" size={20} aria-hidden="true" />
+      <div>
+        <div className="font-semibold">先暂停当前操作</div>
+        <div>{alertMessage}</div>
+      </div>
     </div>
   );
 }
 
-export default function MessageBubble({
-  message,
-  isStreaming = false,
-  onClarifySelect,
-}: Props) {
+export default function MessageBubble({ message, isStreaming = false, onClarifySelect }: Props) {
   const isUser = message.role === "user";
   const clarify = message.careTaskClarify;
+  const visibleContent = isUser ? message.content : elderSafeMessage(message.content);
+  const Icon = isUser ? UserRound : Bot;
 
   return (
-    <div className={`py-4 ${!isUser ? "bg-[#fafafa]" : ""}`}>
-      <div className="mx-auto flex max-w-3xl gap-3.5 px-4">
-        {/* Avatar */}
-        <div
-          className={`mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-            isUser ? "bg-primary-soft text-primary-strong" : "bg-primary text-white"
-          }`}
-        >
-          {isUser ? "U" : "C"}
+    <article className={`border-t border-border py-5 first:border-t-0 ${isUser ? "bg-surface" : "bg-[#f8fbfa]"}`}>
+      <div className="mx-auto flex max-w-3xl gap-3 px-4 sm:gap-4">
+        <div className={`mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${isUser ? "bg-primary-soft text-primary-strong" : "bg-[#10201d] text-white"}`}>
+          <Icon size={18} aria-hidden="true" />
         </div>
 
-        {/* Body */}
         <div className="min-w-0 flex-1">
-          <div className="mb-1 text-[13px] font-semibold text-ink">
-            {isUser ? "你" : "陪伴助手"}
-          </div>
-
+          <div className="mb-1 text-sm font-semibold text-ink">{isUser ? "你" : "陪伴助手"}</div>
           {message.riskAlert && (
-            <RiskAlertBanner
-              message={message.riskAlert.message}
-              content={message.content}
-            />
+            <RiskAlertBanner message={message.riskAlert.message} content={visibleContent} />
           )}
-
-          {/* Content */}
           <div className="whitespace-pre-wrap text-lg leading-8 text-ink">
-            {message.content}
+            {visibleContent}
             {message.status === "streaming" && (
-              <span
-                className="ml-0.5 inline-block h-4 w-0.5 rounded-sm bg-primary"
-                style={{ animation: "blink 1s infinite" }}
-              />
+              <span className="ml-1 inline-block h-4 w-0.5 rounded-sm bg-primary" style={{ animation: "blink 1s infinite" }} />
             )}
           </div>
 
-          {/* CareTask clarify — tap to choose which task to cancel/complete */}
           {!isUser && clarify && clarify.candidates.length > 0 && onClarifySelect && (
             <CareTaskClarifyCard
               candidates={clarify.candidates}
               verb={clarify.verb}
               disabled={isStreaming || message.status === "streaming"}
-              onSelect={(c) => onClarifySelect(c, clarify.verb)}
+              onSelect={(candidate) => onClarifySelect(candidate, clarify.verb)}
             />
           )}
 
-          {/* Error */}
           {message.status === "error" && (
-            <div className="mt-1 text-xs text-red-400">发送失败</div>
+            <div className="mt-2 text-sm font-medium text-status-critical">消息尚未送达，请重新发送。</div>
           )}
         </div>
       </div>
-    </div>
+    </article>
   );
 }

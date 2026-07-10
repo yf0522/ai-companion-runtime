@@ -65,14 +65,14 @@ export default function CareTaskCard({
   const dueAt = task.next_fire_at || task.due_at;
 
   return (
-    <article className="rounded-md border border-border bg-surface p-4">
+    <article className="care-card">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-lg font-semibold leading-7 text-ink">
               {task.title}
             </h3>
-            <span className={`rounded-full border px-3 py-1 text-sm ${statusClass}`}>
+            <span className={`status-pill ${statusClass}`}>
               {statusText}
             </span>
           </div>
@@ -81,7 +81,7 @@ export default function CareTaskCard({
               {description}
             </p>
           )}
-          <dl className="mt-3 grid gap-2 text-sm text-muted sm:grid-cols-3">
+          <dl className="mt-4 grid gap-3 border-t border-border pt-4 text-sm text-muted sm:grid-cols-3">
             <div>
               <dt className="font-medium text-ink">下次提醒</dt>
               <dd>{formatDateTime(dueAt)}</dd>

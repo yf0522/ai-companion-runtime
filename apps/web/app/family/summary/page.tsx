@@ -72,7 +72,7 @@ export default function FamilySummaryPage() {
       title="摘要"
       subtitle="摘要只包含授权范围内的照护结果，不展示私人对话。"
     >
-      <div className="grid gap-4">
+      <div className="product-grid">
         <StatusBanner tone="info" title="隐私边界">
           这里仅汇总任务完成、错过、取消和延后状态，不包含长者聊天原文或长期记忆内容。
         </StatusBanner>
@@ -83,19 +83,22 @@ export default function FamilySummaryPage() {
         ) : !summary || summary.total_outcomes === 0 ? (
           <EmptyState title="暂无照护结果" description="任务产生完成、错过或取消结果后会显示在这里。" />
         ) : (
-          <div className="grid gap-4">
-            <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <>
+            <section className="metric-strip" aria-label="照护结果统计">
               {Object.entries(summary.by_status).map(([status, count]) => (
-                <div key={status} className="rounded-md border border-border bg-surface p-4">
-                  <div className="text-sm text-muted">{statusLabels[status] || status}</div>
-                  <div className="mt-2 text-2xl font-semibold text-ink">{count}</div>
+                <div key={status}>
+                  <p className="eyebrow">{statusLabels[status] || status}</p>
+                  <p className="text-2xl font-semibold text-ink">{count}</p>
                 </div>
               ))}
             </section>
-            <section className="grid gap-3">
-              <h2 className="text-xl font-semibold text-ink">最近照护结果</h2>
+
+            <section className="product-panel">
+              <p className="eyebrow">Recent outcomes</p>
+              <h2 className="section-heading">最近照护结果</h2>
+              <div className="mt-4 grid gap-3">
               {summary.items.map((item) => (
-                <div key={item.task_id} className="rounded-md border border-border bg-surface p-4">
+                <div key={item.task_id} className="evidence-row">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <span className="font-medium text-ink">
                       {taskTypeLabels[item.task_type] || "照护任务"}
@@ -107,8 +110,9 @@ export default function FamilySummaryPage() {
                   </div>
                 </div>
               ))}
+              </div>
             </section>
-          </div>
+          </>
         )}
       </div>
     </RoleShell>

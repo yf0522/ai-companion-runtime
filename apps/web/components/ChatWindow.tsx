@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowUp, BellRing, CalendarCheck2, PhoneCall, ShieldAlert } from "lucide-react";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
 import { useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
+import CompanionSignal from "./CompanionSignal";
 import MessageBubble from "./MessageBubble";
 import type { CareTaskCandidate } from "./CareTaskClarifyCard";
 
@@ -14,33 +16,27 @@ const clarifyVerbLabels: Record<string, string> = {
   完成: "完成任务",
 };
 
-const statusDots: Record<string, string> = {
-  connected: "bg-status-success",
-  failed: "bg-status-critical",
-};
-
-const statusLabel: Record<string, string> = {
-  connected: "已连接",
-  connecting: "连接中...",
-  reconnecting: "重连中...",
-  disconnected: "未连接",
-  failed: "连接失败",
-};
+const quickActions = [
+  { title: "看看今天的安排", message: "我今天需要做什么", icon: CalendarCheck2 },
+  { title: "设置吃药提醒", message: "提醒我晚上八点吃药", icon: BellRing },
+  { title: "请家人联系我", message: "我想让家人知道我需要帮助", icon: PhoneCall },
+  { title: "帮我判断是否诈骗", message: "有人让我转账，我不确定", icon: ShieldAlert },
+];
 
 export default function ChatWindow() {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const messages = useChatStore((s) => s.messages);
-  const isStreaming = useChatStore((s) => s.isStreaming);
-  const wsStatus = useWsStore((s) => s.status);
-  const connect = useWsStore((s) => s.connect);
-  const sendMessage = useWsStore((s) => s.sendMessage);
-  const token = useAuthStore((s) => s.token);
-  const authHydrated = useAuthStore((s) => s.hydrated);
-  const setAuthHydrated = useAuthStore((s) => s.setHydrated);
-  const runtimeHydrated = useAgentRuntimeStore((s) => s.hydrated);
-  const hydrateRuntime = useAgentRuntimeStore((s) => s.hydrate);
+  const messages = useChatStore((state) => state.messages);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const wsStatus = useWsStore((state) => state.status);
+  const connect = useWsStore((state) => state.connect);
+  const sendMessage = useWsStore((state) => state.sendMessage);
+  const token = useAuthStore((state) => state.token);
+  const authHydrated = useAuthStore((state) => state.hydrated);
+  const setAuthHydrated = useAuthStore((state) => state.setHydrated);
+  const runtimeHydrated = useAgentRuntimeStore((state) => state.hydrated);
+  const hydrateRuntime = useAgentRuntimeStore((state) => state.hydrate);
   const router = useRouter();
 
   useEffect(() => {
@@ -63,26 +59,24 @@ export default function ChatWindow() {
       return;
     }
     connect(token);
-    return () => {
-      useWsStore.getState().disconnect();
-    };
+    return () => useWsStore.getState().disconnect();
   }, [authHydrated, runtimeHydrated, connect, token, router]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth" });
   }, [messages]);
 
   useEffect(() => {
-    const el = textareaRef.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 200) + "px";
-    }
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
   }, [input]);
 
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
+    if (!trimmed || isStreaming || wsStatus !== "connected") return;
     sendMessage(trimmed);
     setInput("");
   };
@@ -90,130 +84,98 @@ export default function ChatWindow() {
   const handleClarifySelect = (candidate: CareTaskCandidate, verb: string) => {
     if (isStreaming || wsStatus !== "connected") return;
     const action = clarifyVerbLabels[verb] || "选择任务";
-    const text = `${action} ${candidate.title} id=${candidate.id}`;
-    sendMessage(text);
+    sendMessage(`${action} ${candidate.title} id=${candidate.id}`);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
       handleSend();
     }
   };
 
-  const statusDot = statusDots[wsStatus] || "bg-status-offline";
-
   return (
-    <div className="min-h-[calc(100vh-220px)] rounded-md border border-border bg-surface">
-      <div className="flex min-h-[calc(100vh-220px)] min-w-0 flex-1 flex-col">
-        <div className="flex flex-col gap-2 border-b border-border bg-surface px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="rounded-md bg-primary-soft px-3 py-2 text-sm font-semibold text-primary-strong">
-              陪伴对话
-            </div>
+    <section className="overflow-hidden rounded-lg border border-border bg-surface shadow-panel">
+      <div className="border-b border-border bg-[#f8fbfa] px-4 py-4 sm:px-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="eyebrow">Companion Signal</div>
+            <p className="mt-1 text-base font-semibold text-ink">先说一件最需要确认的事，我会一步一步陪你处理。</p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`} />
-            <span className="text-sm text-muted" aria-live="polite">
-              {statusLabel[wsStatus]}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center px-4 py-12">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-[22px] font-bold text-white">
-                C
-              </div>
-              <h2 className="mb-1.5 text-[22px] font-semibold text-ink">
-                今天想先确认哪件事？
-              </h2>
-              <p className="text-base text-muted">
-                可以说提醒、身体不舒服、担心被骗，或想联系家人。
-              </p>
-              <div className="mt-8 grid w-full max-w-[500px] grid-cols-2 gap-2.5">
-                {[
-                  { title: "确认今日事项", desc: "我今天需要做什么" },
-                  { title: "设置提醒", desc: "提醒我晚上八点吃药" },
-                  { title: "联系家人", desc: "我想让家人知道我需要帮助" },
-                  { title: "说明风险", desc: "有人让我转账，我不确定" },
-                ].map((item) => (
-                  <button
-                    key={item.title}
-                    onClick={() => {
-                      if (wsStatus === "connected") {
-                        sendMessage(item.desc);
-                      }
-                    }}
-                    className="min-h-11 rounded-md border border-border bg-surface p-3.5 text-left transition hover:border-primary hover:bg-primary-soft"
-                  >
-                    <div className="text-base font-medium text-ink">
-                      {item.title}
-                    </div>
-                    <div className="mt-0.5 text-sm text-muted">
-                      {item.desc}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <>
-              {messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  isStreaming={isStreaming}
-                  onClarifySelect={handleClarifySelect}
-                />
-              ))}
-              <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
-
-        <div className="bg-surface px-4 pb-4 pt-3">
-          <div className="relative mx-auto max-w-3xl">
-            <label htmlFor="elder-message" className="sr-only">
-              输入给陪伴助手的消息
-            </label>
-            <textarea
-              id="elder-message"
-              ref={textareaRef}
-              className="w-full resize-none rounded-md border border-border bg-surface py-3.5 pl-4 pr-16 text-lg leading-relaxed outline-none transition focus:border-primary"
-              rows={1}
-              placeholder={
-                wsStatus === "connected"
-                  ? "输入想确认的事项..."
-                  : "连接后可以发送消息"
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={wsStatus !== "connected"}
-              style={{ minHeight: "52px", maxHeight: "200px" }}
-            />
-            <button
-              onClick={handleSend}
-              disabled={
-                !input.trim() || isStreaming || wsStatus !== "connected"
-              }
-              aria-label="发送消息"
-              className={`absolute bottom-2 right-2 flex h-11 w-11 items-center justify-center rounded-md text-lg text-white transition active:scale-95 ${
-                input.trim() && !isStreaming && wsStatus === "connected"
-                  ? "bg-primary hover:bg-primary-hover"
-                  : "cursor-default bg-gray-300"
-              }`}
-            >
-              ↑
-            </button>
-          </div>
-          <p className="mt-2 text-center text-sm text-muted">
-            重要健康和资金事项请与家人或专业人员确认。
-          </p>
+          <CompanionSignal status={wsStatus} />
         </div>
       </div>
-    </div>
+
+      <div className="min-h-[430px] max-h-[calc(100vh-340px)] overflow-y-auto bg-surface">
+        {messages.length === 0 ? (
+          <div className="mx-auto flex min-h-[430px] max-w-4xl flex-col justify-center px-4 py-10 sm:px-6">
+            <div className="max-w-2xl">
+              <div className="eyebrow">今天的下一步</div>
+              <h2 className="mt-2 text-[26px] font-bold leading-tight text-ink sm:text-[32px]">现在想先处理哪件事？</h2>
+              <p className="mt-3 text-lg leading-8 text-muted">可以直接说身体不舒服、提醒、联系家人，或者把可疑电话和转账要求告诉我。</p>
+            </div>
+            <div className="mt-7 grid gap-3 sm:grid-cols-2">
+              {quickActions.map(({ title, message, icon: Icon }) => (
+                <button
+                  key={title}
+                  type="button"
+                  disabled={wsStatus !== "connected"}
+                  onClick={() => sendMessage(message)}
+                  className="group flex min-h-[84px] items-center gap-4 rounded-lg border border-border bg-surface p-4 text-left transition hover:border-primary hover:bg-primary-soft disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary-strong group-hover:bg-surface">
+                    <Icon size={22} aria-hidden="true" />
+                  </span>
+                  <span>
+                    <strong className="block text-base text-ink">{title}</strong>
+                    <span className="mt-1 block text-sm leading-6 text-muted">“{message}”</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <>
+            {messages.map((message) => (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                isStreaming={isStreaming}
+                onClarifySelect={handleClarifySelect}
+              />
+            ))}
+            <div ref={messagesEndRef} />
+          </>
+        )}
+      </div>
+
+      <div className="border-t border-border bg-[#f8fbfa] p-3 sm:p-4">
+        <div className="chat-composer relative mx-auto max-w-3xl">
+          <label htmlFor="elder-message" className="sr-only">输入给陪伴助手的消息</label>
+          <textarea
+            id="elder-message"
+            ref={textareaRef}
+            className="w-full resize-none rounded-lg bg-transparent py-3.5 pl-4 pr-16 text-lg leading-relaxed text-ink outline-none"
+            rows={1}
+            placeholder={wsStatus === "connected" ? "说说现在最想确认的事..." : "连接恢复后可以继续对话"}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={wsStatus !== "connected"}
+            style={{ minHeight: "56px", maxHeight: "200px" }}
+          />
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!input.trim() || isStreaming || wsStatus !== "connected"}
+            aria-label="发送消息"
+            className="absolute bottom-1.5 right-1.5 flex h-11 w-11 items-center justify-center rounded-md bg-primary text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-status-offline"
+          >
+            <ArrowUp size={21} aria-hidden="true" />
+          </button>
+        </div>
+        <p className="mt-2 text-center text-sm leading-6 text-muted">涉及急救、转账或用药变更时，请同时联系家人或专业人员。</p>
+      </div>
+    </section>
   );
 }

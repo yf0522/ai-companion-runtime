@@ -65,7 +65,7 @@ export default function FamilyOverviewPage() {
       title="家属概览"
       subtitle="先看需要关注的异常，再看即将发生的照护事项。默认不展示长者私人对话。"
     >
-      <div className="grid gap-5">
+      <div className="product-grid">
         {notificationStatus === "unavailable" && (
           <StatusBanner tone="warning" title="通知状态暂时不可用">
             这不是“暂无告警”。请稍后重试，或联系照护运营确认投递情况。
@@ -77,30 +77,60 @@ export default function FamilyOverviewPage() {
           <ErrorState description={error} onRetry={load} />
         ) : (
           <>
+            <section className="metric-strip" aria-label="家属工作台指标">
+              <div>
+                <p className="eyebrow">需要关注</p>
+                <p className="text-2xl font-semibold text-ink">{openAlerts.length}</p>
+              </div>
+              <div>
+                <p className="eyebrow">Active tasks</p>
+                <p className="text-2xl font-semibold text-ink">{activeTasks.length}</p>
+              </div>
+              <div>
+                <p className="eyebrow">Notification state</p>
+                <p className="text-base font-medium text-ink">
+                  {notificationStatus === "persisted" ? "记录已同步" : notificationStatus}
+                </p>
+              </div>
+            </section>
+
             <section className="grid gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold text-ink">需要关注</h2>
+              <div className="product-panel flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="eyebrow">Immediate care</p>
+                  <h2 className="section-heading">需要关注</h2>
+                </div>
                 <Link href="/family/alerts" className="btn-secondary">
                   查看全部告警
                 </Link>
               </div>
               {openAlerts.length === 0 ? (
-                <EmptyState title="暂无需要处理的告警" description="告警会显示投递状态和后续动作，不会把未确认投递写成已通知。" />
+                <EmptyState
+                  title="暂无需要处理的告警"
+                  description="告警会显示投递状态和后续动作，不会把未确认投递写成已通知。"
+                />
               ) : (
                 openAlerts.slice(0, 2).map((item) => (
                   <AlertCaseCard key={item.id} item={item} />
                 ))
               )}
             </section>
+
             <section className="grid gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold text-ink">接下来的照护任务</h2>
+              <div className="product-panel flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="eyebrow">Care rhythm</p>
+                  <h2 className="section-heading">接下来的照护任务</h2>
+                </div>
                 <Link href="/family/tasks" className="btn-secondary">
                   管理任务
                 </Link>
               </div>
               {activeTasks.length === 0 ? (
-                <EmptyState title="暂无进行中的照护任务" description="创建任务时请写明事项、时间和重复方式，系统会按照护任务状态投递和记录。" />
+                <EmptyState
+                  title="暂无进行中的照护任务"
+                  description="创建任务时请写明事项、时间和重复方式，系统会按照护任务状态投递和记录。"
+                />
               ) : (
                 activeTasks.map((task) => <CareTaskCard key={task.id} task={task} />)
               )}

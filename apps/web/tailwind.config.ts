@@ -6,7 +6,21 @@ const config: Config = {
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      colors: {
+        canvas: "var(--canvas)",
+        surface: "var(--surface)",
+        ink: "var(--ink)",
+        muted: "var(--muted)",
+        border: "var(--border)",
+        primary: "var(--primary)",
+        signal: "var(--signal)",
+        human: "var(--human)",
+      },
+      boxShadow: {
+        panel: "var(--shadow-panel)",
+      },
+    },
   },
   plugins: [],
 };

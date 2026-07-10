@@ -66,6 +66,9 @@ export default function HouseholdReadinessView({
     load();
   }, [load]);
 
+  const readyChecks = data?.checks.filter((check) => check.status === "ready").length ?? 0;
+  const requiredChecks = data?.checks.filter((check) => check.required).length ?? 0;
+
   return (
     <RoleShell role={role} title={title} subtitle={subtitle}>
       <div className="grid gap-4">
@@ -79,18 +82,36 @@ export default function HouseholdReadinessView({
             <StatusBanner tone={data.status === "ready" ? "success" : "warning"} title={statusLabels[data.status] || data.status}>
               {data.next_action || "请确认所有必需项都处于已就绪状态。"}
             </StatusBanner>
-            <section className="grid gap-3 sm:grid-cols-2">
-              {data.checks.map((check) => (
-                <article key={check.key} className={`rounded-md border p-4 text-ink ${toneFor(check.status)}`}>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="text-lg font-semibold">{check.label}</h2>
-                    <span className="rounded-full border border-border bg-surface px-3 py-1 text-sm">
-                      {statusLabels[check.status] || check.status}
-                    </span>
-                  </div>
-                  <p className="mt-2 text-sm leading-6">{check.detail || (check.required ? "试点必需项" : "可选项")}</p>
-                </article>
-              ))}
+            <section className="metric-strip" aria-label="家庭就绪统计">
+              <div>
+                <p className="eyebrow">整体状态</p>
+                <p className="mt-1 text-base font-semibold text-ink">{statusLabels[data.status] || data.status}</p>
+              </div>
+              <div>
+                <p className="eyebrow">已就绪</p>
+                <p className="mt-1 text-2xl font-semibold text-ink">{readyChecks}</p>
+              </div>
+              <div>
+                <p className="eyebrow">必需检查</p>
+                <p className="mt-1 text-2xl font-semibold text-ink">{requiredChecks}</p>
+              </div>
+            </section>
+            <section className="product-panel">
+              <p className="eyebrow">上线检查</p>
+              <h2 className="section-heading">上线前置条件</h2>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {data.checks.map((check) => (
+                  <article key={check.key} className={`rounded-md border p-4 text-ink ${toneFor(check.status)}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-lg font-semibold">{check.label}</h3>
+                      <span className="status-pill border-border bg-surface text-ink">
+                        {statusLabels[check.status] || check.status}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm leading-6">{check.detail || (check.required ? "试点必需项" : "可选项")}</p>
+                  </article>
+                ))}
+              </div>
             </section>
           </>
         )}

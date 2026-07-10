@@ -110,12 +110,13 @@ export default function FamilyTasksPage() {
       title="照护任务"
       subtitle="这里管理照护意图、版本和投递计划；每次变更都会带上幂等键和预期版本。"
     >
-      <div className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <div className="product-grid lg:grid-cols-[360px_minmax(0,1fr)]">
         <form
           onSubmit={handleCreate}
-          className="rounded-md border border-border bg-surface p-5"
+          className="product-panel"
         >
-          <h2 className="text-xl font-semibold text-ink">新增任务</h2>
+          <p className="eyebrow">Care plan</p>
+          <h2 className="section-heading">新增任务</h2>
           <div className="mt-4 grid gap-4">
             <label className="grid gap-1 text-base font-medium text-ink">
               任务名称
@@ -170,6 +171,24 @@ export default function FamilyTasksPage() {
         </form>
 
         <section className="grid gap-3">
+          <div className="product-panel flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="eyebrow">任务队列</p>
+              <h2 className="section-heading">照护任务清单</h2>
+            </div>
+            <div className="metric-strip" aria-label="照护任务统计">
+              <div>
+                <p className="eyebrow">Total</p>
+                <p className="text-2xl font-semibold text-ink">{tasks.length}</p>
+              </div>
+              <div>
+                <p className="eyebrow">Active</p>
+                <p className="text-2xl font-semibold text-ink">
+                  {tasks.filter((task) => !["completed", "cancelled", "archived", "expired"].includes(task.status || "")).length}
+                </p>
+              </div>
+            </div>
+          </div>
           {error && <ErrorState description={error} onRetry={load} />}
           {loading ? (
             <LoadingState label="正在加载照护任务" />

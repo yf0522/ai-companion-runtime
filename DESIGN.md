@@ -4,7 +4,7 @@
 - Status: Active
 - Last refreshed: 2026-07-10
 - Primary product surfaces: elder companion, family care dashboard, device experience, care operations, operator observability.
-- Evidence reviewed: production baseline `fa7d9b9`; `README.md`; `apps/web/app`; `apps/web/components`; `apps/web/stores`; `apps/api/app/api`; `apps/api/app/runtime`; `apps/api/app/db`; `firmware`; `docs/product-roadmap-2026-h2.md`; `docs/device-test.md`; `docs/investor-demo.md`.
+- Evidence reviewed: production baseline `570cdff`; current role routes and shared components; `README.md`; `apps/web/app`; `apps/web/components`; `apps/web/stores`; `apps/api/app/api`; `apps/api/app/runtime`; `apps/api/app/db`; `firmware`; `docs/product-roadmap-2026-h2.md`; `docs/device-test.md`; `docs/investor-demo.md`; Playwright role matrix at `apps/web/e2e/product-surfaces.spec.ts`.
 - Product rule: the investor walkthrough must use normal authorization, persistence, delivery, and audit paths. Until controlled enrollment and household consent ship, current self-registration and in-memory binding are development-only evidence and must not be presented as pilot-grade onboarding. There is no investor-only product behavior or UI that claims unshipped capability.
 
 ## Product thesis
@@ -20,6 +20,7 @@
 - Personality: calm, respectful, patient, concrete, and dependable. The product should feel like a capable care service, not a novelty chatbot.
 - Trust signals: clear identity and role, explicit task confirmations, visible notification state, human escalation status, data-use explanations, and traceable changes.
 - Avoid: infantilizing language, fear-based urgency, medical authority claims, generic AI gradients, tool-showcase copy, hidden automation, and mock evidence presented as a live product.
+- Implemented aesthetic direction: **Calm Intelligence**. “AI” is communicated through a live companion signal, explicit next actions, safety intervention, evidence receipts, and human ownership rather than gradients, glowing decoration, or anthropomorphic avatars.
 
 ## Product goals
 - Goals:
@@ -95,22 +96,24 @@
 - Tradeoffs: a slightly slower explicit confirmation is preferred over an incorrect care mutation; availability may degrade, but safety and audit claims must never degrade silently.
 
 ## Visual language
-- Color: neutral backgrounds with semantic status tokens for safe, information, warning, critical, success, offline, and unknown. Critical red is reserved for actionable risk, not decoration.
-- Typography: Chinese-first system fonts; elder body text starts at 18px with generous line height, family body text at 16px, and operator density may be lower only when contrast and zoom remain accessible.
-- Spacing/layout rhythm: 4px base scale; major sections use 16–24px spacing; primary actions remain visually isolated from destructive actions.
-- Shape/radius/elevation: 6–8px radius for controls and cards; borders and spacing establish hierarchy; shadows are reserved for overlays and active elevation.
-- Motion: short and functional; no decorative streaming animation. Respect reduced-motion preferences and never rely on motion to convey risk.
-- Imagery/iconography: use familiar Lucide-style symbols with text where interpretation matters. Product evidence uses real product/device states with date and environment labels.
+- Color: neutral green-gray canvas and white working surfaces; teal is reserved for primary action and live companion signal; coral is reserved for human handoff. Semantic blue, green, amber, red, and gray communicate info, success, warning, critical, and offline states. Critical red is reserved for actionable risk, not decoration.
+- Typography: Chinese-first system fonts using Apple/PingFang/Noto/YaHei fallbacks. Elder body text starts at 18px with generous line height; family and operator evidence text stays at 14–16px. No viewport-scaled type or negative letter spacing.
+- Spacing/layout rhythm: 4px base scale; major sections use 16–24px spacing; controls keep a 44px minimum target; primary actions remain visually isolated from destructive actions.
+- Shape/radius/elevation: 8px maximum radius for controls and cards; borders and spacing establish hierarchy; shadows are restrained and reserved for active product surfaces. Pills are statuses, not general containers.
+- Motion: only the live companion signal, streaming cursor, and loading state animate. Respect reduced-motion preferences and never rely on motion to convey risk.
+- Imagery/iconography: use familiar Lucide symbols with text where interpretation matters. No decorative hero illustration; real task, alert, delivery, and evidence state is the primary visual material.
 
 ## Components
-- Existing components to reuse: `ChatWindow`, `MessageBubble`, `CareTaskClarifyCard`, `RiskAlertBanner`, `ToolStatusBadge`, and `TraceTimeline`, after moving them into role-appropriate surfaces.
+- Existing components to reuse: `RoleShell`, `ChatWindow`, `MessageBubble`, `CareTaskClarifyCard`, `CareTaskCard`, `AlertCaseCard`, `HouseholdReadinessView`, and `SurfaceStates`.
 - New/changed components:
   - `RoleShell`, `CareTaskCard`, `TaskConfirmation`, `DeliveryReceipt`, `AlertCaseCard`, `FamilySummary`, `DeviceStatus`, `ConsentScope`, and shared `EmptyState`, `LoadingState`, `ErrorState`.
   - Household onboarding checklist, verified-contact editor, care exception card, escalation owner control, next-action control, and policy-version badge.
   - `ChatWindow` removes runtime selection, TTFT, trace links, and tool-showcase prompts from elder/family mode.
   - `CareTaskClarifyCard` shows the exact affected task, accessible choices, disabled/submitting states, and a persisted confirmation result.
+  - `CompanionSignal` presents live/offline connection state without exposing transport terminology.
+  - Semantic CSS primitives are `product-panel`, `care-card`, `metric-strip`, `evidence-row`, `status-pill`, `field-control`, and `chat-composer`.
 - Variants and states: normal, due soon, due, overdue, acknowledged, completed, snoozed, delivery pending, delivery failed, escalated, offline, unknown, and permission denied.
-- Token/component ownership: semantic tokens live in `apps/web/app/globals.css` and Tailwind theme extension; components consume named tokens rather than raw palette classes.
+- Token/component ownership: semantic tokens live in `apps/web/app/globals.css` and Tailwind theme extension. `product-panel` owns its padding; callers do not wrap task or alert cards in another panel. Role pages own hierarchy, while shared cards own task, alert, and status presentation.
 
 ## Accessibility
 - Target standard: WCAG 2.2 AA for web surfaces, plus elder-specific readability and cognitive-load checks.
@@ -123,11 +126,12 @@
 - Voice is never the only channel: every spoken reminder and safety prompt has visible text or a physical/device acknowledgement alternative.
 
 ## Responsive behavior
-- Supported breakpoints/devices: 360px mobile web through desktop operations consoles; elder voice device is a separate surface using the same domain contracts.
+- Supported breakpoints/devices: required browser matrix is 390x844 mobile and 1440x1000 desktop; tablet 768x1024 remains a release check. Elder voice device is a separate surface using the same domain contracts.
 - Layout adaptations:
   - Elder: single-column actions, persistent high-priority help, safe-area-aware composer, no desktop sidebar dependency.
   - Family: bottom navigation or compact drawer on mobile; overview cards become ordered full-width sections.
   - Operators: dense tables may scroll horizontally, but severity, owner, and next action remain pinned and readable.
+  - Login: credentials are first in mobile document order; product thesis and trust evidence follow. Desktop uses a balanced product-and-access split.
 - Touch/hover differences: hover only supplements focus and pressed states; destructive controls require explicit confirmation and are not adjacent to routine completion.
 
 ## Interaction states
@@ -163,7 +167,8 @@
 - AI-generated summaries require provenance, purpose, consent scope, and a correction path. Raw transcript access is a separate permission and is off by default.
 - Test/screenshot expectations:
   - Add component or end-to-end tests for role routing, task clarification, task mutation, alert receipts, permission denial, and offline states.
-  - Verify mobile 360x800, tablet 768x1024, and desktop 1440x900.
+  - Verify mobile 390x844 and desktop 1440x1000 on every UI change; retain tablet 768x1024 as a release check.
+  - Playwright covers mobile route reachability, exception-before-task hierarchy, operator evidence handles, and action-first login placement.
   - Product evidence includes commit SHA, environment, account role, timestamp, and backend trace or receipt identifiers.
   - `docs/evidence` mock assets remain documentation-only and cannot be labeled as production screenshots.
 

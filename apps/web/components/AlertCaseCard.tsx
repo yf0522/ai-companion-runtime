@@ -46,14 +46,14 @@ export default function AlertCaseCard({
   showTraceLink?: boolean;
 }) {
   return (
-    <article className="rounded-md border border-border bg-surface p-4">
+    <article className="care-card">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex flex-wrap gap-2">
-            <span className={`rounded-full border px-3 py-1 text-sm ${severityTone(item.severity)}`}>
+            <span className={`status-pill ${severityTone(item.severity)}`}>
               {categoryLabel[item.category] || "照护告警"}
             </span>
-            <span className="rounded-full border border-border bg-canvas px-3 py-1 text-sm text-ink">
+            <span className="status-pill border-border bg-canvas text-ink">
               {statusLabel[item.status] || "状态待确认"}
             </span>
           </div>

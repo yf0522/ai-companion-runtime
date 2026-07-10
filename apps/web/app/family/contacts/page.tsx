@@ -128,9 +128,10 @@ export default function FamilyContactsPage() {
       title="已验证联系人"
       subtitle="配置可投递、可验证、可排序的家庭联系人；未验证联系人不计入试点就绪。"
     >
-      <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
-        <form onSubmit={handleCreate} className="rounded-md border border-border bg-surface p-5">
-          <h2 className="text-xl font-semibold text-ink">新增联系人</h2>
+      <div className="product-grid lg:grid-cols-[360px_minmax(0,1fr)]">
+        <form onSubmit={handleCreate} className="product-panel">
+          <p className="eyebrow">Escalation channel</p>
+          <h2 className="section-heading">新增联系人</h2>
           <div className="mt-4 grid gap-4">
             <label className="grid gap-1 text-base font-medium text-ink">
               姓名
@@ -155,7 +156,26 @@ export default function FamilyContactsPage() {
           </div>
         </form>
 
-        <section className="grid gap-3">
+        <section className="product-panel">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="eyebrow">已验证联系人</p>
+              <h2 className="section-heading">家庭通知链路</h2>
+            </div>
+            <div className="metric-strip" aria-label="联系人统计">
+              <div>
+                <p className="eyebrow">Contacts</p>
+                <p className="text-2xl font-semibold text-ink">{items.length}</p>
+              </div>
+              <div>
+                <p className="eyebrow">Verified</p>
+                <p className="text-2xl font-semibold text-ink">
+                  {items.filter((item) => item.verification_status === "verified").length}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3">
           <StatusBanner tone="warning" title="投递声明">
             只有服务商接受或回执确认后，页面才会显示为已验证或已投递。
           </StatusBanner>
@@ -166,7 +186,7 @@ export default function FamilyContactsPage() {
             <EmptyState title="还没有联系人" description="添加并验证至少一个联系人后，家庭照护升级链路才可用。" />
           ) : (
             items.map((item) => (
-              <article key={item.id} className="rounded-md border border-border bg-surface p-4">
+              <article key={item.id} className="evidence-row">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <div className="flex flex-wrap gap-2">
@@ -207,6 +227,7 @@ export default function FamilyContactsPage() {
               </article>
             ))
           )}
+          </div>
         </section>
       </div>
     </RoleShell>

@@ -40,11 +40,11 @@ export default function CareTaskClarifyCard({
   if (!candidates.length) return null;
 
   return (
-    <div className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
-      <div className="mb-2 text-[12px] font-medium text-amber-800">
+    <div className="mt-4 rounded-lg border border-status-warning bg-status-warning-soft p-4">
+      <div className="mb-3 text-base font-semibold text-ink">
         请选择要{verb}的照护任务
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="grid gap-2">
         {candidates.map((c) => {
           const due = formatDue(c.due_at);
           return (
@@ -53,11 +53,11 @@ export default function CareTaskClarifyCard({
               type="button"
               disabled={disabled}
               onClick={() => onSelect(c)}
-              className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-left text-[13px] text-gray-800 transition hover:border-amber-400 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-[52px] rounded-md border border-border-strong bg-surface px-4 py-3 text-left text-base text-ink transition hover:border-primary hover:bg-primary-soft disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span className="font-medium">{c.title}</span>
               {due && (
-                <span className="ml-1.5 text-[11px] text-gray-500">{due}</span>
+                <span className="mt-1 block text-sm text-muted">{due}</span>
               )}
             </button>
           );
