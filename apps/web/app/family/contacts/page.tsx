@@ -126,11 +126,10 @@ export default function FamilyContactsPage() {
     <RoleShell
       role="family"
       title="已验证联系人"
-      subtitle="配置可投递、可验证、可排序的家庭联系人；未验证联系人不计入试点就绪。"
     >
       <div className="product-grid lg:grid-cols-[360px_minmax(0,1fr)]">
         <form onSubmit={handleCreate} className="product-panel">
-          <p className="eyebrow">Escalation channel</p>
+          <p className="eyebrow">联系渠道</p>
           <h2 className="section-heading">新增联系人</h2>
           <div className="mt-4 grid gap-4">
             <label className="grid gap-1 text-base font-medium text-ink">
@@ -162,31 +161,36 @@ export default function FamilyContactsPage() {
               <p className="eyebrow">已验证联系人</p>
               <h2 className="section-heading">家庭通知链路</h2>
             </div>
-            <div className="metric-strip" aria-label="联系人统计">
-              <div>
-                <p className="eyebrow">Contacts</p>
-                <p className="text-2xl font-semibold text-ink">{items.length}</p>
+            {!loading && (!error || items.length > 0) && (
+              <div className="metric-strip" aria-label="联系人统计">
+                <div>
+                  <p className="eyebrow">联系人</p>
+                  <p className="text-2xl font-semibold text-ink">{items.length}</p>
+                </div>
+                <div>
+                  <p className="eyebrow">已验证</p>
+                  <p className="text-2xl font-semibold text-ink">
+                    {items.filter((item) => item.verification_status === "verified").length}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="eyebrow">Verified</p>
-                <p className="text-2xl font-semibold text-ink">
-                  {items.filter((item) => item.verification_status === "verified").length}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
           <div className="mt-4 grid gap-3">
-          <StatusBanner tone="warning" title="投递声明">
-            只有服务商接受或回执确认后，页面才会显示为已验证或已投递。
-          </StatusBanner>
-          {error && <ErrorState description={error} onRetry={load} />}
-          {loading ? (
-            <LoadingState label="正在加载联系人" />
-          ) : items.length === 0 ? (
-            <EmptyState title="还没有联系人" description="添加并验证至少一个联系人后，家庭照护升级链路才可用。" />
-          ) : (
-            items.map((item) => (
-              <article key={item.id} className="evidence-row">
+            <StatusBanner tone="warning" title="投递声明">
+              只有服务商接受或回执确认后，页面才会显示为已验证或已投递。
+            </StatusBanner>
+            {loading ? (
+              <LoadingState label="正在加载联系人" />
+            ) : error && items.length === 0 ? (
+              <ErrorState description={error} onRetry={load} />
+            ) : items.length === 0 ? (
+              <EmptyState title="还没有联系人" description="添加并验证至少一个联系人后，家庭照护升级链路才可用。" />
+            ) : (
+              <>
+                {error && <ErrorState description={error} onRetry={load} />}
+                {items.map((item) => (
+                  <article key={item.id} className="evidence-row">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <div className="flex flex-wrap gap-2">
@@ -224,9 +228,10 @@ export default function FamilyContactsPage() {
                     </button>
                   </div>
                 )}
-              </article>
-            ))
-          )}
+                  </article>
+                ))}
+              </>
+            )}
           </div>
         </section>
       </div>

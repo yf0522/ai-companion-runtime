@@ -13,6 +13,7 @@ import {
   type CareTaskItem,
   userFacingApiError,
 } from "@/lib/api-client";
+import { isCareTaskActive } from "@/lib/care-task-state";
 
 export default function ElderTodayPage() {
   const router = useRouter();
@@ -67,20 +68,26 @@ export default function ElderTodayPage() {
     }
   }
 
-  const activeTasks = tasks.filter((task) => !["completed", "cancelled", "archived", "expired"].includes(task.status || ""));
+  const activeTasks = tasks.filter(isCareTaskActive);
+  const summaryTitle = loading
+    ? "正在确认今日事项"
+    : error && tasks.length === 0
+      ? "暂时无法确认今日事项"
+      : activeTasks.length > 0
+        ? `有 ${activeTasks.length} 件事项等待确认`
+        : "当前没有待确认事项";
 
   return (
     <RoleShell
       role="elder"
       title="今日事项"
-      subtitle="只显示需要确认的照护事项；确认成功后才会记录为已处理。"
     >
       <div className="product-grid">
         <section className="product-panel">
-          <div className="eyebrow">Next action</div>
+          <div className="eyebrow">今日待办</div>
           <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-xl font-bold text-ink">{activeTasks.length > 0 ? `有 ${activeTasks.length} 件事项等待确认` : "当前没有待确认事项"}</h2>
+              <h2 className="text-xl font-bold text-ink">{summaryTitle}</h2>
               <p className="mt-1 text-base leading-7 text-muted">只有确认成功后，系统才会记录为已处理。</p>
             </div>
           </div>
@@ -90,32 +97,36 @@ export default function ElderTodayPage() {
             可以先用电话联系家人。页面恢复连接前，不会把事项标记为已确认。
           </StatusBanner>
         )}
-        {error && (
+        {loading ? (
+          <LoadingState label="正在加载今日事项" />
+        ) : error && tasks.length === 0 ? (
           <ErrorState
             description={error}
             onRetry={load}
             title="今日事项不可用"
           />
-        )}
-        {loading ? (
-          <LoadingState label="正在加载今日事项" />
-        ) : activeTasks.length === 0 && !error ? (
-          <EmptyState
-            title="今天没有待确认事项"
-            description="如果需要新增提醒，可以在陪伴对话中说明任务、日期和时间。"
-          />
         ) : (
-          <section className="grid gap-3">
-            {activeTasks.map((task) => (
-              <CareTaskCard
-                key={task.id}
-                task={task}
-                actionLabel="确认已处理"
-                actionBusy={ackingId === task.id}
-                onAction={() => handleAcknowledge(task)}
+          <>
+            {error && <ErrorState description={error} onRetry={load} title="今日事项未更新" />}
+            {activeTasks.length === 0 ? (
+              <EmptyState
+                title="今天没有待确认事项"
+                description="如果需要新增提醒，可以在陪伴对话中说明任务、日期和时间。"
               />
-            ))}
-          </section>
+            ) : (
+              <section className="grid gap-3">
+                {activeTasks.map((task) => (
+                  <CareTaskCard
+                    key={task.id}
+                    task={task}
+                    actionLabel="确认已处理"
+                    actionBusy={ackingId === task.id}
+                    onAction={() => handleAcknowledge(task)}
+                  />
+                ))}
+              </section>
+            )}
+          </>
         )}
       </div>
     </RoleShell>

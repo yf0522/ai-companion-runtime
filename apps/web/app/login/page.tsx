@@ -2,21 +2,14 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
-import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { Activity, LockKeyhole, Radar, ShieldCheck, UserRound } from "lucide-react";
-import SignalField from "@/components/SignalField";
+import { LockKeyhole, UserRound } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { defaultRouteForRole } from "@/lib/role-routes.mjs";
-
-function BrandMark() {
-  return <span className="brand-mark"><span className="brand-mark-core"><span /><span /><span /><span /></span></span>;
-}
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -46,35 +39,28 @@ export default function LoginPage() {
 
   return (
     <main className="auth-screen">
-      <SignalField />
-      <div className="auth-grid">
+      <header className="auth-header">
+        <a href="/" className="consumer-wordmark">Companion</a>
+        <span>安心照护，清楚回应</span>
+      </header>
+      <div className="auth-shell">
         <section className="auth-story">
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <BrandMark />
-            <div>
-              <Text display="block" weight="semibold" style={{ color: "#f4fffc" }}>Companion</Text>
-              <Text display="block" type="supporting" style={{ color: "#8ea49f" }}>Ambient care runtime</Text>
-            </div>
-          </div>
-
-          <div className="auth-story-copy">
-            <Badge label="REAL-TIME CARE INTELLIGENCE" variant="teal" />
-            <h1>AI 在这里，不只是回答。</h1>
-            <p>它持续理解、执行照护任务、拦截风险、追踪投递，并在需要时把责任交给具体的人。</p>
-          </div>
-
-          <div className="auth-proof" aria-label="产品运行能力">
-            <div><Icon icon={Activity} color="cyan" /><Text display="block" weight="semibold" style={{ marginTop: 16, color: "#f4fffc" }}>实时陪伴</Text><Text display="block" type="supporting" style={{ marginTop: 6, color: "#8ea49f" }}>WebSocket 流式响应与运行状态</Text></div>
-            <div><Icon icon={Radar} color="orange" /><Text display="block" weight="semibold" style={{ marginTop: 16, color: "#f4fffc" }}>风险优先</Text><Text display="block" type="supporting" style={{ marginTop: 6, color: "#8ea49f" }}>诈骗、情绪和安全策略先于生成</Text></div>
-            <div><Icon icon={ShieldCheck} color="green" /><Text display="block" weight="semibold" style={{ marginTop: 16, color: "#f4fffc" }}>结果可追踪</Text><Text display="block" type="supporting" style={{ marginTop: 6, color: "#8ea49f" }}>任务、回执、人工处置与 Trace</Text></div>
-          </div>
+          <p className="auth-story-context">陪伴与家庭照护</p>
+          <h1>让每一件需要关心的事，都有清楚的下一步。</h1>
+          <p className="auth-story-copy">Companion 帮助长者完成日常事项，也让家人只在真正需要时收到清楚、可行动的提醒。</p>
+          <ul className="auth-trust-list">
+            <li><strong>先看当下</strong><span>需要处理的情况永远排在最前面。</span></li>
+            <li><strong>尊重隐私</strong><span>家人看到照护结果，不默认看到私人对话。</span></li>
+            <li><strong>有人负责</strong><span>重要事项会说明是否送达、由谁跟进。</span></li>
+          </ul>
+          <p className="auth-safety-note">遇到立即危险时，请直接联系家人和本地紧急服务。</p>
         </section>
 
         <section className="auth-form-plane">
           <form className="auth-form" onSubmit={handleSubmit}>
-            <Badge label={isRegister ? "CREATE CARE SPACE" : "SECURE ACCESS"} variant="neutral" />
+            <p className="auth-form-context">{isRegister ? "创建照护账号" : "欢迎回来"}</p>
             <Heading level={1}>{isRegister ? "创建照护账号" : "进入照护空间"}</Heading>
-            <p className="auth-form-copy">{isRegister ? "选择真实使用身份。权限由服务端控制，界面只呈现对应工作流。" : "继续处理陪伴、照护任务、告警和人工协同。"}</p>
+            <p className="auth-form-copy">{isRegister ? "选择你的使用身份，进入对应的照护空间。" : "继续查看今天的陪伴、照护任务和家庭提醒。"}</p>
 
             <div className="auth-fields">
               <TextInput label="用户名" value={username} onChange={setUsername} width="100%" hasAutoFocus startIcon={<Icon icon={UserRound} size="sm" />} />
@@ -82,7 +68,7 @@ export default function LoginPage() {
 
               {isRegister && (
                 <div>
-                  <Text display="block" type="label" style={{ marginBottom: 8 }}>使用身份</Text>
+                  <p className="auth-field-label">使用身份</p>
                   <SegmentedControl value={role} onChange={(value) => setRole(value as "elder" | "family")} label="使用身份" layout="fill" size="md">
                     <SegmentedControlItem value="elder" label="长者本人" />
                     <SegmentedControlItem value="family" label="家属照护" />
@@ -95,6 +81,7 @@ export default function LoginPage() {
               <Button type="submit" label={isRegister ? "创建并进入" : "安全登录"} variant="primary" size="lg" isLoading={loading} isDisabled={!username.trim() || !password.trim()} />
               <Button type="button" label={isRegister ? "已有账号，返回登录" : "创建新账号"} variant="ghost" size="lg" onClick={() => { setIsRegister((value) => !value); setError(null); }} />
             </div>
+            <p className="auth-privacy-copy">你的权限由服务端验证，界面只显示已授权的照护信息。</p>
           </form>
         </section>
       </div>

@@ -14,6 +14,7 @@ import {
   type CareTaskItem,
   userFacingApiError,
 } from "@/lib/api-client";
+import { isCareTaskActive } from "@/lib/care-task-state";
 
 function dueAtForToday(timeOfDay: string): string {
   const [hours = "8", minutes = "0"] = timeOfDay.split(":");
@@ -108,14 +109,13 @@ export default function FamilyTasksPage() {
     <RoleShell
       role="family"
       title="照护任务"
-      subtitle="这里管理照护意图、版本和投递计划；每次变更都会带上幂等键和预期版本。"
     >
       <div className="product-grid lg:grid-cols-[360px_minmax(0,1fr)]">
         <form
           onSubmit={handleCreate}
           className="product-panel"
         >
-          <p className="eyebrow">Care plan</p>
+          <p className="eyebrow">照护计划</p>
           <h2 className="section-heading">新增任务</h2>
           <div className="mt-4 grid gap-4">
             <label className="grid gap-1 text-base font-medium text-ink">
@@ -171,46 +171,52 @@ export default function FamilyTasksPage() {
         </form>
 
         <section className="grid gap-3">
-          <div className="product-panel flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="eyebrow">任务队列</p>
-              <h2 className="section-heading">照护任务清单</h2>
-            </div>
-            <div className="metric-strip" aria-label="照护任务统计">
-              <div>
-                <p className="eyebrow">Total</p>
-                <p className="text-2xl font-semibold text-ink">{tasks.length}</p>
-              </div>
-              <div>
-                <p className="eyebrow">Active</p>
-                <p className="text-2xl font-semibold text-ink">
-                  {tasks.filter((task) => !["completed", "cancelled", "archived", "expired"].includes(task.status || "")).length}
-                </p>
-              </div>
-            </div>
-          </div>
-          {error && <ErrorState description={error} onRetry={load} />}
           {loading ? (
             <LoadingState label="正在加载照护任务" />
-          ) : tasks.length === 0 && !error ? (
-            <EmptyState title="还没有照护任务" description="新增一个任务后，长者和家属都能看到对应状态。" />
+          ) : error && tasks.length === 0 ? (
+            <ErrorState description={error} onRetry={load} />
           ) : (
-            tasks.map((task) => (
-              <CareTaskCard
-                key={task.id}
-                task={task}
-                secondaryAction={
-                  <button
-                    type="button"
-                    disabled={deletingId === task.id}
-                    onClick={() => handleDelete(task)}
-                    className="btn-secondary border-status-critical text-ink"
-                  >
-                    {deletingId === task.id ? "删除中" : "删除"}
-                  </button>
-                }
-              />
-            ))
+            <>
+              {error && <ErrorState description={error} onRetry={load} />}
+              <div className="product-panel flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="eyebrow">任务队列</p>
+                  <h2 className="section-heading">照护任务清单</h2>
+                </div>
+                <div className="metric-strip" aria-label="照护任务统计">
+                  <div>
+                    <p className="eyebrow">全部</p>
+                    <p className="text-2xl font-semibold text-ink">{tasks.length}</p>
+                  </div>
+                  <div>
+                    <p className="eyebrow">进行中</p>
+                    <p className="text-2xl font-semibold text-ink">
+                      {tasks.filter(isCareTaskActive).length}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              {tasks.length === 0 ? (
+                <EmptyState title="还没有照护任务" description="新增一个任务后，长者和家属都能看到对应状态。" />
+              ) : (
+                tasks.map((task) => (
+                  <CareTaskCard
+                    key={task.id}
+                    task={task}
+                    secondaryAction={
+                      <button
+                        type="button"
+                        disabled={deletingId === task.id}
+                        onClick={() => handleDelete(task)}
+                        className="btn-secondary border-status-critical text-ink"
+                      >
+                        {deletingId === task.id ? "删除中" : "删除"}
+                      </button>
+                    }
+                  />
+                ))
+              )}
+            </>
           )}
         </section>
       </div>

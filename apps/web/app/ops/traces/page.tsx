@@ -73,10 +73,11 @@ export default function OpsTracesPage() {
       subtitle="技术追踪只在运营角色下展示，用于重建模型、工具、策略和投递链路。"
     >
       <div className="grid gap-4">
-        {error && <ErrorState description={error} onRetry={load} />}
         {loading ? (
           <LoadingState label="正在加载追踪列表" />
-        ) : items.length === 0 && !error ? (
+        ) : error ? (
+          <ErrorState description={error} onRetry={load} />
+        ) : items.length === 0 ? (
           <EmptyState title="暂无追踪记录" description="有可查看的运行记录后会显示在这里。" />
         ) : (
           <section className="grid gap-3">

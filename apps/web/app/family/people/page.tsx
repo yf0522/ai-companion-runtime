@@ -109,11 +109,10 @@ export default function FamilyPeoplePage() {
     <RoleShell
       role="family"
       title="人员与权限"
-      subtitle="管理家庭照护圈、成员授权范围和升级顺序。服务端仍是权限边界。"
     >
       <div className="product-grid lg:grid-cols-[360px_minmax(0,1fr)]">
         <form onSubmit={handleInvite} className="product-panel">
-          <p className="eyebrow">Care circle</p>
+          <p className="eyebrow">照护圈</p>
           <h2 className="section-heading">邀请照护人</h2>
           <label className="mt-4 grid gap-1 text-base font-medium text-ink">
             邮箱
@@ -136,70 +135,76 @@ export default function FamilyPeoplePage() {
         <section className="product-panel">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="eyebrow">Access boundary</p>
+              <p className="eyebrow">授权范围</p>
               <h2 className="section-heading">成员与授权范围</h2>
             </div>
-            <div className="metric-strip" aria-label="照护圈统计">
-              <div>
-                <p className="eyebrow">Members</p>
-                <p className="text-2xl font-semibold text-ink">{data?.members.length ?? 0}</p>
+            {data && (
+              <div className="metric-strip" aria-label="照护圈统计">
+                <div>
+                  <p className="eyebrow">成员</p>
+                  <p className="text-2xl font-semibold text-ink">{data.members.length}</p>
+                </div>
+                <div>
+                  <p className="eyebrow">照护人</p>
+                  <p className="text-2xl font-semibold text-ink">
+                    {data.members.filter((member) => member.role !== "elder").length}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="eyebrow">Caregivers</p>
-                <p className="text-2xl font-semibold text-ink">
-                  {data?.members.filter((member) => member.role !== "elder").length ?? 0}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
           <div className="mt-4 grid gap-3">
-          <StatusBanner tone="info" title="隐私边界">
-            家属权限只覆盖必要照护状态。私人对话、长期记忆和原始音频需要单独授权。
-          </StatusBanner>
-          {error && <ErrorState description={error} onRetry={load} />}
-          {loading ? (
-            <LoadingState label="正在加载人员与权限" />
-          ) : !data || data.members.length === 0 ? (
-            <EmptyState title="还没有照护圈成员" description="邀请主要照护人后，会在这里显示权限和升级顺序。" />
-          ) : (
-            data.members.map((member) => (
-              <article key={member.id} className="evidence-row">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <div className="flex flex-wrap gap-2">
-                      <span className="rounded-full border border-status-info bg-status-info-soft px-3 py-1 text-sm text-ink">
-                        {roleLabel(member.role)}
-                      </span>
-                      <span className="rounded-full border border-border bg-canvas px-3 py-1 text-sm text-ink">
-                        {member.status || "状态待确认"}
-                      </span>
+            <StatusBanner tone="info" title="隐私边界">
+              家属权限只覆盖必要照护状态。私人对话、长期记忆和原始音频需要单独授权。
+            </StatusBanner>
+            {loading ? (
+              <LoadingState label="正在加载人员与权限" />
+            ) : error && !data ? (
+              <ErrorState description={error} onRetry={load} />
+            ) : !data || data.members.length === 0 ? (
+              <EmptyState title="还没有照护圈成员" description="邀请主要照护人后，会在这里显示权限和升级顺序。" />
+            ) : (
+              <>
+                {error && <ErrorState description={error} onRetry={load} />}
+                {data.members.map((member) => (
+                  <article key={member.id} className="evidence-row">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <div className="flex flex-wrap gap-2">
+                          <span className="rounded-full border border-status-info bg-status-info-soft px-3 py-1 text-sm text-ink">
+                            {roleLabel(member.role)}
+                          </span>
+                          <span className="rounded-full border border-border bg-canvas px-3 py-1 text-sm text-ink">
+                            {member.status || "状态待确认"}
+                          </span>
+                        </div>
+                        <h3 className="mt-3 text-lg font-semibold text-ink">{member.name || "未命名成员"}</h3>
+                        <p className="mt-1 text-sm text-muted">
+                          升级顺序：{member.escalation_order ?? "未设置"}
+                        </p>
+                        <ul className="mt-3 flex flex-wrap gap-2" aria-label="授权范围">
+                          {(member.permissions || []).map((permission) => (
+                            <li key={permission} className="rounded-md border border-border bg-canvas px-3 py-2 text-sm text-muted">
+                              {permissionLabels[permission] || permission}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      {member.role !== "elder" && (
+                        <button
+                          type="button"
+                          disabled={revokingId === (member.binding_id || member.id)}
+                          onClick={() => handleRevoke(member)}
+                          className="btn-secondary border-status-critical"
+                        >
+                          {revokingId === (member.binding_id || member.id) ? "撤销中" : "撤销权限"}
+                        </button>
+                      )}
                     </div>
-                    <h3 className="mt-3 text-lg font-semibold text-ink">{member.name || "未命名成员"}</h3>
-                    <p className="mt-1 text-sm text-muted">
-                      升级顺序：{member.escalation_order ?? "未设置"}
-                    </p>
-                    <ul className="mt-3 flex flex-wrap gap-2" aria-label="授权范围">
-                      {(member.permissions || []).map((permission) => (
-                        <li key={permission} className="rounded-md border border-border bg-canvas px-3 py-2 text-sm text-muted">
-                          {permissionLabels[permission] || permission}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  {member.role !== "elder" && (
-                    <button
-                      type="button"
-                      disabled={revokingId === (member.binding_id || member.id)}
-                      onClick={() => handleRevoke(member)}
-                      className="btn-secondary border-status-critical"
-                    >
-                      {revokingId === (member.binding_id || member.id) ? "撤销中" : "撤销权限"}
-                    </button>
-                  )}
-                </div>
-              </article>
-            ))
-          )}
+                  </article>
+                ))}
+              </>
+            )}
           </div>
         </section>
       </div>

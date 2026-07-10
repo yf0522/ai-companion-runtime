@@ -28,7 +28,7 @@ export default function MessageBubble({ message, isStreaming = false, onClarifyS
   const calls: ChatToolCallItem[] = (message.toolsUsed || []).map((tool) => ({
     name: tool.tool,
     status: toolStatus(tool.status),
-    target: tool.action || (tool.status === "needs_clarification" ? "等待确认" : "照护运行时"),
+    target: tool.action || (tool.status === "needs_clarification" ? "等待确认" : "照护动作"),
     errorMessage: tool.status === "failed" || tool.status === "timeout" ? "工具未成功完成" : undefined,
   }));
 
@@ -53,7 +53,7 @@ export default function MessageBubble({ message, isStreaming = false, onClarifyS
       {calls.length > 0 && <ChatToolCalls calls={calls} label="正在执行照护动作" />}
       <ChatMessageBubble
         variant="ghost"
-        metadata={<ChatMessageMetadata footer={<Text type="supporting">{message.totalLatencyMs ? `${message.totalLatencyMs}ms · trace ${message.traceId?.slice(0, 8) || "pending"}` : message.status === "streaming" ? "正在组织回复" : "风险与工具已检查"}</Text>} />}
+        metadata={<ChatMessageMetadata footer={<Text type="supporting">{message.status === "streaming" ? "正在组织回复" : "已完成必要检查"}</Text>} />}
       >
         <Text as="div" size="lg" style={{ whiteSpace: "pre-wrap", lineHeight: 1.75 }}>{visibleContent || (message.status === "streaming" ? "正在听你说…" : "")}</Text>
       </ChatMessageBubble>
