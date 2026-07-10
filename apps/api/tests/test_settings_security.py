@@ -42,10 +42,18 @@ def test_production_rejects_default_redis_password():
         allow_ephemeral_sessions=False,
         require_tls=True,
         public_base_url="https://api.example.test",
-        expected_migration_heads="e1f2a3b4c5d6",
+        public_api_url="https://api.example.test",
+        public_ws_url="wss://api.example.test",
+        expected_migration_heads="f2a3b4c5d6e7",
         backup_bucket="pilot-backups",
         backup_kms_key_id="kms-key",
         evidence_manifest_required=True,
+        notification_provider="signed_webhook",
+        notification_outbound_url="https://notify.example.test/events",
+        notification_webhook_secret="provider-secret",
+        enable_celery_tasks=True,
+        device_identity_required=True,
+        controlled_elder_enrollment=True,
     )
     with pytest.raises(RuntimeError, match="Refusing to start in production"):
         s.validate_security()
@@ -62,10 +70,18 @@ def test_production_accepts_all_real_secrets():
         allow_ephemeral_sessions=False,
         require_tls=True,
         public_base_url="https://api.example.test",
-        expected_migration_heads="e1f2a3b4c5d6",
+        public_api_url="https://api.example.test",
+        public_ws_url="wss://api.example.test",
+        expected_migration_heads="f2a3b4c5d6e7",
         backup_bucket="pilot-backups",
         backup_kms_key_id="kms-key",
         evidence_manifest_required=True,
+        notification_provider="signed_webhook",
+        notification_outbound_url="https://notify.example.test/events",
+        notification_webhook_secret="provider-secret",
+        enable_celery_tasks=True,
+        device_identity_required=True,
+        controlled_elder_enrollment=True,
     )
     # Should not raise
     s.validate_security()

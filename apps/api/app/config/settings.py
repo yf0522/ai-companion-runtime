@@ -38,13 +38,23 @@ class Settings(BaseSettings):
     # App environment
     app_env: str = "development"  # development | production
     cors_allowed_origins: str = "http://localhost:3000"  # comma-separated list
-    notification_provider: str = "sandbox"  # sandbox | unconfigured
+    notification_provider: str = "sandbox"  # sandbox | signed_webhook | unconfigured
+    notification_outbound_url: str = ""
+    notification_webhook_secret: str = ""
+    notification_webhook_tolerance_seconds: int = 300
+    notification_replay_ttl_seconds: int = 86400
     public_base_url: str = "http://localhost:8000"
+    public_api_url: str = ""
+    public_ws_url: str = ""
     require_tls: bool = False
     expected_migration_heads: str = ""
     backup_bucket: str = ""
     backup_kms_key_id: str = ""
     evidence_manifest_required: bool = False
+    device_identity_required: bool = True
+    controlled_elder_enrollment: bool = False
+    platform_worker_heartbeat_key: str = "platform:worker:heartbeat"
+    platform_worker_heartbeat_max_age_seconds: int = 120
 
     # OpenTelemetry
     otel_exporter_otlp_endpoint: str = "http://jaeger:4317"
@@ -123,6 +133,29 @@ class Settings(BaseSettings):
 
             if not self.evidence_manifest_required:
                 errors.append("EVIDENCE_MANIFEST_REQUIRED must be true in production.")
+
+            if not self.public_api_url.startswith("https://"):
+                errors.append("PUBLIC_API_URL must use https in production.")
+
+            if not self.public_ws_url.startswith("wss://"):
+                errors.append("PUBLIC_WS_URL must use wss in production.")
+
+            if self.notification_provider != "signed_webhook":
+                errors.append("NOTIFICATION_PROVIDER must be signed_webhook in production.")
+            elif not self.notification_outbound_url.startswith("https://"):
+                errors.append("NOTIFICATION_OUTBOUND_URL must use https in production.")
+
+            if not self.notification_webhook_secret.strip():
+                errors.append("NOTIFICATION_WEBHOOK_SECRET must be set in production.")
+
+            if not self.enable_celery_tasks:
+                errors.append("ENABLE_CELERY_TASKS must be true in production.")
+
+            if not self.device_identity_required:
+                errors.append("DEVICE_IDENTITY_REQUIRED must be true in production.")
+
+            if not self.controlled_elder_enrollment:
+                errors.append("CONTROLLED_ELDER_ENROLLMENT must be true in production.")
 
         if is_prod and errors:
             raise RuntimeError(

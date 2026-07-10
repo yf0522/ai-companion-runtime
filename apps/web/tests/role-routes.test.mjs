@@ -22,6 +22,19 @@ test("elder and family navigation excludes operator internals", () => {
   }
 });
 
+test("Release A family navigation exposes people contacts and readiness", () => {
+  const hrefs = navForRole("family").map((item) => item.href);
+  assert.ok(hrefs.includes("/family/people"));
+  assert.ok(hrefs.includes("/family/contacts"));
+  assert.ok(hrefs.includes("/family/readiness"));
+});
+
+test("operator navigation exposes case queue and household readiness", () => {
+  const hrefs = navForRole("operator").map((item) => item.href);
+  assert.ok(hrefs.includes("/ops/care"));
+  assert.ok(hrefs.includes("/ops/households/readiness"));
+});
+
 test("all role navigation entries have visible labels", () => {
   for (const items of Object.values(ROLE_NAV)) {
     assert.ok(items.length > 0);

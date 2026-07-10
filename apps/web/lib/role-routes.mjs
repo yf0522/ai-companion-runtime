@@ -6,12 +6,16 @@ export const ROLE_NAV = {
   ],
   family: [
     { href: "/family/overview", label: "概览", description: "需要关注的事项" },
-    { href: "/family/tasks", label: "照护任务", description: "创建和管理提醒" },
+    { href: "/family/tasks", label: "照护任务", description: "创建和管理照护任务" },
     { href: "/family/alerts", label: "告警", description: "风险事件和通知状态" },
+    { href: "/family/people", label: "人员权限", description: "照护圈成员和授权范围" },
+    { href: "/family/contacts", label: "联系人", description: "已验证联系人和投递顺序" },
+    { href: "/family/readiness", label: "就绪检查", description: "家庭试点上线条件" },
     { href: "/family/summary", label: "摘要", description: "授权范围内的照护摘要" },
   ],
   operator: [
     { href: "/ops/care", label: "照护队列", description: "未解决事项和人工处理" },
+    { href: "/ops/households/readiness", label: "家庭就绪", description: "家庭、联系人和设备状态" },
     { href: "/ops/traces", label: "追踪", description: "决策、延迟和投递证据" },
   ],
 };

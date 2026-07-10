@@ -1,6 +1,6 @@
-import type { ReminderItem } from "@/lib/api-client";
+import type { CareTaskItem } from "@/lib/api-client";
 
-function formatDateTime(value: string | null): string {
+function formatDateTime(value: string | null | undefined): string {
   if (!value) return "尚未安排";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "时间待确认";
@@ -12,14 +12,34 @@ function formatDateTime(value: string | null): string {
   });
 }
 
-function scheduleLabel(value: string): string {
+function scheduleLabel(value: string | null | undefined): string {
+  if (!value) return "计划待确认";
+  const labels: Record<string, string> = {
+    daily: "每天",
+    weekly: "每周",
+    once: "一次",
+    interval: "间隔",
+  };
+  return labels[value] || "计划待确认";
+}
+
+function taskIsActive(task: CareTaskItem): boolean {
+  if (typeof task.is_active === "boolean") return task.is_active;
+  return !["completed", "cancelled", "archived", "expired"].includes(task.status || "");
+}
+
+function statusLabel(task: CareTaskItem): string {
   return (
     {
-      daily: "每天",
-      weekly: "每周",
-      once: "一次",
-      interval: "间隔",
-    }[value] || "计划待确认"
+      pending: "待处理",
+      scheduled: "已安排",
+      active: "进行中",
+      completed: "已完成",
+      snoozed: "已延后",
+      cancelled: "已取消",
+      archived: "已归档",
+      expired: "已过期",
+    }[task.status || ""] || (taskIsActive(task) ? "进行中" : "已停用")
   );
 }
 
@@ -30,16 +50,19 @@ export default function CareTaskCard({
   onAction,
   secondaryAction,
 }: {
-  task: ReminderItem;
+  task: CareTaskItem;
   actionLabel?: string;
   actionBusy?: boolean;
   onAction?: () => void;
   secondaryAction?: React.ReactNode;
 }) {
-  const statusText = task.is_active ? "进行中" : "已停用";
-  const statusClass = task.is_active
+  const active = taskIsActive(task);
+  const statusText = statusLabel(task);
+  const statusClass = active
     ? "border-status-info bg-status-info-soft text-ink"
     : "border-status-unknown bg-status-unknown-soft text-muted";
+  const description = task.notes || task.description;
+  const dueAt = task.next_fire_at || task.due_at;
 
   return (
     <article className="rounded-md border border-border bg-surface p-4">
@@ -53,15 +76,15 @@ export default function CareTaskCard({
               {statusText}
             </span>
           </div>
-          {task.description && (
+          {description && (
             <p className="mt-1 text-base leading-7 text-muted">
-              {task.description}
+              {description}
             </p>
           )}
           <dl className="mt-3 grid gap-2 text-sm text-muted sm:grid-cols-3">
             <div>
               <dt className="font-medium text-ink">下次提醒</dt>
-              <dd>{formatDateTime(task.next_fire_at)}</dd>
+              <dd>{formatDateTime(dueAt)}</dd>
             </div>
             <div>
               <dt className="font-medium text-ink">重复</dt>

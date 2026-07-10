@@ -89,6 +89,18 @@ DELIVERY_ATTEMPTS_TOTAL = Counter(
     ["kind", "state"],
 )
 
+HOUSEHOLD_READINESS_TOTAL = Counter(
+    "companion_household_readiness_total",
+    "Household readiness evaluations by result",
+    ["status"],
+)
+
+NOTIFICATION_WEBHOOK_RECEIPTS_TOTAL = Counter(
+    "companion_notification_webhook_receipts_total",
+    "Signed notification webhook receipt verification results",
+    ["status"],
+)
+
 AUDIT_COMPLETENESS = Gauge(
     "companion_audit_completeness_ratio",
     "Ratio of policy-triggered care and safety actions with required audit records",

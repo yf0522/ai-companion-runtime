@@ -16,6 +16,9 @@ from app.api.tts import router as tts_router
 from app.api.devices import router as devices_router
 from app.api.ws_device_realtime import router as ws_device_realtime_router
 from app.api.alerts import router as alerts_router
+from app.api.carecircle import router as carecircle_router
+from app.api.contacts import router as contacts_router
+from app.api.households import router as households_router
 from app.observability.logger import setup_logging
 from app.observability.trace_service import setup_otel
 
@@ -67,6 +70,9 @@ app.include_router(caretasks_router, prefix="/api")
 app.include_router(tool_execute_router, prefix="/api")
 app.include_router(alerts_router, prefix="/api")
 app.include_router(devices_router, prefix="/api")
+app.include_router(households_router, prefix="/api")
+app.include_router(carecircle_router, prefix="/api")
+app.include_router(contacts_router, prefix="/api")
 app.include_router(asr_router)
 app.include_router(tts_router)
 
@@ -78,38 +84,11 @@ async def health():
 
 @app.get("/ready")
 async def readiness():
-    checks: dict[str, str] = {}
-    try:
-        from app.engines.risk_engine import RiskEngine
-
-        RiskEngine()
-        checks["risk_policy"] = "ok"
-    except Exception:
-        checks["risk_policy"] = "unavailable"
-
-    try:
-        from sqlalchemy import text
-        from app.db.session import async_session
-
-        async with async_session() as db:
-            await db.execute(text("SELECT 1"))
-        checks["database"] = "ok"
-    except Exception:
-        checks["database"] = "unavailable"
-
-    try:
-        from app.storage.redis_client import get_redis
-
-        redis = await get_redis()
-        await redis.ping()
-        checks["redis"] = "ok"
-    except Exception:
-        checks["redis"] = "unavailable"
-
-    ready = all(value == "ok" for value in checks.values())
     from fastapi.responses import JSONResponse
+    from app.runtime.readiness import assess_platform_readiness, readiness_http_status
 
+    payload = await assess_platform_readiness()
     return JSONResponse(
-        status_code=200 if ready else 503,
-        content={"status": "ready" if ready else "not_ready", "checks": checks},
+        status_code=readiness_http_status(payload),
+        content=payload,
     )

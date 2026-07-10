@@ -33,10 +33,18 @@ def test_production_config_requires_tls_migrations_backup_and_evidence():
         allow_ephemeral_sessions=False,
         require_tls=True,
         public_base_url="https://api.example.test",
-        expected_migration_heads="e1f2a3b4c5d6",
+        public_api_url="https://api.example.test",
+        public_ws_url="wss://api.example.test",
+        expected_migration_heads="f2a3b4c5d6e7",
         backup_bucket="pilot-backups",
         backup_kms_key_id="kms-key",
         evidence_manifest_required=True,
+        notification_provider="signed_webhook",
+        notification_outbound_url="https://notify.example.test/events",
+        notification_webhook_secret="provider-secret",
+        enable_celery_tasks=True,
+        device_identity_required=True,
+        controlled_elder_enrollment=True,
     )
     settings.validate_security()
 
@@ -46,11 +54,11 @@ def test_evidence_manifest_keeps_external_evidence_pending_by_default():
         repo_root=_REPO_ROOT,
         environment="ci",
         account_role="ci",
-        migration_heads=["e1f2a3b4c5d6"],
+        migration_heads=["f2a3b4c5d6e7"],
         trace_ids=["trace-1"],
         receipt_ids=["receipt-1"],
     )
-    assert manifest.migration_heads == ["e1f2a3b4c5d6"]
+    assert manifest.migration_heads == ["f2a3b4c5d6e7"]
     assert manifest.external_evidence["legal_review"] == "pending_unconfigured"
     assert manifest.external_evidence["physical_device"] == "pending_unconfigured"
 

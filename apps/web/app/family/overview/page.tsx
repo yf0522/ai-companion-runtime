@@ -10,15 +10,15 @@ import { EmptyState, ErrorState, LoadingState, StatusBanner } from "@/components
 import {
   ApiError,
   fetchNotifications,
-  fetchReminders,
+  fetchCareTasks,
   type NotificationItem,
-  type ReminderItem,
+  type CareTaskItem,
   userFacingApiError,
 } from "@/lib/api-client";
 
 export default function FamilyOverviewPage() {
   const router = useRouter();
-  const [tasks, setTasks] = useState<ReminderItem[]>([]);
+  const [tasks, setTasks] = useState<CareTaskItem[]>([]);
   const [alerts, setAlerts] = useState<NotificationItem[]>([]);
   const [notificationStatus, setNotificationStatus] = useState<string>("persisted");
   const [loading, setLoading] = useState(true);
@@ -29,7 +29,7 @@ export default function FamilyOverviewPage() {
     setError(null);
     try {
       const [taskData, notificationData] = await Promise.all([
-        fetchReminders(),
+        fetchCareTasks(),
         fetchNotifications(),
       ]);
       setTasks(taskData);
@@ -55,7 +55,9 @@ export default function FamilyOverviewPage() {
   }, [load]);
 
   const openAlerts = alerts.filter((item) => item.status !== "acknowledged");
-  const activeTasks = tasks.filter((task) => task.is_active).slice(0, 3);
+  const activeTasks = tasks
+    .filter((task) => !["completed", "cancelled", "archived", "expired"].includes(task.status || ""))
+    .slice(0, 3);
 
   return (
     <RoleShell
@@ -98,7 +100,7 @@ export default function FamilyOverviewPage() {
                 </Link>
               </div>
               {activeTasks.length === 0 ? (
-                <EmptyState title="暂无进行中的照护任务" description="创建任务时请写明事项、时间和重复方式，系统会按现有提醒接口投递。" />
+                <EmptyState title="暂无进行中的照护任务" description="创建任务时请写明事项、时间和重复方式，系统会按照护任务状态投递和记录。" />
               ) : (
                 activeTasks.map((task) => <CareTaskCard key={task.id} task={task} />)
               )}

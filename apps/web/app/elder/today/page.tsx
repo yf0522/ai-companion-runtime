@@ -6,16 +6,17 @@ import CareTaskCard from "@/components/CareTaskCard";
 import RoleShell from "@/components/RoleShell";
 import { EmptyState, ErrorState, LoadingState, StatusBanner } from "@/components/SurfaceStates";
 import {
-  acknowledgeReminder,
   ApiError,
-  fetchReminders,
-  type ReminderItem,
+  completeCareTask,
+  fetchCareTasks,
+  mutationInputForTask,
+  type CareTaskItem,
   userFacingApiError,
 } from "@/lib/api-client";
 
 export default function ElderTodayPage() {
   const router = useRouter();
-  const [tasks, setTasks] = useState<ReminderItem[]>([]);
+  const [tasks, setTasks] = useState<CareTaskItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
@@ -26,7 +27,7 @@ export default function ElderTodayPage() {
     setError(null);
     setOffline(!navigator.onLine);
     try {
-      setTasks(await fetchReminders());
+      setTasks(await fetchCareTasks());
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
@@ -49,11 +50,11 @@ export default function ElderTodayPage() {
     };
   }, [load]);
 
-  async function handleAcknowledge(id: string) {
-    setAckingId(id);
+  async function handleAcknowledge(task: CareTaskItem) {
+    setAckingId(task.id);
     setError(null);
     try {
-      await acknowledgeReminder(id);
+      await completeCareTask(task.id, mutationInputForTask(task, "care-task-complete"));
       await load();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -66,7 +67,7 @@ export default function ElderTodayPage() {
     }
   }
 
-  const activeTasks = tasks.filter((task) => task.is_active);
+  const activeTasks = tasks.filter((task) => !["completed", "cancelled", "archived", "expired"].includes(task.status || ""));
 
   return (
     <RoleShell
@@ -101,7 +102,7 @@ export default function ElderTodayPage() {
               task={task}
               actionLabel="确认已处理"
               actionBusy={ackingId === task.id}
-              onAction={() => handleAcknowledge(task.id)}
+              onAction={() => handleAcknowledge(task)}
             />
           ))
         )}

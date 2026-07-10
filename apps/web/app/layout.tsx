@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "AI Companion",
-  description: "Eldercare AI companion runtime for risk-gated reminders, fraud warning, and traceability.",
+  description: "Eldercare AI companion runtime for care tasks, fraud warning, and traceability.",
 };
 
 export default function RootLayout({

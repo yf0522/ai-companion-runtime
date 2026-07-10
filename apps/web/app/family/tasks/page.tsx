@@ -7,16 +7,24 @@ import RoleShell from "@/components/RoleShell";
 import { EmptyState, ErrorState, LoadingState } from "@/components/SurfaceStates";
 import {
   ApiError,
-  createReminder,
-  deleteReminder,
-  fetchReminders,
-  type ReminderItem,
+  cancelCareTask,
+  createCareTask,
+  fetchCareTasks,
+  mutationInputForTask,
+  type CareTaskItem,
   userFacingApiError,
 } from "@/lib/api-client";
 
+function dueAtForToday(timeOfDay: string): string {
+  const [hours = "8", minutes = "0"] = timeOfDay.split(":");
+  const dueAt = new Date();
+  dueAt.setHours(Number(hours), Number(minutes), 0, 0);
+  return dueAt.toISOString();
+}
+
 export default function FamilyTasksPage() {
   const router = useRouter();
-  const [tasks, setTasks] = useState<ReminderItem[]>([]);
+  const [tasks, setTasks] = useState<CareTaskItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -30,7 +38,7 @@ export default function FamilyTasksPage() {
     setLoading(true);
     setError(null);
     try {
-      setTasks(await fetchReminders());
+      setTasks(await fetchCareTasks());
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
@@ -56,11 +64,12 @@ export default function FamilyTasksPage() {
     setCreating(true);
     setError(null);
     try {
-      await createReminder({
+      await createCareTask({
         title: title.trim(),
-        description: description.trim() || null,
-        time_of_day: timeOfDay,
+        notes: description.trim() || null,
+        due_at: dueAtForToday(timeOfDay),
         schedule_type: scheduleType,
+        task_type: "medication",
       });
       setTitle("");
       setDescription("");
@@ -78,12 +87,12 @@ export default function FamilyTasksPage() {
     }
   }
 
-  async function handleDelete(id: string) {
-    setDeletingId(id);
+  async function handleDelete(task: CareTaskItem) {
+    setDeletingId(task.id);
     setError(null);
     try {
-      await deleteReminder(id);
-      setTasks((prev) => prev.filter((task) => task.id !== id));
+      await cancelCareTask(task.id, mutationInputForTask(task, "care-task-cancel"));
+      setTasks((prev) => prev.filter((item) => item.id !== task.id));
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
@@ -99,7 +108,7 @@ export default function FamilyTasksPage() {
     <RoleShell
       role="family"
       title="照护任务"
-      subtitle="这里管理照护意图；当前后端以 Reminder 接口保存投递计划。"
+      subtitle="这里管理照护意图、版本和投递计划；每次变更都会带上幂等键和预期版本。"
     >
       <div className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
         <form
@@ -175,7 +184,7 @@ export default function FamilyTasksPage() {
                   <button
                     type="button"
                     disabled={deletingId === task.id}
-                    onClick={() => handleDelete(task.id)}
+                    onClick={() => handleDelete(task)}
                     className="btn-secondary border-status-critical text-ink"
                   >
                     {deletingId === task.id ? "删除中" : "删除"}

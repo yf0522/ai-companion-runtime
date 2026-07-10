@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+import httpx
 from sqlalchemy import select, update
 
 from app.config.settings import settings
@@ -79,10 +82,57 @@ class UnconfiguredNotificationProvider:
         )
 
 
+class SignedWebhookNotificationProvider:
+    """Production generic webhook provider with HMAC-signed outbound delivery."""
+
+    async def send(self, outbox: Any) -> ProviderResult:
+        if not settings.notification_outbound_url or not settings.notification_webhook_secret:
+            return ProviderResult(
+                "unconfigured",
+                None,
+                "Signed webhook provider requires outbound URL and HMAC secret",
+                permanent=True,
+            )
+        timestamp = str(int(datetime.utcnow().timestamp()))
+        payload = dict(outbox.payload_json or {})
+        payload.setdefault("outbox_id", str(outbox.id))
+        payload.setdefault("event_type", "accepted")
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        signature = _webhook_signature(timestamp, body.encode("utf-8"))
+        event_id = str(outbox.id)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    settings.notification_outbound_url,
+                    content=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Companion-Timestamp": timestamp,
+                        "X-Companion-Signature": signature,
+                        "X-Companion-Event-Id": event_id,
+                        "Idempotency-Key": outbox.idempotency_key,
+                    },
+                )
+            if 200 <= response.status_code < 300:
+                provider_message_id = response.headers.get("X-Provider-Message-Id") or event_id
+                return ProviderResult("accepted", provider_message_id)
+            permanent = 400 <= response.status_code < 500 and response.status_code not in {408, 409, 429}
+            return ProviderResult(
+                "failed" if permanent else "unknown",
+                event_id,
+                f"signed webhook returned HTTP {response.status_code}",
+                permanent=permanent,
+            )
+        except httpx.HTTPError as exc:
+            return ProviderResult("unknown", event_id, str(exc), permanent=False)
+
+
 def resolve_provider(provider_name: str | None = None):
     name = (provider_name or settings.notification_provider or "unconfigured").lower()
     if settings.app_env.lower() == "production" and name == "sandbox":
         return UnconfiguredNotificationProvider()
+    if name == "signed_webhook":
+        return SignedWebhookNotificationProvider()
     if name == "sandbox":
         return SandboxNotificationProvider()
     return UnconfiguredNotificationProvider()
@@ -97,6 +147,33 @@ def _receipt_identity(
     if provider_message_id:
         return f"{event_type}:{provider_message_id}"
     return f"{event_type}:outbox:{outbox_id}"
+
+
+def _webhook_signature(timestamp: str, raw_body: bytes) -> str:
+    digest = hmac.new(
+        settings.notification_webhook_secret.encode("utf-8"),
+        timestamp.encode("utf-8") + b"." + raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    return f"sha256={digest}"
+
+
+def _verify_webhook_signature(timestamp: str | None, signature: str | None, raw_body: bytes) -> datetime:
+    if not settings.notification_webhook_secret.strip():
+        raise PermissionError("Webhook signing secret is not configured")
+    if not timestamp or not signature:
+        raise PermissionError("Missing webhook signature")
+    try:
+        ts = datetime.utcfromtimestamp(int(timestamp))
+    except (TypeError, ValueError) as exc:
+        raise PermissionError("Invalid webhook timestamp") from exc
+    age = abs((datetime.utcnow() - ts).total_seconds())
+    if age > settings.notification_webhook_tolerance_seconds:
+        raise PermissionError("Webhook timestamp outside tolerance")
+    expected = _webhook_signature(timestamp, raw_body)
+    if not hmac.compare_digest(expected, signature):
+        raise PermissionError("Invalid webhook signature")
+    return ts
 
 
 def _should_apply_receipt_state(current_state: str | None, event_type: ProviderState) -> bool:
@@ -258,6 +335,39 @@ async def _finish_claimed_outbox(
         return True
 
 
+async def _record_reconciliation(
+    db: Any,
+    *,
+    outbox_id: uuid.UUID,
+    provider: str,
+    reason: str,
+    observed_state: str | None,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    from app.db.models import NotificationReconciliation
+
+    existing = (
+        await db.execute(
+            select(NotificationReconciliation).where(
+                NotificationReconciliation.outbox_id == outbox_id,
+                NotificationReconciliation.reason == reason,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return
+    db.add(
+        NotificationReconciliation(
+            outbox_id=outbox_id,
+            provider=provider,
+            state="pending",
+            reason=reason,
+            observed_state=observed_state,
+            payload_json=payload or {},
+        )
+    )
+
+
 async def create_safety_notification_pipeline(
     *,
     user_id: str,
@@ -307,6 +417,7 @@ async def create_safety_notification_pipeline(
                 .where(
                     EmergencyContact.user_id == db_user_id,
                     EmergencyContact.is_active.is_(True),
+                    EmergencyContact.verification_state == "verified",
                 )
                 .order_by(EmergencyContact.priority)
             )
@@ -333,10 +444,11 @@ async def create_safety_notification_pipeline(
             case = OperatorCase(
                 user_id=db_user_id,
                 safety_decision_id=decision.id,
-                status="open",
+                status="unstaffed",
                 severity=risk_level,
                 summary=summary,
                 due_at=now + timedelta(minutes=30),
+                sla_deadline_at=now + timedelta(minutes=30),
             )
             db.add(case)
             await db.commit()
@@ -355,7 +467,7 @@ async def create_safety_notification_pipeline(
                 safety_decision_id=decision.id,
                 contact_id=contact.id,
                 provider=provider_name,
-                channel="webhook" if contact.webhook_url else "sandbox",
+                channel="webhook" if contact.webhook_url else "provider",
                 idempotency_key=idempotency_key,
                 payload_json={
                     "user_id": str(db_user_id),
@@ -388,10 +500,11 @@ async def create_safety_notification_pipeline(
                 user_id=db_user_id,
                 safety_decision_id=decision.id,
                 notification_outbox_id=outbox.id,
-                status="open",
+                status="unstaffed",
                 severity=risk_level,
                 summary=summary,
                 due_at=now + timedelta(minutes=30),
+                sla_deadline_at=now + timedelta(minutes=30),
             )
             db.add(case)
             outbox_ids.append(str(outbox.id))
@@ -470,5 +583,102 @@ async def record_provider_receipt(
             outbox.provider_message_id = provider_message_id or outbox.provider_message_id
             outbox.state = event_type
             outbox.updated_at = datetime.utcnow()
+            if event_type in SUCCESS_STATES:
+                outbox.reconciliation_state = "not_required"
         await db.commit()
         return {"outbox_id": str(outbox.id), "state": outbox.state}
+
+
+async def record_signed_provider_receipt(
+    *,
+    body: dict[str, Any],
+    raw_body: bytes,
+    timestamp_header: str | None,
+    signature_header: str | None,
+    event_id: str | None,
+) -> dict[str, Any]:
+    signature_ts = _verify_webhook_signature(timestamp_header, signature_header, raw_body)
+    outbox_id = str(body.get("outbox_id") or event_id or "")
+    event_type = body.get("event_type")
+    if event_type not in SUCCESS_STATES | TERMINAL_FAILURE_STATES | {"unknown"}:
+        raise ValueError("Unsupported receipt event_type")
+    receipt_identity = event_id or str(body.get("receipt_identity") or "")
+    if not receipt_identity:
+        raise ValueError("Receipt event id required")
+
+    from app.db.models import NotificationOutbox, NotificationReceipt
+    from app.db.session import async_session
+
+    oid = uuid.UUID(outbox_id)
+    async with async_session() as db:
+        outbox = (await db.execute(select(NotificationOutbox).where(NotificationOutbox.id == oid))).scalar_one_or_none()
+        if outbox is None:
+            raise LookupError("notification_outbox_not_found")
+        existing = (
+            await db.execute(
+                select(NotificationReceipt).where(
+                    NotificationReceipt.outbox_id == oid,
+                    NotificationReceipt.receipt_identity == receipt_identity,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise FileExistsError("Receipt replay detected")
+        db.add(
+            NotificationReceipt(
+                outbox_id=oid,
+                provider_message_id=body.get("provider_message_id"),
+                receipt_identity=receipt_identity,
+                signature_timestamp=signature_ts,
+                event_type=event_type,
+                payload_json=body,
+                occurred_at=datetime.utcnow(),
+            )
+        )
+        if _should_apply_receipt_state(outbox.state, event_type):
+            outbox.provider_message_id = body.get("provider_message_id") or outbox.provider_message_id
+            outbox.state = event_type
+            outbox.updated_at = datetime.utcnow()
+            if event_type in SUCCESS_STATES:
+                outbox.reconciliation_state = "not_required"
+        await db.commit()
+        return {"outbox_id": str(outbox.id), "state": outbox.state}
+
+
+@app.task(name="app.workers.notification_outbox_worker.reconcile_notification_outbox")
+def reconcile_notification_outbox() -> dict[str, int]:
+    return asyncio.run(reconcile_stale_outbox())
+
+
+async def reconcile_stale_outbox(limit: int = 100) -> dict[str, int]:
+    from app.db.models import NotificationOutbox
+    from app.db.session import async_session
+
+    now = datetime.utcnow()
+    cutoff = now - timedelta(minutes=10)
+    async with async_session() as db:
+        rows = (
+            await db.execute(
+                select(NotificationOutbox)
+                .where(
+                    NotificationOutbox.provider == "signed_webhook",
+                    NotificationOutbox.state.in_(["accepted", "unknown", "sending"]),
+                    NotificationOutbox.updated_at <= cutoff,
+                )
+                .order_by(NotificationOutbox.updated_at.asc())
+                .limit(limit)
+            )
+        ).scalars().all()
+        for row in rows:
+            row.reconciliation_state = "pending"
+            row.updated_at = now
+            await _record_reconciliation(
+                db,
+                outbox_id=row.id,
+                provider=row.provider,
+                reason="receipt_timeout",
+                observed_state=row.state,
+                payload={"updated_at": row.updated_at.isoformat() if row.updated_at else None},
+            )
+        await db.commit()
+    return {"reconciled": len(rows)}

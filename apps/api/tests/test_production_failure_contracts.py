@@ -27,7 +27,7 @@ def _production_settings(**overrides) -> Settings:
         "rate_limit_failure_mode": "deny",
         "require_tls": True,
         "public_base_url": "https://api.example.test",
-        "expected_migration_heads": "e1f2a3b4c5d6",
+        "expected_migration_heads": "f2a3b4c5d6e7",
         "backup_bucket": "pilot-backups",
         "backup_kms_key_id": "kms-key",
         "evidence_manifest_required": True,
@@ -151,11 +151,12 @@ def test_readiness_reports_dependency_failure(monkeypatch):
         response = client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json()["checks"] == {
-        "risk_policy": "ok",
-        "database": "unavailable",
-        "redis": "unavailable",
-    }
+    payload = response.json()
+    assert payload["scope"] == "platform"
+    assert payload["status"] == "unsafe_to_serve"
+    assert payload["checks"]["risk_policy"]["status"] == "ready"
+    assert payload["checks"]["database"]["status"] == "unsafe_to_serve"
+    assert payload["checks"]["redis"]["status"] == "unsafe_to_serve"
 
 
 class _BindingResult:
