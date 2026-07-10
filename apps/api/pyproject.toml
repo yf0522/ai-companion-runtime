@@ -37,6 +37,9 @@ dev = [
     "ruff>=0.4.0",
     "websocket-client>=1.8.0",
 ]
+memory = [
+    "mem0ai>=2.0.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -230,15 +230,23 @@ def _stale_version_error(exc: svc.StaleCareTaskVersionError) -> HTTPException:
 async def list_care_tasks(
     include_terminal: bool = False,
     limit: int = 50,
+    scope: str = "all",
     user: dict = Depends(get_current_user),
 ):
     elder_id = await _get_managed_elder_id(user, permission="view_reminders")
+    scope_norm = scope if scope in {"today", "all"} else "all"
     rows = await svc.list_care_tasks(
         user_id=str(elder_id),
         include_terminal=include_terminal,
         limit=max(1, min(limit, 100)),
+        scope=scope_norm,
     )
-    return {"user_id": str(elder_id), "items": rows, "total": len(rows)}
+    return {
+        "user_id": str(elder_id),
+        "items": rows,
+        "total": len(rows),
+        "scope": scope_norm,
+    }
 
 
 @router.post("/care-tasks")

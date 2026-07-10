@@ -26,8 +26,10 @@ def build_default_tools() -> dict[str, ToolBase]:
     except ImportError:
         pass
     from app.tools.caretask_tool import CareTaskTool
+    from app.tools.memory_tool import MemoryTool
 
     tools["caretask"] = CareTaskTool()
+    tools["memory"] = MemoryTool()
     return tools
 
 

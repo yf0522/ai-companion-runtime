@@ -3,7 +3,7 @@ import { Agent, convertToLlm } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
-import { normalizeCareTaskParams } from "./caretask-params.mjs";
+import { normalizeCareTaskParams, normalizeMemoryParams } from "./caretask-params.mjs";
 import { assistantErrorMessage } from "./pi-events.mjs";
 import { careTaskShouldTerminate } from "./tool-policy.mjs";
 
@@ -34,6 +34,9 @@ const SYSTEM_PROMPT =
     "You are a warm, concise AI companion for older adults.",
     "Reply in the user's language. Keep answers practical and kind.",
     "When the user asks about medication, appointments, or care tasks, use the caretask tool.",
+    "For today's care tasks / 今日事项, use caretask action=list (defaults to today's care window) — do not invent a today_brief tool.",
+    "When the user says 以后记得 / preferences / continuity facts, use the memory tool (note or recall).",
+    "Never store prescription doses or escalation rules in memory — those belong to caretask / care settings.",
     "Never claim a tool succeeded if the tool result status is failed or timeout.",
     "If a tool fails, apologize briefly and ask the user to try again — do not invent success.",
   ].join(" ");
@@ -152,7 +155,7 @@ function makeCareTaskTool(ctx) {
     name: "caretask",
     label: "CareTask",
     description:
-      "Manage eldercare CareTasks (medication/appointment): create, list, complete, snooze, cancel. Reminder is scheduling projection only.",
+      "Manage eldercare CareTasks (medication/appointment): create, list, complete, snooze, cancel. list defaults to today's local care-window dump (status/title/task_type/due_at/notes). Reminder is scheduling projection only.",
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal("create"),
@@ -174,6 +177,9 @@ function makeCareTaskTool(ctx) {
       due_at: Type.Optional(Type.String()),
       minutes: Type.Optional(Type.Number()),
       notes: Type.Optional(Type.String()),
+      scope: Type.Optional(
+        Type.Union([Type.Literal("today"), Type.Literal("all")]),
+      ),
       query: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params) {
@@ -186,7 +192,6 @@ function makeCareTaskTool(ctx) {
       const text =
         result.display_text ||
         (status === "success" ? "CareTask ok" : "CareTask failed");
-      const isError = status !== "success";
       return {
         content: [{ type: "text", text: `[${status}] ${text}` }],
         details: {
@@ -196,6 +201,54 @@ function makeCareTaskTool(ctx) {
           display_text: text,
         },
         // Do not terminate early on failure — model must see failure and not invent success.
+        terminate: false,
+      };
+    },
+  };
+}
+
+function makeMemoryTool(ctx) {
+  return {
+    name: "memory",
+    label: "Memory",
+    description:
+      "Long-term continuity memory (not CareTask). action=recall reads consent-granted fragments; action=note writes preference/household/communication/persona facts (pending consent in production). Refuses prescription/dose/escalation — use caretask for meds.",
+    parameters: Type.Object({
+      action: Type.Union([Type.Literal("recall"), Type.Literal("note")]),
+      query_intent: Type.Optional(Type.String()),
+      summary: Type.Optional(Type.String()),
+      category: Type.Optional(
+        Type.Union([
+          Type.Literal("preference"),
+          Type.Literal("household_fact"),
+          Type.Literal("communication_habit"),
+          Type.Literal("persona_style"),
+        ]),
+      ),
+      time_from: Type.Optional(Type.String()),
+      time_to: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Number()),
+      explicit_user_request: Type.Optional(Type.Boolean()),
+      query: Type.Optional(Type.String()),
+    }),
+    async execute(_toolCallId, params) {
+      const result = await bridgeExecute(
+        "memory",
+        normalizeMemoryParams(params, ctx.userText),
+        ctx,
+      );
+      const status = result.status || "failed";
+      const text =
+        result.display_text ||
+        (status === "success" ? "Memory ok" : "Memory failed");
+      return {
+        content: [{ type: "text", text: `[${status}] ${text}` }],
+        details: {
+          status,
+          data: result.data ?? null,
+          tool_name: "memory",
+          display_text: text,
+        },
         terminate: false,
       };
     },
@@ -215,7 +268,9 @@ async function streamAgentChat({ res, body }) {
     userText: lastUser.content,
   };
 
-  const tools = ENABLE_TOOLS ? [makeCareTaskTool(ctx)] : [];
+  const tools = ENABLE_TOOLS
+    ? [makeCareTaskTool(ctx), makeMemoryTool(ctx)]
+    : [];
   const toolsUsed = [];
   let agentError = null;
 
@@ -402,7 +457,7 @@ const server = http.createServer(async (req, res) => {
           bridge: ENABLE_TOOLS ? "pi-agent-core" : "pi-experimental",
           provider: DEFAULT_PROVIDER,
           model: DEFAULT_MODEL,
-          tools: ENABLE_TOOLS ? ["caretask"] : [],
+          tools: ENABLE_TOOLS ? ["caretask", "memory"] : [],
         }),
       );
       return;
@@ -474,7 +529,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(
-    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask" : "off"} bridge=${TOOL_BRIDGE_URL}`,
+    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask,memory" : "off"} bridge=${TOOL_BRIDGE_URL}`,
   );
   if (ENABLE_TOOLS) {
     const schemasUrl = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/schemas`;

@@ -129,7 +129,10 @@ class CareTaskTool(ToolBase):
     name = "caretask"
     description = (
         "Manage eldercare CareTasks (medication/appointment): "
-        "create, list, complete, snooze, cancel. Reminder is scheduling projection."
+        "create, list, complete, snooze, cancel. Reminder is scheduling projection. "
+        "action=list defaults to today's local care-window tasks (due today, active undated, "
+        "due/snoozed/missed) with status/title/task_type/due_at/notes for LLM dump — "
+        "use this instead of a separate today_brief tool. Pass scope=all for full list."
     )
     parameters_schema = {
         "type": "object",
@@ -151,6 +154,11 @@ class CareTaskTool(ToolBase):
             },
             "minutes": {"type": "integer", "description": "Snooze minutes"},
             "notes": {"type": "string"},
+            "scope": {
+                "type": "string",
+                "enum": ["today", "all"],
+                "description": "list only: today=care-window (default), all=unfiltered",
+            },
             "query": {"type": "string", "description": "Natural language fallback"},
         },
         "required": ["action"],
@@ -285,25 +293,60 @@ class CareTaskTool(ToolBase):
         )
 
     async def _list(self, params: dict, user_id: str) -> ToolResult:
+        scope = str(params.get("scope") or "today").strip().lower()
+        if scope not in {"today", "all"}:
+            scope = "today"
         rows = await svc.list_care_tasks(
             user_id=str(user_id),
             include_terminal=bool(params.get("include_terminal")),
             limit=int(params.get("limit") or 20),
+            scope=scope,
         )
+        # LLM dump fields — keep consistent with task_to_dict.
+        dump = [
+            {
+                "id": t["id"],
+                "title": t["title"],
+                "task_type": t.get("task_type"),
+                "status": t.get("status"),
+                "due_at": t.get("due_at"),
+                "notes": t.get("notes"),
+                "care_window_date": t.get("care_window_date"),
+            }
+            for t in rows
+        ]
         if not rows:
             return ToolResult(
                 tool_name=self.name,
                 status="success",
-                display_text="当前没有待处理的照护任务",
-                data={"action": "caretask_list", "tasks": []},
+                display_text=(
+                    "今天没有待处理的照护任务"
+                    if scope == "today"
+                    else "当前没有待处理的照护任务"
+                ),
+                data={
+                    "action": "caretask_list",
+                    "scope": scope,
+                    "tasks": [],
+                    "dump": [],
+                },
             )
-        # Elder UI: titles only; status stays in structured data for Trace.
-        lines = [f"- {t['title']}" for t in rows[:10]]
+        # Elder UI: titles; structured dump carries status/due for the model.
+        lines = []
+        for t in dump[:10]:
+            due = f"（{t['due_at']}）" if t.get("due_at") else ""
+            st = t.get("status") or ""
+            lines.append(f"- [{st}] {t['title']}{due}")
         return ToolResult(
             tool_name=self.name,
             status="success",
             display_text="您当前的照护任务：\n" + "\n".join(lines),
-            data={"action": "caretask_list", "tasks": rows},
+            data={
+                "action": "caretask_list",
+                "scope": scope,
+                "tasks": rows,
+                "dump": dump,
+            },
         )
 
     async def _resolve_or_clarify(

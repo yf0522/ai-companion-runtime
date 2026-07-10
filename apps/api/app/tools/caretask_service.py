@@ -5,8 +5,9 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from app.tools.device_projection import infer_schedule_type_from_utterance
 
@@ -17,6 +18,8 @@ CARE_TASK_STATUSES = frozenset(
 )
 ACTIVE_STATUSES = frozenset({"pending", "due", "snoozed"})
 TERMINAL_STATUSES = frozenset({"done", "missed", "cancelled"})
+# Local care calendar used for "today" list / LLM dump (matches Celery timezone).
+CARE_WINDOW_TZ = ZoneInfo("Asia/Shanghai")
 
 _TITLE_NOISE = re.compile(
     r"^(?:提醒我|记得|帮我|请|麻烦|给我)?(?:每天|明天|今天|晚上|早上|下午|中午)?"
@@ -136,6 +139,7 @@ def refresh_status(status: str, due_at: datetime | None, snooze_until: datetime 
 
 
 def task_to_dict(row: Any) -> dict[str, Any]:
+    """Stable CareTask dict for API + tool/LLM dump (status/title/type/due/notes)."""
     return {
         "id": str(row.id),
         "user_id": str(row.user_id),
@@ -151,6 +155,45 @@ def task_to_dict(row: Any) -> dict[str, Any]:
         "version": getattr(row, "version", 1),
         "created_at": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
     }
+
+
+def care_window_bounds(
+    now: datetime | None = None,
+    *,
+    tz: ZoneInfo = CARE_WINDOW_TZ,
+) -> tuple[datetime, datetime, str]:
+    """Return (utc_start, utc_end, local_date_str) for the local care calendar day."""
+    current = now or datetime.utcnow()
+    if current.tzinfo is None:
+        current_utc = current.replace(tzinfo=timezone.utc)
+    else:
+        current_utc = current.astimezone(timezone.utc)
+    local_now = current_utc.astimezone(tz)
+    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=1)
+    utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+    utc_end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+    return utc_start, utc_end, local_start.strftime("%Y-%m-%d")
+
+
+def in_care_window(
+    *,
+    status: str,
+    due_at: datetime | None,
+    window_start: datetime,
+    window_end: datetime,
+) -> bool:
+    """True if task is relevant for today's care-window LLM dump.
+
+    Includes: due/snoozed/missed always; pending with due today or no due;
+    done only when completed due falls in window (caller usually excludes terminal).
+    """
+    if status in {"due", "snoozed", "missed"}:
+        return True
+    if due_at is None:
+        # Undated active tasks stay visible in the care window.
+        return status in ACTIVE_STATUSES
+    return window_start <= due_at < window_end
 
 
 def normalize_title(title: str) -> str:
@@ -608,7 +651,15 @@ async def list_care_tasks(
     user_id: str,
     include_terminal: bool = False,
     limit: int = 20,
+    scope: str = "all",
 ) -> list[dict[str, Any]]:
+    """List CareTasks for API / tools.
+
+    ``scope``:
+      - ``all`` (service default): no care-window filter — safe for identity/resolve.
+      - ``today``: local care-window tasks (due today / active undated /
+        due|snoozed|missed) — preferred for tool/LLM prompt dump.
+    """
     from sqlalchemy import select
 
     from app.db.models import CareTask
@@ -616,11 +667,17 @@ async def list_care_tasks(
 
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
+    window_start, window_end, local_date = care_window_bounds(now)
+    scope_norm = (scope or "all").strip().lower()
+    # Over-fetch before window filter so due-date filtering stays accurate.
+    fetch_limit = max(limit * 3, 60) if scope_norm == "today" else limit
     async with async_session() as db:
         stmt = select(CareTask).where(CareTask.user_id == db_user_id)
         if not include_terminal:
             stmt = stmt.where(CareTask.status.in_(list(ACTIVE_STATUSES | {"missed"})))
-        stmt = stmt.order_by(CareTask.due_at.asc().nullslast(), CareTask.created_at.desc()).limit(limit)
+        stmt = stmt.order_by(CareTask.due_at.asc().nullslast(), CareTask.created_at.desc()).limit(
+            fetch_limit
+        )
         rows = (await db.execute(stmt)).scalars().all()
         out: list[dict[str, Any]] = []
         dirty = False
@@ -630,7 +687,19 @@ async def list_care_tasks(
                 row.status = new_status
                 row.updated_at = now
                 dirty = True
-            out.append(task_to_dict(row))
+            if scope_norm == "today" and not in_care_window(
+                status=row.status,
+                due_at=row.due_at,
+                window_start=window_start,
+                window_end=window_end,
+            ):
+                continue
+            item = task_to_dict(row)
+            if scope_norm == "today":
+                item["care_window_date"] = local_date
+            out.append(item)
+            if len(out) >= limit:
+                break
         if dirty:
             await db.commit()
         return out
