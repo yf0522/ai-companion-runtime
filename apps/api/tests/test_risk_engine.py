@@ -124,7 +124,13 @@ async def test_risk_gate_blocks_before_pi_sidecar(monkeypatch):
         "app.engines.risk_engine.RiskEngine.analyze",
         fake_analyze,
     )
-    notify = AsyncMock()
+    notify = AsyncMock(
+        return_value={
+            "status": "persisted",
+            "outbox_ids": ["outbox-1"],
+            "webhook_status": "queued",
+        }
+    )
     monkeypatch.setattr(
         "app.runtime.risk_gate._dispatch_family_notify",
         notify,
@@ -155,6 +161,24 @@ async def test_risk_gate_blocks_before_pi_sidecar(monkeypatch):
     assert alert_args[0] == "high"
     assert alert_args[1] == ""
     notify.assert_awaited()
+
+
+def test_safety_response_does_not_claim_unconfirmed_delivery():
+    from app.runtime.risk_gate import build_safety_response
+
+    queued = build_safety_response(
+        "请拨打 110 或 120。",
+        {"status": "persisted", "outbox_ids": ["outbox-1"], "webhook_status": "queued"},
+    )
+    assert "正在发送" in queued
+    assert "已经收到" not in queued
+
+    no_contact = build_safety_response(
+        "请拨打 110 或 120。",
+        {"status": "persisted", "outbox_ids": [], "webhook_status": "no_contact"},
+    )
+    assert "没有可通知" in no_contact
+    assert "已通知" not in no_contact
 
 
 @pytest.mark.asyncio

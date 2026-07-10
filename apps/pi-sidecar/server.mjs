@@ -5,6 +5,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 import { normalizeCareTaskParams } from "./caretask-params.mjs";
 import { assistantErrorMessage } from "./pi-events.mjs";
+import { careTaskShouldTerminate } from "./tool-policy.mjs";
 
 // pi-ai's Google provider reads GEMINI_API_KEY; align with harness GOOGLE_API_KEY.
 if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
@@ -310,6 +311,9 @@ async function streamAgentChat({ res, body }) {
             },
           ],
         };
+      }
+      if (careTaskShouldTerminate(toolCall.name, status)) {
+        return { terminate: true };
       }
       return undefined;
     },

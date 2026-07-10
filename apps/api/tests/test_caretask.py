@@ -172,7 +172,8 @@ async def test_caretask_create_reuses_active_duplicate(monkeypatch):
     assert first.data["action"] == "caretask_create"
     assert second.status == "success"
     assert second.data["action"] == "caretask_reuse"
-    assert "沿用" in second.display_text or "已经有" in second.display_text
+    assert "已经记过" in second.display_text
+    assert "继续为您保留" in second.display_text
     assert "pending" not in second.display_text.lower()
     assert "未重复创建" not in second.display_text
 
@@ -636,10 +637,49 @@ def test_reuse_display_text_has_no_tech_jargon():
     from app.tools.caretask_tool import _reuse_display
 
     text = _reuse_display("降糖药", schedule_updated=False)
-    assert "沿用" in text
+    assert "继续为您保留" in text
+    assert "提醒时间" not in text
     assert "pending" not in text.lower()
     assert "未重复创建" not in text
     assert "状态" not in text
+
+
+@pytest.mark.asyncio
+async def test_caretask_ignores_model_due_at_without_user_time(monkeypatch):
+    tool = CareTaskTool()
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "title": kwargs["title"],
+            "task_type": kwargs["task_type"],
+            "status": "pending",
+            "due_at": None,
+            "reminder_id": None,
+            "snooze_until": None,
+            "notes": None,
+            "created_by": "chat",
+            "completed_at": None,
+            "created_at": None,
+            "user_id": kwargs["user_id"],
+            "_action": "caretask_create",
+        }
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
+    result = await tool.execute(
+        {
+            "action": "create",
+            "title": "吃降糖药",
+            "due_at": "2023-10-27T08:00:00",
+            "query": "提醒我吃降糖药",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+    assert result.status == "success"
+    assert captured["due_at"] is None
+    assert captured["link_reminder"] is False
 
 
 @pytest.mark.asyncio

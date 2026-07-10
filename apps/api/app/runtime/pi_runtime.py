@@ -102,6 +102,7 @@ class PiExperimentalRuntime:
         seen_done = False
         tools_used: list[dict] = []
         honesty_tool_results: list = []
+        caretask_response_text: str | None = None
         sidecar_start = time.monotonic()
 
         def _upsert_tool(
@@ -178,10 +179,7 @@ class PiExperimentalRuntime:
                             continue
                         if first_token:
                             ttft_ms = int((time.monotonic() - start) * 1000)
-                            await stream_mgr.send_first_reply(delta, ttft_ms)
                             first_token = False
-                        else:
-                            await stream_mgr.send_delta(delta)
                         response_text += delta
                     elif event_type == "tool_status":
                         tool = str(event.get("tool", "caretask"))
@@ -214,6 +212,8 @@ class PiExperimentalRuntime:
                                 candidates=candidates if isinstance(candidates, list) else None,
                                 data=event_data if isinstance(event_data, dict) else None,
                             )
+                            if tool == "caretask" and status == "success":
+                                caretask_response_text = text
                         clarify_verb = None
                         if isinstance(event_data, dict):
                             clarify_verb = event_data.get("clarify_verb")
@@ -286,18 +286,20 @@ class PiExperimentalRuntime:
             tools_used,
         )
 
-        if not response_text:
+        if caretask_response_text:
+            response_text = caretask_response_text
+        elif not response_text:
             response_text = "（Pi 实验路径未返回内容，请稍后重试。）"
-            ttft_ms = int((time.monotonic() - start) * 1000)
-            await stream_mgr.send_first_reply(response_text, ttft_ms)
 
         if honesty_tool_results:
             from app.tools.honesty import enforce_no_verbal_promise
 
             honest = enforce_no_verbal_promise(response_text, honesty_tool_results)
-            if honest != response_text:
-                await stream_mgr.send_delta("\n" + honest)
-                response_text = honest
+            response_text = honest
+
+        if first_token or caretask_response_text:
+            ttft_ms = int((time.monotonic() - start) * 1000)
+        await stream_mgr.send_first_reply(response_text, ttft_ms)
 
         total_latency_ms = int((time.monotonic() - start) * 1000)
         message_id = f"m_{nanoid(size=12)}"

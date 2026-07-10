@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
+import { useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
 import MessageBubble from "./MessageBubble";
 import type { CareTaskCandidate } from "./CareTaskClarifyCard";
 
@@ -38,6 +39,8 @@ export default function ChatWindow() {
   const token = useAuthStore((s) => s.token);
   const authHydrated = useAuthStore((s) => s.hydrated);
   const setAuthHydrated = useAuthStore((s) => s.setHydrated);
+  const runtimeHydrated = useAgentRuntimeStore((s) => s.hydrated);
+  const hydrateRuntime = useAgentRuntimeStore((s) => s.hydrate);
   const router = useRouter();
 
   useEffect(() => {
@@ -49,7 +52,12 @@ export default function ChatWindow() {
   }, [setAuthHydrated]);
 
   useEffect(() => {
+    hydrateRuntime();
+  }, [hydrateRuntime]);
+
+  useEffect(() => {
     if (!authHydrated) return;
+    if (!runtimeHydrated) return;
     if (!token) {
       router.push("/login");
       return;
@@ -58,7 +66,7 @@ export default function ChatWindow() {
     return () => {
       useWsStore.getState().disconnect();
     };
-  }, [authHydrated, connect, token, router]);
+  }, [authHydrated, runtimeHydrated, connect, token, router]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });

@@ -8,6 +8,7 @@ import pytest
 
 from app.engines.base import RiskResult
 from app.runtime.agent_harness import AgentHarness
+from app.tools.base import ToolResult
 
 
 @pytest.mark.asyncio
@@ -95,6 +96,9 @@ async def test_handle_risk_records_failed_family_notification(monkeypatch):
     assert recorded[1]["step_name"] == "risk_response_final"
     assert recorded[1]["required"] is True
     assert recorded[1]["output_json"]["notification_status"] == "failed"
+    reply = stream_mgr.send_first_reply.await_args.args[0]
+    assert "暂时无法联系" in reply
+    assert "已经通知" not in reply
 
 
 @pytest.mark.asyncio
@@ -139,3 +143,38 @@ async def test_handle_risk_persists_trace_before_final(monkeypatch):
     assert set(order[:-1]) == {"analysis", "family_notification", "risk_response_final"}
     assert order.index("risk_response_final") > order.index("analysis")
     assert stream_mgr.send_risk_alert.await_args == call("high", "")
+
+
+@pytest.mark.asyncio
+async def test_deterministic_caretask_uses_tool_copy_once(monkeypatch):
+    harness = AgentHarness()
+    stream_mgr = MagicMock()
+    stream_mgr.send_first_reply = AsyncMock()
+    stream_mgr.send_final = AsyncMock()
+    harness._dispatch_tools = AsyncMock(
+        return_value=[
+            ToolResult(
+                tool_name="caretask",
+                status="success",
+                display_text="您已经记过吃降压药这件事了，我会继续为您保留。",
+                data={"action": "caretask_reuse"},
+            )
+        ]
+    )
+    harness._persist_conversation = AsyncMock()
+
+    result = await harness._run_deterministic_caretask(
+        message="帮我记一下吃降压药",
+        trace_id="tr_care",
+        stream_mgr=stream_mgr,
+        user_id="user-1",
+        session_id="session-1",
+        start_time=0.0,
+    )
+
+    stream_mgr.send_first_reply.assert_awaited_once_with(
+        "您已经记过吃降压药这件事了，我会继续为您保留。",
+        stream_mgr.send_first_reply.await_args.args[1],
+    )
+    assert result["deterministic_caretask"] is True
+    stream_mgr.send_final.assert_awaited_once()
