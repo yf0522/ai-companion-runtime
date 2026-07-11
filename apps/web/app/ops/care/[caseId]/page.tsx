@@ -42,7 +42,7 @@ function formatTime(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
 }
 
-function evidencePreview(evidence: Record<string, unknown> | null | undefined): string {
+function evidencePreview(evidence: unknown): string {
   if (!evidence || Object.keys(evidence).length === 0) return "暂无结构化证据";
   return JSON.stringify(evidence, null, 2);
 }

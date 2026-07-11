@@ -33,7 +33,7 @@ export default function FamilyTasksPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [timeOfDay, setTimeOfDay] = useState("08:00");
-  const [scheduleType, setScheduleType] = useState("daily");
+  const [scheduleType, setScheduleType] = useState<"once" | "daily" | "weekly">("daily");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,13 +150,12 @@ export default function FamilyTasksPage() {
                 重复
                 <select
                   value={scheduleType}
-                  onChange={(event) => setScheduleType(event.target.value)}
+                  onChange={(event) => setScheduleType(event.target.value as "once" | "daily" | "weekly")}
                   className="min-h-11 rounded-md border border-border bg-surface px-3 text-base"
                 >
                   <option value="daily">每天</option>
                   <option value="weekly">每周</option>
                   <option value="once">一次</option>
-                  <option value="interval">间隔</option>
                 </select>
               </label>
             </div>

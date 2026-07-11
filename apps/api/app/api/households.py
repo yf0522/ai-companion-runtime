@@ -6,15 +6,17 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.auth import get_current_user
 from app.api.family_auth import get_managed_household
 
 router = APIRouter(prefix="/households", tags=["households"])
+
+READINESS_ACTIVE_TASK_STATUSES = ("pending", "due", "snoozed")
 
 DEFAULT_FAMILY_PERMISSIONS = ["view_reminders", "manage_reminders", "view_notifications"]
 
@@ -56,6 +58,61 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+async def _discover_households(*, query: str | None = None, limit: int = 50) -> list[dict]:
+    from app.db.models import Household, User
+    from app.db.session import async_session
+
+    statement = (
+        select(Household, User)
+        .join(User, Household.elder_user_id == User.id)
+        .where(Household.status == "active")
+        .order_by(Household.updated_at.desc())
+        .limit(max(1, min(limit, 100)))
+    )
+    if query and query.strip():
+        pattern = f"%{query.strip()}%"
+        statement = statement.where(
+            or_(Household.name.ilike(pattern), User.username.ilike(pattern))
+        )
+    async with async_session() as db:
+        rows = (await db.execute(statement)).all()
+    return [
+        {
+            "id": str(household.id),
+            "name": household.name,
+            "elder_user_id": str(household.elder_user_id),
+            "elder_name": elder.username,
+            "status": household.status,
+            "updated_at": household.updated_at.isoformat() if household.updated_at else None,
+            "readiness_href": f"/api/households/{household.id}/readiness",
+        }
+        for household, elder in rows
+    ]
+
+
+async def _authorize_household_read(
+    household_id: uuid.UUID,
+    user: dict,
+    *,
+    permission: str = "view_notifications",
+):
+    from app.db.models import Household
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        household = await db.get(Household, household_id)
+    if household is None:
+        raise HTTPException(status_code=404, detail="Household not found")
+    if user.get("role") == "operator":
+        return household
+    managed = await get_managed_household(user, permission=permission)
+    if household.elder_user_id != managed.elder_id:
+        raise HTTPException(status_code=404, detail="Household not found")
+    if managed.role == "family" and managed.household_id != household_id:
+        raise HTTPException(status_code=404, detail="Household not found")
+    return household
+
+
 async def _ensure_household(elder_id: uuid.UUID, name: str | None = None):
     from app.db.models import CareCircleMember, Household
     from app.db.session import async_session
@@ -93,6 +150,23 @@ async def create_household(body: HouseholdCreate, user: dict = Depends(get_curre
         raise HTTPException(status_code=403, detail="Only elder users can create households")
     household = await _ensure_household(uuid.UUID(user["sub"]), body.name)
     return {"id": str(household.id), "elder_user_id": str(household.elder_user_id), "name": household.name}
+
+
+@router.get("")
+async def list_households_for_operator(
+    query: str | None = Query(default=None, max_length=160),
+    limit: int = Query(default=50, ge=1, le=100),
+    user: dict = Depends(get_current_user),
+):
+    if user.get("role") != "operator":
+        raise HTTPException(status_code=403, detail="Operator role required")
+    items = await _discover_households(query=query, limit=limit)
+    return {
+        "scope": "operator_household_discovery",
+        "query": query,
+        "items": items,
+        "total": len(items),
+    }
 
 
 @router.get("/mine")
@@ -364,7 +438,10 @@ async def _household_readiness(household_id: uuid.UUID, user: dict) -> dict:
             await db.execute(
                 select(func.count())
                 .select_from(CareTask)
-                .where(CareTask.user_id == elder_id, CareTask.status.in_(["pending", "snoozed"]))
+                .where(
+                    CareTask.user_id == elder_id,
+                    CareTask.status.in_(READINESS_ACTIVE_TASK_STATUSES),
+                )
             )
         ).scalar_one()
         active_policy = (
@@ -388,23 +465,51 @@ async def _household_readiness(household_id: uuid.UUID, user: dict) -> dict:
         "active_escalation_policy": active_policy > 0,
     }
     labels = {
-        "platform": "Platform readiness",
-        "active_consent_binding": "Active consent binding",
-        "verified_contact": "Verified contact",
-        "production_provider_delivery_test": "Production provider delivery test",
-        "enrolled_active_device": "Enrolled active device",
-        "active_care_task": "Active care task",
-        "active_escalation_policy": "Active escalation policy",
+        "platform": "平台服务可用",
+        "active_consent_binding": "家属授权已生效",
+        "verified_contact": "紧急联系方式已验证",
+        "production_provider_delivery_test": "通知通道已送达验证",
+        "enrolled_active_device": "陪伴设备已激活",
+        "active_care_task": "至少有一项待办照护任务",
+        "active_escalation_policy": "升级处置规则已启用",
     }
     details = {
-        "platform": f"Platform status is {platform['status']}",
-        "active_consent_binding": "An elder-approved family binding is active",
-        "verified_contact": "At least one non-revoked contact is verified",
-        "production_provider_delivery_test": "A signed-webhook delivery has been accepted or confirmed",
-        "enrolled_active_device": "A non-revoked device identity is enrolled",
-        "active_care_task": "At least one actionable CareTask exists",
-        "active_escalation_policy": "An escalation policy is active",
+        "platform": f"平台当前状态：{platform['status']}",
+        "active_consent_binding": "存在长辈授权且未撤销的家属绑定",
+        "verified_contact": "至少一个未撤销的联系方式已完成验证",
+        "production_provider_delivery_test": "真实通知提供方已有 accepted、delivered 或 read 回执",
+        "enrolled_active_device": "至少一个未撤销的设备凭据处于激活状态",
+        "active_care_task": "至少一项 CareTask 可继续执行或稍后提醒",
+        "active_escalation_policy": "家庭已启用一版升级处置规则",
     }
+    owners = {
+        "platform": "平台运营",
+        "active_consent_binding": "长辈",
+        "verified_contact": "家庭管理员",
+        "production_provider_delivery_test": "平台运营",
+        "enrolled_active_device": "家庭管理员",
+        "active_care_task": "家庭成员",
+        "active_escalation_policy": "长辈",
+    }
+    actions = {
+        "platform": "检查依赖服务与 worker 配置",
+        "active_consent_binding": "由长辈邀请家属并完成授权",
+        "verified_contact": "添加联系方式并完成验证码验证",
+        "production_provider_delivery_test": "发送一次真实测试通知并等待回执",
+        "enrolled_active_device": "完成设备注册与凭据激活",
+        "active_care_task": "创建一项近期照护任务",
+        "active_escalation_policy": "由长辈创建并启用升级处置规则",
+    }
+    evidence = {
+        "platform": {"platform_status": platform["status"]},
+        "active_consent_binding": {"active_binding_count": active_binding},
+        "verified_contact": {"verified_contact_count": verified_contact},
+        "production_provider_delivery_test": {"confirmed_delivery_count": provider_delivery},
+        "enrolled_active_device": {"active_device_count": active_device},
+        "active_care_task": {"active_task_count": active_task},
+        "active_escalation_policy": {"active_policy_count": active_policy},
+    }
+    assessed_at = datetime.utcnow().isoformat()
     checks = [
         {
             "key": key,
@@ -412,12 +517,16 @@ async def _household_readiness(household_id: uuid.UUID, user: dict) -> dict:
             "status": "ready" if value else "blocked",
             "detail": details[key],
             "required": True,
+            "owner": owners[key],
+            "action": None if value else actions[key],
+            "evidence": evidence[key],
+            "evidence_at": assessed_at,
         }
         for key, value in check_values.items()
     ]
     ready = all(check_values.values())
     next_action = next(
-        (f"Complete: {labels[key]}" for key, value in check_values.items() if not value),
+        (actions[key] for key, value in check_values.items() if not value),
         None,
     )
     return {
@@ -425,14 +534,27 @@ async def _household_readiness(household_id: uuid.UUID, user: dict) -> dict:
         "status": "ready" if ready else "blocked",
         "checks": checks,
         "next_action": next_action,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": assessed_at,
     }
 
 
 @router.get("/readiness")
-async def my_household_readiness(user: dict = Depends(get_current_user)):
+async def my_household_readiness(
+    household_id: uuid.UUID | None = Query(default=None),
+    query: str | None = Query(default=None, max_length=160),
+    limit: int = Query(default=50, ge=1, le=100),
+    user: dict = Depends(get_current_user),
+):
     if user.get("role") == "operator":
-        raise HTTPException(status_code=400, detail="Operator readiness lookup requires household_id")
+        if household_id is not None:
+            return await _household_readiness(household_id, user)
+        items = await _discover_households(query=query, limit=limit)
+        return {
+            "scope": "operator_household_selection",
+            "household_required": True,
+            "items": items,
+            "total": len(items),
+        }
     managed = await get_managed_household(user, permission="view_notifications")
     household_id = managed.household_id
     if household_id is None and managed.role == "elder":
@@ -445,6 +567,67 @@ async def my_household_readiness(user: dict = Depends(get_current_user)):
 @router.get("/{household_id}/readiness")
 async def household_readiness(household_id: uuid.UUID, user: dict = Depends(get_current_user)):
     return await _household_readiness(household_id, user)
+
+
+@router.get("/{household_id}/escalation-policies")
+async def list_escalation_policies(
+    household_id: uuid.UUID,
+    include_superseded: bool = Query(default=False),
+    user: dict = Depends(get_current_user),
+):
+    await _authorize_household_read(household_id, user)
+    from app.db.models import EscalationPolicy, EscalationStep
+    from app.db.session import async_session
+
+    statement = select(EscalationPolicy).where(
+        EscalationPolicy.household_id == household_id
+    )
+    if not include_superseded:
+        statement = statement.where(EscalationPolicy.status == "active")
+    statement = statement.order_by(EscalationPolicy.version.desc())
+    async with async_session() as db:
+        policies = (await db.execute(statement)).scalars().all()
+        policy_ids = [row.id for row in policies]
+        steps = []
+        if policy_ids:
+            steps = (
+                await db.execute(
+                    select(EscalationStep)
+                    .where(EscalationStep.policy_id.in_(policy_ids))
+                    .order_by(EscalationStep.policy_id, EscalationStep.step_order)
+                )
+            ).scalars().all()
+    steps_by_policy: dict[uuid.UUID, list] = {}
+    for step in steps:
+        steps_by_policy.setdefault(step.policy_id, []).append(step)
+    items = [
+        {
+            "resource_type": "escalation_policy",
+            "id": str(policy.id),
+            "household_id": str(policy.household_id),
+            "name": policy.name,
+            "version": policy.version,
+            "status": policy.status,
+            "created_at": policy.created_at.isoformat() if policy.created_at else None,
+            "updated_at": policy.updated_at.isoformat() if policy.updated_at else None,
+            "steps": [
+                {
+                    "resource_type": "escalation_step",
+                    "id": str(step.id),
+                    "step_order": step.step_order,
+                    "action": step.action,
+                    "contact_point_id": (
+                        str(step.contact_point_id) if step.contact_point_id else None
+                    ),
+                    "delay_seconds": step.delay_seconds,
+                    "config": step.config_json or {},
+                }
+                for step in steps_by_policy.get(policy.id, [])
+            ],
+        }
+        for policy in policies
+    ]
+    return {"household_id": str(household_id), "items": items, "total": len(items)}
 
 
 @router.post("/{household_id}/escalation-policies")

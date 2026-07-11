@@ -27,7 +27,7 @@ def _production_settings(**overrides) -> Settings:
         "rate_limit_failure_mode": "deny",
         "require_tls": True,
         "public_base_url": "https://api.example.test",
-        "expected_migration_heads": "f2a3b4c5d6e7",
+        "expected_migration_heads": "a9c0d1e2f3b4",
         "backup_bucket": "pilot-backups",
         "backup_kms_key_id": "kms-key",
         "evidence_manifest_required": True,

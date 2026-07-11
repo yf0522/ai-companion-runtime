@@ -18,6 +18,7 @@ CARE_TASK_STATUSES = frozenset(
 )
 ACTIVE_STATUSES = frozenset({"pending", "due", "snoozed"})
 TERMINAL_STATUSES = frozenset({"done", "missed", "cancelled"})
+SUPPORTED_SCHEDULE_TYPES = frozenset({"once", "daily", "weekly"})
 # Local care calendar used for "today" list / LLM dump (matches Celery timezone).
 CARE_WINDOW_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -138,14 +139,18 @@ def refresh_status(status: str, due_at: datetime | None, snooze_until: datetime 
     return "pending"
 
 
-def task_to_dict(row: Any) -> dict[str, Any]:
-    """Stable CareTask dict for API + tool/LLM dump (status/title/type/due/notes)."""
+def task_to_dict(row: Any, *, schedule_type: str | None = None) -> dict[str, Any]:
+    """Stable canonical CareTask representation for API and tool consumers."""
+    status = str(row.status)
     return {
         "id": str(row.id),
         "user_id": str(row.user_id),
         "title": row.title,
         "task_type": row.task_type,
-        "status": row.status,
+        "status": status,
+        "schedule_type": schedule_type,
+        "is_active": status in ACTIVE_STATUSES,
+        "is_terminal": status in TERMINAL_STATUSES,
         "due_at": row.due_at.isoformat() if row.due_at else None,
         "snooze_until": row.snooze_until.isoformat() if row.snooze_until else None,
         "reminder_id": str(row.reminder_id) if row.reminder_id else None,
@@ -154,6 +159,7 @@ def task_to_dict(row: Any) -> dict[str, Any]:
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         "version": getattr(row, "version", 1),
         "created_at": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
+        "updated_at": row.updated_at.isoformat() if getattr(row, "updated_at", None) else None,
     }
 
 
@@ -411,7 +417,7 @@ async def _update_task_schedule(
     from app.db.models import Reminder
     from app.db.session import async_session
 
-    st = schedule_type if schedule_type in {"daily", "once", "weekly", "interval"} else "once"
+    st = schedule_type if schedule_type in SUPPORTED_SCHEDULE_TYPES else "once"
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     async with async_session() as db:
@@ -546,7 +552,7 @@ async def create_care_task(
     """
     title = (title or "").strip() or "吃药"
     st = schedule_type or infer_schedule_type_from_utterance(query or title)
-    if st not in {"daily", "once", "weekly", "interval"}:
+    if st not in SUPPORTED_SCHEDULE_TYPES:
         st = "once"
     existing = await find_active_by_fingerprint(
         user_id=user_id, title=title, task_type=task_type, due_at=due_at
@@ -640,9 +646,8 @@ async def create_care_task(
         db.add(row)
         await db.commit()
         await db.refresh(row)
-        data = task_to_dict(row)
+        data = task_to_dict(row, schedule_type=st)
         data["_action"] = "caretask_create"
-        data["schedule_type"] = st
         return data
 
 
@@ -652,6 +657,7 @@ async def list_care_tasks(
     include_terminal: bool = False,
     limit: int = 20,
     scope: str = "all",
+    statuses: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """List CareTasks for API / tools.
 
@@ -660,9 +666,9 @@ async def list_care_tasks(
       - ``today``: local care-window tasks (due today / active undated /
         due|snoozed|missed) — preferred for tool/LLM prompt dump.
     """
-    from sqlalchemy import select
+    from sqlalchemy import case, select
 
-    from app.db.models import CareTask
+    from app.db.models import CareTask, Reminder
     from app.db.session import async_session
 
     db_user_id = normalize_user_id(user_id)
@@ -672,16 +678,56 @@ async def list_care_tasks(
     # Over-fetch before window filter so due-date filtering stays accurate.
     fetch_limit = max(limit * 3, 60) if scope_norm == "today" else limit
     async with async_session() as db:
-        stmt = select(CareTask).where(CareTask.user_id == db_user_id)
-        if not include_terminal:
-            stmt = stmt.where(CareTask.status.in_(list(ACTIVE_STATUSES | {"missed"})))
-        stmt = stmt.order_by(CareTask.due_at.asc().nullslast(), CareTask.created_at.desc()).limit(
-            fetch_limit
+        stmt = (
+            select(CareTask, Reminder.schedule_type)
+            .outerjoin(Reminder, CareTask.reminder_id == Reminder.id)
+            .where(CareTask.user_id == db_user_id)
         )
-        rows = (await db.execute(stmt)).scalars().all()
+        requested_statuses = sorted(set(statuses or []) & CARE_TASK_STATUSES)
+        if requested_statuses:
+            stmt = stmt.where(CareTask.status.in_(requested_statuses))
+        elif not include_terminal:
+            stmt = stmt.where(CareTask.status.in_(list(ACTIVE_STATUSES)))
+        missed_rank = case((CareTask.status == "missed", 0), else_=1)
+        if requested_statuses and set(requested_statuses) <= TERMINAL_STATUSES:
+            stmt = stmt.order_by(
+                missed_rank.asc(),
+                CareTask.due_at.desc().nullslast(),
+                CareTask.updated_at.desc(),
+                CareTask.created_at.desc(),
+            )
+        elif requested_statuses and set(requested_statuses) <= ACTIVE_STATUSES:
+            stmt = stmt.order_by(
+                CareTask.due_at.asc().nullsfirst(),
+                CareTask.updated_at.desc(),
+                CareTask.created_at.desc(),
+            )
+        else:
+            active_rank = case(
+                (CareTask.status.in_(list(ACTIVE_STATUSES)), 0),
+                else_=1,
+            )
+            active_due_at = case(
+                (CareTask.status.in_(list(ACTIVE_STATUSES)), CareTask.due_at),
+                else_=None,
+            )
+            terminal_due_at = case(
+                (CareTask.status.in_(list(TERMINAL_STATUSES)), CareTask.due_at),
+                else_=None,
+            )
+            stmt = stmt.order_by(
+                active_rank.asc(),
+                active_due_at.asc().nullsfirst(),
+                missed_rank.asc(),
+                terminal_due_at.desc().nullslast(),
+                CareTask.updated_at.desc(),
+                CareTask.created_at.desc(),
+            )
+        stmt = stmt.limit(fetch_limit)
+        rows = (await db.execute(stmt)).all()
         out: list[dict[str, Any]] = []
         dirty = False
-        for row in rows:
+        for row, schedule_type in rows:
             new_status = refresh_status(row.status, row.due_at, row.snooze_until, now)
             if new_status != row.status and can_transition(row.status, new_status):
                 row.status = new_status
@@ -694,7 +740,7 @@ async def list_care_tasks(
                 window_end=window_end,
             ):
                 continue
-            item = task_to_dict(row)
+            item = task_to_dict(row, schedule_type=schedule_type)
             if scope_norm == "today":
                 item["care_window_date"] = local_date
             out.append(item)
@@ -772,6 +818,7 @@ async def update_care_task(
     title: str | None = None,
     due_at: datetime | None = None,
     notes: str | None = None,
+    schedule_type: str | None = None,
 ) -> dict[str, Any]:
     from app.db.models import Reminder
     from app.db.session import async_session
@@ -780,6 +827,9 @@ async def update_care_task(
     now = datetime.utcnow()
     async with async_session() as db:
         row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
+        if row.status in TERMINAL_STATUSES:
+            raise CareTaskTransitionError("cannot_update_terminal_care_task")
+        reminder = await db.get(Reminder, row.reminder_id) if row.reminder_id else None
         if title is not None:
             row.title = title.strip() or row.title
         if notes is not None:
@@ -787,18 +837,41 @@ async def update_care_task(
         if due_at is not None:
             row.due_at = due_at
             row.status = infer_initial_status(due_at, now)
-            if row.reminder_id:
-                reminder = await db.get(Reminder, row.reminder_id)
-                if reminder is not None:
-                    reminder.title = row.title
-                    reminder.time_of_day = due_at
-                    reminder.next_fire_at = due_at
-                    reminder.is_active = True
+            if reminder is not None:
+                reminder.title = row.title
+                reminder.time_of_day = due_at
+                reminder.next_fire_at = due_at
+                reminder.is_active = True
+        if schedule_type is not None:
+            normalized_schedule = (
+                schedule_type
+                if schedule_type in SUPPORTED_SCHEDULE_TYPES
+                else "once"
+            )
+            if reminder is None and row.due_at is not None:
+                reminder = Reminder(
+                    user_id=db_user_id,
+                    title=row.title,
+                    description=row.notes or f"caretask:{row.task_type}",
+                    schedule_type=normalized_schedule,
+                    time_of_day=row.due_at,
+                    next_fire_at=row.due_at,
+                    is_active=True,
+                    created_by=row.created_by or "user",
+                )
+                db.add(reminder)
+                await db.flush()
+                row.reminder_id = reminder.id
+            elif reminder is not None:
+                reminder.schedule_type = normalized_schedule
         row.version = (row.version or 1) + 1
         row.updated_at = now
         await db.commit()
         await db.refresh(row)
-        return task_to_dict(row)
+        return task_to_dict(
+            row,
+            schedule_type=reminder.schedule_type if reminder is not None else None,
+        )
 
 
 async def complete_care_task(
@@ -813,6 +886,7 @@ async def complete_care_task(
     now = datetime.utcnow()
     async with async_session() as db:
         row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
+        schedule_type = None
         current = refresh_status(row.status, row.due_at, row.snooze_until, now)
         if current != row.status and can_transition(row.status, current):
             row.status = current
@@ -827,10 +901,11 @@ async def complete_care_task(
 
             rem = await db.get(Reminder, row.reminder_id)
             if rem is not None:
+                schedule_type = rem.schedule_type
                 rem.is_active = False
         await db.commit()
         await db.refresh(row)
-        return task_to_dict(row)
+        return task_to_dict(row, schedule_type=schedule_type)
 
 
 async def snooze_care_task(
@@ -877,14 +952,16 @@ async def snooze_care_task(
         row.due_at = snooze_until
         row.updated_at = now
         row.version = (getattr(row, "version", 1) or 1) + 1
+        schedule_type = None
         if row.reminder_id:
             rem = await db.get(Reminder, row.reminder_id)
             if rem is not None:
+                schedule_type = rem.schedule_type
                 rem.next_fire_at = snooze_until
                 rem.is_active = True
         await db.commit()
         await db.refresh(row)
-        data = task_to_dict(row)
+        data = task_to_dict(row, schedule_type=schedule_type)
         data["snooze_minutes"] = minutes
         return data
 
@@ -902,6 +979,7 @@ async def cancel_care_task(
     now = datetime.utcnow()
     async with async_session() as db:
         row = await _get_versioned_task_for_update(db, db_user_id, task_id, expected_version)
+        schedule_type = None
         assert_transition(row.status, "cancelled")
         row.status = "cancelled"
         row.updated_at = now
@@ -910,19 +988,22 @@ async def cancel_care_task(
         if row.reminder_id:
             rem = await db.get(Reminder, row.reminder_id)
             if rem is not None:
+                schedule_type = rem.schedule_type
                 rem.is_active = False
         await db.commit()
         await db.refresh(row)
-        return task_to_dict(row)
+        return task_to_dict(row, schedule_type=schedule_type)
 
 
 async def mark_missed(*, user_id: str, task_id: str) -> dict[str, Any]:
+    from app.db.models import Reminder
     from app.db.session import async_session
 
     db_user_id = normalize_user_id(user_id)
     now = datetime.utcnow()
     async with async_session() as db:
         row = await _get_task(db, db_user_id, task_id)
+        schedule_type = None
         current = refresh_status(row.status, row.due_at, row.snooze_until, now)
         if current != row.status and can_transition(row.status, current):
             row.status = current
@@ -930,6 +1011,10 @@ async def mark_missed(*, user_id: str, task_id: str) -> dict[str, Any]:
         row.status = "missed"
         row.updated_at = now
         row.version = (getattr(row, "version", 1) or 1) + 1
+        if row.reminder_id:
+            reminder = await db.get(Reminder, row.reminder_id)
+            if reminder is not None:
+                schedule_type = reminder.schedule_type
         await db.commit()
         await db.refresh(row)
-        return task_to_dict(row)
+        return task_to_dict(row, schedule_type=schedule_type)
