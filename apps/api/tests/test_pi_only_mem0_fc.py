@@ -104,6 +104,40 @@ async def test_run_analyzer_chain_returns_bundle(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_analyzer_timeout_storm_uses_defaults(monkeypatch):
+    """S8: forced analyzer timeouts yield defaults without hanging past budget."""
+    import time
+
+    from app.engines.base import AnalyzerInput, MemorySnapshot
+    from app.runtime import analyzers as az
+
+    class HangEngine:
+        async def analyze(self, *_args, **_kwargs):
+            await asyncio.sleep(5)
+            raise AssertionError("should have timed out")
+
+    monkeypatch.setattr(
+        az,
+        "_runtime_config",
+        {"timeouts": {"analyzer": 50, "memory_recall": 50, "fast_reply": 300}},
+    )
+    az._engine_cache.clear()
+    az._engine_cache["intent"] = HangEngine()
+    az._engine_cache["emotion"] = HangEngine()
+    az._engine_cache["memory"] = HangEngine()
+
+    inp = AnalyzerInput(user_id="u", session_id="s", message="你好", trace_id="t")
+    start = time.monotonic()
+    intent, emotion, memory = await az.run_intent_emotion_memory(inp)
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert intent.primary_intent == "chitchat"
+    assert isinstance(emotion, EmotionResult)
+    assert isinstance(memory, MemorySnapshot)
+    assert elapsed_ms < 800
+
+
+@pytest.mark.asyncio
 async def test_fast_reply_race_budget_constant():
     assert FAST_REPLY_BUDGET_MS == 300
 

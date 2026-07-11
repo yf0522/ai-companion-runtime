@@ -53,6 +53,10 @@ test("login keeps the real action in the first mobile viewport", async ({ page }
 
 test("elder companion presents status, next action, safety entry, and all mobile routes", async ({ page }, testInfo) => {
   await seedRole(page, "elder");
+  // S1 dual-path: seed a legacy harness preference; Pi-only must coerce it.
+  await page.addInitScript(() => {
+    localStorage.setItem("companion.agent_runtime", "harness");
+  });
   await page.goto("/elder/companion");
   await expect(page.getByText("今天想先说哪件事？")).toBeVisible();
   await expect(page.getByText("帮我判断是否诈骗")).toBeVisible();
@@ -62,7 +66,9 @@ test("elder companion presents status, next action, safety entry, and all mobile
   await expect(page.getByRole("radiogroup", { name: "回应方式" })).toHaveCount(0);
   await expect(page.getByText("标准模式")).toHaveCount(0);
   await expect(page.getByText("实验模式")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("companion.agent_runtime"))).toBe("pi_experimental");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("companion.agent_runtime")))
+    .toBe("pi_experimental");
   const helpBox = await visibleBox(page.getByRole("link", { name: "现在需要帮助？先联系家人" }));
   expect(helpBox.height).toBeGreaterThanOrEqual(44);
   if (testInfo.project.name === "mobile") {

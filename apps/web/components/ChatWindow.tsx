@@ -36,14 +36,16 @@ export default function ChatWindow() {
   const authHydrated = useAuthStore((state) => state.hydrated);
   const setAuthHydrated = useAuthStore((state) => state.setHydrated);
   const runtimeHydrated = useAgentRuntimeStore((state) => state.hydrated);
-  const hydrateRuntime = useAgentRuntimeStore((state) => state.hydrate);
   const router = useRouter();
 
   useEffect(() => {
     if (useAuthStore.persist.hasHydrated()) { setAuthHydrated(); return; }
     void Promise.resolve(useAuthStore.persist.rehydrate()).finally(setAuthHydrated);
   }, [setAuthHydrated]);
-  useEffect(() => { hydrateRuntime(); }, [hydrateRuntime]);
+  useEffect(() => {
+    // Prefer getState() so React Compiler / selector wrapping cannot skip S1 coerce.
+    useAgentRuntimeStore.getState().hydrate();
+  }, []);
   useEffect(() => {
     if (!authHydrated || !runtimeHydrated) return;
     if (!token) { router.push("/login"); return; }

@@ -20,10 +20,14 @@ export const AGENT_RUNTIME_OPTIONS: {
   },
 ];
 
-function readStoredRuntime(): AgentRuntimeId {
+function coerceStoredRuntimeToPi(): AgentRuntimeId {
   if (typeof window === "undefined") return PI_ONLY_RUNTIME;
-  // Coerce any legacy preference (incl. harness) to Pi-only.
-  localStorage.setItem(STORAGE_KEY, PI_ONLY_RUNTIME);
+  // Coerce any legacy preference (incl. harness) to Pi-only — S1 dual-path guard.
+  try {
+    localStorage.setItem(STORAGE_KEY, PI_ONLY_RUNTIME);
+  } catch {
+    // Private mode / blocked storage must not block hydration.
+  }
   return PI_ONLY_RUNTIME;
 }
 
@@ -39,12 +43,11 @@ export const useAgentRuntimeStore = create<AgentRuntimeState>((set) => ({
   runtime: PI_ONLY_RUNTIME,
   hydrated: false,
   hydrate: () => {
-    set({ runtime: readStoredRuntime(), hydrated: true });
+    const runtime = coerceStoredRuntimeToPi();
+    set({ runtime, hydrated: true });
   },
   setRuntime: (_runtime) => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, PI_ONLY_RUNTIME);
-    }
+    coerceStoredRuntimeToPi();
     set({ runtime: PI_ONLY_RUNTIME, hydrated: true });
   },
 }));
