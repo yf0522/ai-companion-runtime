@@ -224,6 +224,16 @@ class AgentHarness:
                 trace_id,
             )
 
+        if "contact" in intent.tool_needs:
+            return await self._run_deterministic_contact(
+                message=message,
+                trace_id=trace_id,
+                stream_mgr=stream_mgr,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                start_time=start_time,
+            )
+
         if "caretask" in intent.tool_needs:
             return await self._run_deterministic_caretask(
                 message=message,
@@ -491,6 +501,57 @@ class AgentHarness:
             "ttft_ms": ttft_ms,
             "total_latency_ms": total_latency_ms,
             "deterministic_caretask": True,
+        }
+
+    async def _run_deterministic_contact(
+        self,
+        *,
+        message: str,
+        trace_id: str,
+        stream_mgr: StreamManager,
+        user_id: str,
+        session_id: str,
+        start_time: float,
+    ) -> dict:
+        """Use the persisted contact-request result as the only source of truth."""
+        results = await self._dispatch_tools(
+            ["contact"],
+            message,
+            trace_id,
+            stream_mgr,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        result = results[0] if results else None
+        response_text = (
+            getattr(result, "display_text", "")
+            or "这次没有成功发出联系请求，请直接联系身边可信任的人。"
+        )
+        status = getattr(result, "status", "failed")
+        data = getattr(result, "data", None) or {}
+        tool_entry: dict = {"tool": "contact", "status": status}
+        if action := data.get("action"):
+            tool_entry["action"] = action
+
+        ttft_ms = int((time.monotonic() - start_time) * 1000)
+        await stream_mgr.send_first_reply(response_text, ttft_ms)
+        total_latency_ms = int((time.monotonic() - start_time) * 1000)
+        message_id = f"m_{nanoid(size=12)}"
+        await stream_mgr.send_final(
+            trace_id=trace_id,
+            message_id=message_id,
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            tools_used=[tool_entry],
+            memory_updated=False,
+        )
+        await self._persist_conversation(session_id, user_id, message, response_text)
+        return {
+            "trace_id": trace_id,
+            "message_id": message_id,
+            "ttft_ms": ttft_ms,
+            "total_latency_ms": total_latency_ms,
+            "deterministic_contact": True,
         }
 
     async def _run_analyzers(self, input: AnalyzerInput) -> tuple:

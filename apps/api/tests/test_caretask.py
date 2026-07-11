@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,7 +16,7 @@ from app.tools.caretask_service import (
     refresh_status,
     title_fingerprint,
 )
-from app.tools.caretask_tool import CareTaskTool
+from app.tools.caretask_tool import CareTaskTool, _infer_action_from_query
 from app.tools.honesty import enforce_no_verbal_promise, response_claims_tool_success
 from app.tools.base import ToolResult
 from app.engines.base import AnalyzerInput
@@ -103,6 +104,156 @@ async def test_intent_snooze_routes_to_caretask():
         )
     )
     assert "caretask" in result.tool_needs
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "今日任务",
+        "我问你今天有什么照护任务",
+        "我今天有哪些照护任务",
+        "请列出今天的照护任务",
+        "我今天需要做什么",
+        "吃药",
+    ],
+)
+def test_caretask_queries_default_to_read_only(query):
+    assert _infer_action_from_query(query) == "list"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "提醒我晚上八点吃药",
+        "帮我记一下吃降糖药",
+        "新增一个下周复诊任务",
+    ],
+)
+def test_caretask_creation_requires_an_explicit_write_cue(query):
+    assert _infer_action_from_query(query) == "create"
+
+
+@pytest.mark.asyncio
+async def test_caretask_query_without_model_action_never_calls_create(monkeypatch):
+    tool = CareTaskTool()
+    list_result = ToolResult(
+        tool_name="caretask",
+        status="success",
+        display_text="当前没有待处理的照护任务",
+        data={"action": "caretask_list", "tasks": []},
+    )
+    list_call = AsyncMock(return_value=list_result)
+    create_call = AsyncMock()
+    monkeypatch.setattr(tool, "_list", list_call)
+    monkeypatch.setattr(tool, "_create", create_call)
+
+    result = await tool.execute(
+        {
+            "query": "我问你今天有什么照护任务",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+
+    assert result.data["action"] == "caretask_list"
+    list_call.assert_awaited_once()
+    create_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "mutation_method"),
+    [
+        ("create", "_create"),
+        ("complete", "_complete"),
+        ("cancel", "_cancel"),
+        ("snooze", "_snooze"),
+        ("missed", "_missed"),
+    ],
+)
+async def test_caretask_read_query_overrides_any_model_mutation(
+    monkeypatch,
+    action,
+    mutation_method,
+):
+    tool = CareTaskTool()
+    list_result = ToolResult(
+        tool_name="caretask",
+        status="success",
+        display_text="当前没有待处理的照护任务",
+        data={"action": "caretask_list", "tasks": []},
+    )
+    list_call = AsyncMock(return_value=list_result)
+    mutation_call = AsyncMock()
+    monkeypatch.setattr(tool, "_list", list_call)
+    monkeypatch.setattr(tool, mutation_method, mutation_call)
+
+    result = await tool.execute(
+        {
+            "action": action,
+            "query": "我问你今天有什么照护任务",
+            "title": "模型臆造的任务",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+
+    assert result.data["action"] == "caretask_list"
+    list_call.assert_awaited_once()
+    mutation_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_intent_routes_explicit_family_help_request_to_contact_tool():
+    result = await IntentEngine().analyze(
+        AnalyzerInput(
+            user_id="u",
+            session_id="s",
+            message="我想让家人知道我需要帮助",
+            trace_id="t-contact",
+        )
+    )
+    assert result.primary_intent == "task"
+    assert result.tool_needs == ["contact"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "我不想让家人知道",
+        "我已经告诉家人了",
+        "医生让我联系家人",
+        "我刚联系过女儿",
+        "联系家人了吗",
+        "我想告诉家人最近挺好的",
+    ],
+)
+async def test_intent_does_not_contact_family_without_an_explicit_request(message):
+    result = await IntentEngine().analyze(
+        AnalyzerInput(
+            user_id="u",
+            session_id="s",
+            message=message,
+            trace_id="t-contact-negative",
+        )
+    )
+    assert "contact" not in result.tool_needs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    ["联系家人", "我想让家人知道我需要帮助", "请家人联系我", "我想请你通知女儿"],
+)
+async def test_intent_routes_only_explicit_family_contact_commands(message):
+    result = await IntentEngine().analyze(
+        AnalyzerInput(
+            user_id="u",
+            session_id="s",
+            message=message,
+            trace_id="t-contact-explicit",
+        )
+    )
+    assert result.tool_needs == ["contact"]
 
 
 def test_normalize_title_and_fingerprint():
@@ -830,9 +981,11 @@ async def test_registry_includes_caretask():
     reg_mod._TOOLS = None
     reg = get_tool_registry()
     assert "caretask" in reg
+    assert "contact" in reg
     assert "memory" in reg
     names = {s["name"] for s in list_tool_schemas()}
     assert "caretask" in names
+    assert "contact" in names
     assert "memory" in names
 
 

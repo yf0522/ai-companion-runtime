@@ -4,6 +4,12 @@ export type AgentRuntimeId = "harness" | "pi_experimental";
 
 const STORAGE_KEY = "companion.agent_runtime";
 
+function configuredRuntime(): AgentRuntimeId {
+  return process.env.NEXT_PUBLIC_AGENT_RUNTIME === "pi_experimental"
+    ? "pi_experimental"
+    : "harness";
+}
+
 export const AGENT_RUNTIME_OPTIONS: {
   id: AgentRuntimeId;
   label: string;
@@ -22,10 +28,11 @@ export const AGENT_RUNTIME_OPTIONS: {
 ];
 
 function readStoredRuntime(): AgentRuntimeId {
-  if (typeof window === "undefined") return "harness";
+  if (typeof localStorage === "undefined") return configuredRuntime();
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw === "pi_experimental" || raw === "pi") return "pi_experimental";
-  return "harness";
+  if (raw === "harness") return "harness";
+  return configuredRuntime();
 }
 
 interface AgentRuntimeState {
@@ -35,17 +42,23 @@ interface AgentRuntimeState {
   hydrate: () => void;
 }
 
-/** Default harness on SSR + first client paint to avoid select title hydration mismatch. */
+/** Use the configured default on SSR; hydrate device choice before opening a socket. */
 export const useAgentRuntimeStore = create<AgentRuntimeState>((set) => ({
-  runtime: "harness",
+  runtime: configuredRuntime(),
   hydrated: false,
   hydrate: () => {
     set({ runtime: readStoredRuntime(), hydrated: true });
   },
   setRuntime: (runtime) => {
-    if (typeof window !== "undefined") {
+    if (typeof localStorage !== "undefined") {
       localStorage.setItem(STORAGE_KEY, runtime);
     }
     set({ runtime, hydrated: true });
   },
 }));
+
+export function getActiveAgentRuntime(): AgentRuntimeId {
+  const state = useAgentRuntimeStore.getState();
+  if (!state.hydrated) state.hydrate();
+  return useAgentRuntimeStore.getState().runtime;
+}

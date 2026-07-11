@@ -7,7 +7,10 @@ import {
   isCareTaskActive,
   isTerminalCareTaskStatus,
 } from "../lib/care-task-state.ts";
-import { outcomeReceiptForTool } from "../components/elder/outcome-receipt.ts";
+import {
+  assistantBodyAfterToolReceipts,
+  outcomeReceiptForTool,
+} from "../components/elder/outcome-receipt.ts";
 import { memoryCorrectionReceipt } from "../app/elder/memory/correction-receipt.ts";
 
 test("canonical CareTask states drive elder labels and activity", () => {
@@ -83,6 +86,47 @@ test("outcome receipts never expose raw internal tool names", () => {
     data: { status: "empty" },
   });
   assert.equal(recall.title, "没有找到可使用的长期记忆");
+});
+
+test("tool receipt detail is not repeated as an assistant body", () => {
+  const tools = [{
+    tool: "caretask",
+    status: "success",
+    action: "caretask_list",
+    displayText: "您当前的照护任务：\n- 晚上吃药",
+  }];
+  assert.equal(
+    assistantBodyAfterToolReceipts("您当前的照护任务：\n- 晚上吃药", tools),
+    "",
+  );
+  assert.equal(
+    assistantBodyAfterToolReceipts("我再补充一句说明。", tools),
+    "我再补充一句说明。",
+  );
+  assert.equal(
+    assistantBodyAfterToolReceipts("您当前的照护任务：\n- 晚上吃药", [{ ...tools[0], status: "failed" }]),
+    "您当前的照护任务：\n- 晚上吃药",
+  );
+  assert.equal(
+    assistantBodyAfterToolReceipts("已查看任务，下面是补充说明。", tools),
+    "已查看任务，下面是补充说明。",
+  );
+});
+
+test("runtime selection hydrates the stored Pi choice before connecting", async () => {
+  const storage = new Map([["companion.agent_runtime", "pi_experimental"]]);
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear(),
+    key: (index) => [...storage.keys()][index] ?? null,
+    get length() { return storage.size; },
+  };
+  const { getActiveAgentRuntime, useAgentRuntimeStore } = await import("../stores/agentRuntimeStore.ts");
+  useAgentRuntimeStore.setState({ runtime: "harness", hydrated: false });
+  assert.equal(getActiveAgentRuntime(), "pi_experimental");
+  assert.equal(useAgentRuntimeStore.getState().hydrated, true);
 });
 
 test("device-local chat history is partitioned by authenticated user and clearable", async () => {

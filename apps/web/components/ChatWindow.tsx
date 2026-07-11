@@ -107,8 +107,8 @@ export default function ChatWindow() {
 
   const quickActions = [
     nextTaskTitle
-      ? { title: `看看“${nextTaskTitle}”`, message: `帮我确认今天的${nextTaskTitle}`, icon: CalendarCheck2 }
-      : { title: "看看今天的安排", message: "我今天需要做什么", icon: CalendarCheck2 },
+      ? { title: `看看“${nextTaskTitle}”`, message: "请列出今天的照护任务", icon: CalendarCheck2 }
+      : { title: "看看今天的安排", message: "请列出今天的照护任务", icon: CalendarCheck2 },
     { title: "设置吃药提醒", message: "提醒我晚上八点吃药", icon: BellRing },
     { title: "请家人联系我", message: "我想让家人知道我需要帮助", icon: PhoneCall },
     { title: "帮我判断是否诈骗", message: "有人让我转账，我不确定", icon: ShieldAlert },

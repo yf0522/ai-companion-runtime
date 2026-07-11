@@ -131,12 +131,24 @@ async def tool_execute(
         return resp
 
     params = dict(body.params or {})
-    if body.user_id and "user_id" not in params:
+    if body.tool_name == "contact":
+        # Contact requests are side effects. Never let model-provided params
+        # override the authenticated runtime context or choose a recipient.
+        for key in ("user_id", "session_id", "trace_id", "recipient", "provider", "risk_level"):
+            params.pop(key, None)
+        if not body.user_id or not body.trace_id:
+            raise HTTPException(status_code=400, detail="contact_requires_trusted_context")
         params["user_id"] = body.user_id
-    if body.session_id and "session_id" not in params:
-        params["session_id"] = body.session_id
-    if body.trace_id and "trace_id" not in params:
         params["trace_id"] = body.trace_id
+        if body.session_id:
+            params["session_id"] = body.session_id
+    else:
+        if body.user_id and "user_id" not in params:
+            params["user_id"] = body.user_id
+        if body.session_id and "session_id" not in params:
+            params["session_id"] = body.session_id
+        if body.trace_id and "trace_id" not in params:
+            params["trace_id"] = body.trace_id
     # Propagate risk context so domain tools (e.g. memory) can empty/skip on crisis.
     params["risk_blocked"] = bool(body.risk_blocked)
     if body.risk_level is not None:

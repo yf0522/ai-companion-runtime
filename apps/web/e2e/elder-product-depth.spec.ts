@@ -127,6 +127,7 @@ test("connected action dock expands for a long draft and exposes streaming contr
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
   await expect(page.getByRole("log")).toContainText("我正在确认这件事。");
+  await expect(page.getByText("Read", { exact: true })).toHaveCount(0);
 });
 
 test("failed action dock preserves the draft and offers an explicit retry", async ({ page }) => {

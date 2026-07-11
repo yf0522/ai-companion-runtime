@@ -178,3 +178,37 @@ async def test_deterministic_caretask_uses_tool_copy_once(monkeypatch):
     )
     assert result["deterministic_caretask"] is True
     stream_mgr.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deterministic_contact_uses_truthful_tool_copy(monkeypatch):
+    harness = AgentHarness()
+    stream_mgr = MagicMock()
+    stream_mgr.send_first_reply = AsyncMock()
+    stream_mgr.send_final = AsyncMock()
+    harness._dispatch_tools = AsyncMock(
+        return_value=[
+            ToolResult(
+                tool_name="contact",
+                status="success",
+                display_text="求助请求已记录并进入联系队列，送达状态还在确认。",
+                data={"action": "contact_help_request", "delivery_status": "queued"},
+            )
+        ]
+    )
+    harness._persist_conversation = AsyncMock()
+
+    result = await harness._run_deterministic_contact(
+        message="我想让家人知道我需要帮助",
+        trace_id="tr_contact",
+        stream_mgr=stream_mgr,
+        user_id="user-1",
+        session_id="session-1",
+        start_time=0.0,
+    )
+
+    reply = stream_mgr.send_first_reply.await_args.args[0]
+    assert reply == "求助请求已记录并进入联系队列，送达状态还在确认。"
+    assert "已经通知" not in reply
+    assert result["deterministic_contact"] is True
+    stream_mgr.send_final.assert_awaited_once()
