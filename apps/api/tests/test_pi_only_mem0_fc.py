@@ -251,6 +251,8 @@ async def test_mem0_empty_does_not_dump_lifecycle(monkeypatch):
     assert recall.data and recall.data.get("engine") == "mem0"
     assert recall.data.get("no_dump") is True
     assert recall.data.get("reason") == "mem0_empty_no_dump"
+    assert "暂时不可用" in recall.display_text
+    assert "没有已授权" not in recall.display_text
 
 
 @pytest.mark.asyncio
@@ -457,6 +459,8 @@ async def test_mem0_enabled_unavailable_uses_degraded_not_lifecycle(monkeypatch)
     assert recall.degraded is True
     assert recall.data and recall.data.get("no_dump") is True
     assert recall.data.get("engine") == "mem0"
+    assert "暂时不可用" in recall.display_text
+    assert "没有已授权" not in recall.display_text
 
 
 @pytest.mark.asyncio
@@ -483,6 +487,131 @@ async def test_mem0_timeout_degrade_no_dump(monkeypatch):
     assert result.fragments == []
     assert result.degraded is True
     assert result.data and result.data.get("engine") == "mem0"
+    assert "暂时不可用" in result.display_text
+    assert "没有已授权" not in result.display_text
+
+
+@pytest.mark.asyncio
+async def test_true_no_granted_memories_copy_stays_honest(monkeypatch):
+    """When there are no granted rows, copy may say no authorized memories."""
+    from app.memory.adapter import MemoryBusinessAdapter
+
+    class Mem0Backend:
+        name = "mem0"
+
+        async def search(self, **kwargs):
+            return []
+
+        async def add(self, **kwargs):
+            return None
+
+    async def fake_select(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.db.session.async_session", _fake_session_factory())
+    monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
+
+    adapter = MemoryBusinessAdapter(backend=Mem0Backend())
+    recall = await adapter.recall(
+        user_id="11111111-1111-1111-1111-111111111111",
+        query_intent="喜欢什么",
+    )
+    assert recall.status == "empty"
+    assert recall.data and recall.data.get("reason") == "no_granted_memories"
+    assert recall.data.get("no_dump") is False
+    assert "没有已授权的长期记忆" in recall.display_text
+
+
+@pytest.mark.asyncio
+async def test_mem0_enabled_skips_analyzer_lifecycle_l3(monkeypatch):
+    """Dual-path fix: MEM0_ENABLED → analyzer vectors empty; LTM via FC only."""
+    from app.engines.base import AnalyzerInput
+    from app.engines.memory_engine import MemoryEngine
+
+    engine = MemoryEngine()
+    uid = "4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf"
+
+    monkeypatch.setenv("MEM0_ENABLED", "1")
+    monkeypatch.setattr(
+        "app.storage.working_memory.get_working_memory",
+        AsyncMock(return_value=[{"role": "user", "content": "hi"}]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.storage.working_memory.get_session_summary",
+        AsyncMock(return_value="summary"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_load_profile",
+        AsyncMock(return_value={"name": "张三"}),
+    )
+    load_l3 = AsyncMock(
+        return_value=[{"content": "ghost lifecycle memory", "score": 0.9, "id": "m1"}]
+    )
+    monkeypatch.setattr(engine, "_load_important_memories", load_l3)
+
+    snap = await engine.analyze(
+        AnalyzerInput(
+            user_id=uid,
+            session_id="sess",
+            message="记得什么",
+            trace_id="tr_dual",
+        )
+    )
+    assert snap.profile["name"] == "张三"
+    assert snap.vectors == []
+    load_l3.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mem0_disabled_still_loads_analyzer_l3(monkeypatch):
+    from app.engines.base import AnalyzerInput
+    from app.engines.memory_engine import MemoryEngine
+
+    engine = MemoryEngine()
+    monkeypatch.delenv("MEM0_ENABLED", raising=False)
+    monkeypatch.setattr(
+        "app.storage.working_memory.get_working_memory",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.storage.working_memory.get_session_summary",
+        AsyncMock(return_value=None),
+        raising=False,
+    )
+    monkeypatch.setattr(engine, "_load_profile", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        engine,
+        "_load_important_memories",
+        AsyncMock(return_value=[{"content": "lifecycle ok", "score": 0.8, "id": "m2"}]),
+    )
+
+    # Ensure settings.mem0_enabled does not keep the path on.
+    monkeypatch.setattr("app.memory.backend.mem0_enabled", lambda: False)
+
+    snap = await engine.analyze(
+        AnalyzerInput(
+            user_id="4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf",
+            session_id="sess",
+            message="hi",
+            trace_id="tr_l3",
+        )
+    )
+    assert len(snap.vectors) == 1
+    assert snap.vectors[0]["content"] == "lifecycle ok"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_rejects_unknown_name():
+    from app.tools.registry import execute_tool
+
+    result = await execute_tool("shell_exec", {"cmd": "id"})
+    assert result.status == "failed"
+    assert result.data and result.data.get("reason") == "unknown_tool"
+    assert "未知工具" in result.display_text
 
 
 # --- Gate C / Phase 5 deletion + infra guards ---

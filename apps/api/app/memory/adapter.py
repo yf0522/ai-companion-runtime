@@ -49,8 +49,20 @@ def _engine_metric(engine: str, event: str) -> None:
         from app.observability.metrics import MEMORY_ENGINE_TOTAL
 
         MEMORY_ENGINE_TOTAL.labels(engine=engine, event=event).inc()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("memory engine metric skipped: %s", exc)
+
+
+def _empty_recall_display(*, reason: str, no_dump: bool = False) -> str:
+    """User/ops-facing copy must not claim 'no granted memories' on mem0 degrade."""
+    if no_dump or reason in {
+        "mem0_empty_no_dump",
+        "timeout",
+        "error",
+        "degraded",
+    }:
+        return "记忆服务暂时不可用，稍后再试。"
+    return "暂时没有已授权的长期记忆可回忆。"
 
 
 class MemoryBusinessAdapter:
@@ -237,7 +249,7 @@ class MemoryBusinessAdapter:
                 status="timeout",
                 fragments=[],
                 degraded=True,
-                display_text="",
+                display_text=_empty_recall_display(reason="timeout"),
                 data={
                     "reason": "timeout",
                     "timeout_ms": self.recall_timeout_ms,
@@ -251,22 +263,23 @@ class MemoryBusinessAdapter:
                 status="empty",
                 fragments=[],
                 degraded=True,
-                display_text="",
+                display_text=_empty_recall_display(reason="error"),
                 data={"reason": "error", "error": str(e), "engine": engine_name},
             )
 
         if not fragments:
             reason = str(meta.get("reason") or "no_granted_memories")
-            degraded = bool(meta.get("degraded") or meta.get("no_dump"))
+            no_dump = bool(meta.get("no_dump"))
+            degraded = bool(meta.get("degraded") or no_dump)
             return RecallResult(
                 status="empty",
                 fragments=[],
                 degraded=degraded,
-                display_text="暂时没有已授权的长期记忆可回忆。",
+                display_text=_empty_recall_display(reason=reason, no_dump=no_dump),
                 data={
                     "reason": reason,
                     "engine": engine_name,
-                    "no_dump": bool(meta.get("no_dump")),
+                    "no_dump": no_dump,
                 },
             )
         lines = [f"- {f['content']}" for f in fragments[:5]]

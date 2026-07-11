@@ -45,6 +45,8 @@ def test_production_config_requires_tls_migrations_backup_and_evidence():
         enable_celery_tasks=True,
         device_identity_required=True,
         controlled_elder_enrollment=True,
+        enable_pi_runtime=True,
+        tool_bridge_token="bridge-secret-at-least-16chars",
     )
     settings.validate_security()
 

@@ -1,6 +1,7 @@
 """Tool bridge production auth + Trace persistence."""
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -107,3 +108,94 @@ async def test_tool_execute_records_trace_tool_call(monkeypatch):
     assert recorded["trace_id"] == "tr-bridge-1"
     assert recorded["tool_name"] == "caretask"
     assert recorded["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_tool_execute_server_risk_rejects_forged_low(monkeypatch):
+    """H1: client risk_level=low must not bypass server RiskEngine on crisis query."""
+    from app.api.tool_execute import ToolExecuteRequest, tool_execute
+    from app.engines.base import RiskResult
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("TOOL_BRIDGE_TOKEN", raising=False)
+
+    async def fake_analyze(self, input):
+        assert "死" in input.message or "自杀" in input.message
+        return RiskResult(
+            level="high",
+            category="emotional_crisis",
+            confidence=0.95,
+            triggered_rules=["keyword"],
+        )
+
+    monkeypatch.setattr("app.engines.risk_engine.RiskEngine.analyze", fake_analyze)
+
+    executed = {"called": False}
+
+    async def fake_execute(name, params):
+        executed["called"] = True
+        from app.tools.base import ToolResult
+
+        return ToolResult(tool_name=name, status="success", display_text="should not run")
+
+    monkeypatch.setattr("app.api.tool_execute.execute_tool", fake_execute)
+
+    resp = await tool_execute(
+        ToolExecuteRequest(
+            tool_name="memory",
+            params={"action": "note", "query": "我想自杀"},
+            user_id=str(uuid.uuid4()),
+            risk_level="low",
+            risk_blocked=False,
+        ),
+        authorization=None,
+        x_tool_bridge_token=None,
+    )
+    assert resp.status == "failed"
+    assert resp.data and resp.data.get("reason") == "risk_blocked"
+    assert resp.data.get("risk_level") == "high"
+    assert resp.data.get("server_recheck") is True
+    assert executed["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_tool_execute_server_risk_timeout_fail_closed(monkeypatch):
+    """Bridge risk timeout → critical block (fail-closed)."""
+    from app.api.tool_execute import ToolExecuteRequest, tool_execute
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("TOOL_BRIDGE_TOKEN", raising=False)
+
+    async def slow_analyze(self, input):
+        await asyncio.sleep(1)
+        from app.engines.base import RiskResult
+
+        return RiskResult(level="low", category="none")
+
+    monkeypatch.setattr("app.engines.risk_engine.RiskEngine.analyze", slow_analyze)
+    monkeypatch.setattr("app.api.tool_execute._BRIDGE_RISK_TIMEOUT_MS", 20)
+
+    executed = {"called": False}
+
+    async def fake_execute(name, params):
+        executed["called"] = True
+        from app.tools.base import ToolResult
+
+        return ToolResult(tool_name=name, status="success", display_text="nope")
+
+    monkeypatch.setattr("app.api.tool_execute.execute_tool", fake_execute)
+
+    resp = await tool_execute(
+        ToolExecuteRequest(
+            tool_name="caretask",
+            params={"action": "create", "query": "提醒我吃药"},
+            user_id=str(uuid.uuid4()),
+            risk_level="low",
+        ),
+        authorization=None,
+        x_tool_bridge_token=None,
+    )
+    assert resp.status == "failed"
+    assert resp.data and resp.data.get("reason") == "risk_blocked"
+    assert resp.data.get("risk_level") == "critical"
+    assert executed["called"] is False

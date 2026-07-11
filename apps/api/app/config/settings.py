@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     mem0_enabled: bool = False
     mem0_config_json: str = ""
 
+    # Shared secret for Pi sidecar → API /tools/execute bridge.
+    tool_bridge_token: str = ""
+
     model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 
     def validate_security(self):
@@ -161,6 +164,11 @@ class Settings(BaseSettings):
 
             if not self.controlled_elder_enrollment:
                 errors.append("CONTROLLED_ELDER_ENROLLMENT must be true in production.")
+
+            if self.enable_pi_runtime and not self.tool_bridge_token.strip():
+                errors.append(
+                    "TOOL_BRIDGE_TOKEN must be set in production when ENABLE_PI_RUNTIME is true."
+                )
 
         if is_prod and errors:
             raise RuntimeError(

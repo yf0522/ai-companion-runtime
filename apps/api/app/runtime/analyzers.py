@@ -263,6 +263,9 @@ async def record_analyzer_events(
             )
         )
     if memory is not None:
+        from app.memory.backend import mem0_enabled
+
+        ltm_via_mem0 = mem0_enabled()
         tasks.append(
             _trace_svc.add_event(
                 trace_id=trace_id,
@@ -275,6 +278,8 @@ async def record_analyzer_events(
                     "vector_count": len(memory.vectors or []),
                     "has_summary": bool(memory.summary),
                     "has_profile": bool(memory.profile),
+                    # Under mem0, LTM is FC-only; analyzer vectors stay empty by design.
+                    "ltm_source": "fc_mem0" if ltm_via_mem0 else "analyzer_lifecycle",
                 },
                 status="success",
                 latency_ms=latency_ms,

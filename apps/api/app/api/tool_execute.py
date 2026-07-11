@@ -1,6 +1,7 @@
 """HTTP bridge for Pi sidecar (and other runtimes) to execute shared tools."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -9,12 +10,16 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from app.engines.base import AnalyzerInput, RiskResult
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, list_tool_schemas
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["tools"])
+
+_BRIDGE_RISK_TIMEOUT_MS = 100
+_BLOCKING_RISK_LEVELS = frozenset({"high", "critical"})
 
 
 class ToolExecuteRequest(BaseModel):
@@ -66,6 +71,51 @@ def _bridge_token_ok(authorization: str | None, x_tool_bridge_token: str | None)
     return False
 
 
+def _utterance_for_risk(params: dict[str, Any]) -> str:
+    for key in ("query", "message", "text", "summary"):
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+async def _server_side_risk(
+    *,
+    user_id: str | None,
+    session_id: str | None,
+    utterance: str,
+    trace_id: str | None,
+) -> RiskResult | None:
+    """Re-run RiskEngine on bridge utterances — never trust client risk_level alone."""
+    if not utterance:
+        return None
+    try:
+        from app.engines.risk_engine import RiskEngine
+
+        engine = RiskEngine()
+        payload = AnalyzerInput(
+            user_id=user_id or "bridge",
+            session_id=session_id or "bridge",
+            message=utterance,
+            trace_id=trace_id or "bridge",
+        )
+        return await asyncio.wait_for(
+            engine.analyze(payload),
+            timeout=_BRIDGE_RISK_TIMEOUT_MS / 1000.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("tool bridge risk re-check timed out (%sms)", _BRIDGE_RISK_TIMEOUT_MS)
+    except Exception as exc:
+        logger.warning("tool bridge risk re-check failed: %s", exc)
+    # Fail-closed: treat unavailable risk as critical (same as risk_gate).
+    return RiskResult(
+        level="critical",
+        category="safety_unavailable",
+        confidence=1.0,
+        triggered_rules=["risk_engine_unavailable"],
+    )
+
+
 async def _record_bridge_tool_call(
     *,
     trace_id: str | None,
@@ -112,24 +162,6 @@ async def tool_execute(
     if not _bridge_token_ok(authorization, x_tool_bridge_token):
         raise HTTPException(status_code=401, detail="invalid_bridge_token")
 
-    if body.risk_blocked or (body.risk_level or "").lower() in {"high", "critical"}:
-        resp = ToolExecuteResponse(
-            tool_name=body.tool_name,
-            status="failed",
-            display_text="风险拦截：当前不能执行工具",
-            data={"reason": "risk_blocked", "risk_level": body.risk_level},
-            latency_ms=0,
-        )
-        await _record_bridge_tool_call(
-            trace_id=body.trace_id,
-            tool_name=body.tool_name,
-            input_json={"params": body.params, "risk_level": body.risk_level},
-            output_json={"status": resp.status, "display_text": resp.display_text, "data": resp.data},
-            status="failed",
-            latency_ms=0,
-        )
-        return resp
-
     params = dict(body.params or {})
     if body.user_id and "user_id" not in params:
         params["user_id"] = body.user_id
@@ -137,9 +169,46 @@ async def tool_execute(
         params["session_id"] = body.session_id
     if body.trace_id and "trace_id" not in params:
         params["trace_id"] = body.trace_id
+
+    client_blocked = body.risk_blocked or (body.risk_level or "").lower() in _BLOCKING_RISK_LEVELS
+    effective_risk_level = (body.risk_level or "").lower() or None
+    server_risk = await _server_side_risk(
+        user_id=body.user_id,
+        session_id=body.session_id,
+        utterance=_utterance_for_risk(params),
+        trace_id=body.trace_id,
+    )
+    if server_risk is not None and server_risk.level in _BLOCKING_RISK_LEVELS:
+        client_blocked = True
+        effective_risk_level = server_risk.level
+
+    if client_blocked:
+        resp = ToolExecuteResponse(
+            tool_name=body.tool_name,
+            status="failed",
+            display_text="风险拦截：当前不能执行工具",
+            data={
+                "reason": "risk_blocked",
+                "risk_level": effective_risk_level,
+                "server_recheck": bool(server_risk is not None),
+            },
+            latency_ms=0,
+        )
+        await _record_bridge_tool_call(
+            trace_id=body.trace_id,
+            tool_name=body.tool_name,
+            input_json={"params": body.params, "risk_level": effective_risk_level},
+            output_json={"status": resp.status, "display_text": resp.display_text, "data": resp.data},
+            status="failed",
+            latency_ms=0,
+        )
+        return resp
+
     # Propagate risk context so domain tools (e.g. memory) can empty/skip on crisis.
     params["risk_blocked"] = bool(body.risk_blocked)
-    if body.risk_level is not None:
+    if effective_risk_level is not None:
+        params["risk_level"] = effective_risk_level
+    elif body.risk_level is not None:
         params["risk_level"] = body.risk_level
 
     start = time.monotonic()

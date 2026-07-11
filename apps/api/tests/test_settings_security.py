@@ -82,9 +82,41 @@ def test_production_accepts_all_real_secrets():
         enable_celery_tasks=True,
         device_identity_required=True,
         controlled_elder_enrollment=True,
+        enable_pi_runtime=True,
+        tool_bridge_token="bridge-secret-at-least-16chars",
     )
     # Should not raise
     s.validate_security()
+
+
+def test_production_requires_tool_bridge_token_when_pi_enabled():
+    s = Settings(
+        app_env="production",
+        jwt_secret="a-very-long-secure-jwt-secret-key-here",
+        redis_password="strong_redis_password",
+        minio_secret_key="strong_minio_secret",
+        database_url="postgresql+asyncpg://user:real_pass@host/db",
+        rate_limit_failure_mode="deny",
+        allow_ephemeral_sessions=False,
+        require_tls=True,
+        public_base_url="https://api.example.test",
+        public_api_url="https://api.example.test",
+        public_ws_url="wss://api.example.test",
+        expected_migration_heads="f2a3b4c5d6e7",
+        backup_bucket="pilot-backups",
+        backup_kms_key_id="kms-key",
+        evidence_manifest_required=True,
+        notification_provider="signed_webhook",
+        notification_outbound_url="https://notify.example.test/events",
+        notification_webhook_secret="provider-secret",
+        enable_celery_tasks=True,
+        device_identity_required=True,
+        controlled_elder_enrollment=True,
+        enable_pi_runtime=True,
+        tool_bridge_token="",
+    )
+    with pytest.raises(RuntimeError, match="TOOL_BRIDGE_TOKEN"):
+        s.validate_security()
 
 
 def test_development_warns_but_does_not_crash():

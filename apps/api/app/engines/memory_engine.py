@@ -21,7 +21,12 @@ def _normalize_user_id(user_id: str) -> uuid.UUID | None:
 
 
 class MemoryEngine(BaseEngine):
-    """Memory recall: L0/L1 Redis + L2 profile + L3 important memories."""
+    """Memory recall: L0/L1 Redis + L2 profile + optional L3.
+
+    When ``MEM0_ENABLED`` is on, analyzer L3 lifecycle vectors are skipped so
+    long-term recall into the product path is only via Pi FC ``memory`` + mem0
+    adapter (no dual-path ghost memories in trace/bundle).
+    """
 
     async def analyze(self, input: AnalyzerInput) -> MemorySnapshot:
         working = []
@@ -46,7 +51,17 @@ class MemoryEngine(BaseEngine):
         db_user_id = _normalize_user_id(input.user_id)
         if db_user_id is not None:
             profile = await self._load_profile(db_user_id)
-            vectors = await self._load_important_memories(db_user_id)
+            # Single LTM path under mem0: FC/adapter only — do not populate
+            # analyzer lifecycle L3 (avoids trace showing vectors while FC is empty).
+            from app.memory.backend import mem0_enabled
+
+            if mem0_enabled():
+                logger.debug(
+                    "MEM0_ENABLED: skipping analyzer lifecycle L3 "
+                    "(LTM recall via FC memory tool / mem0 adapter)"
+                )
+            else:
+                vectors = await self._load_important_memories(db_user_id)
 
         return MemorySnapshot(
             working=working,
