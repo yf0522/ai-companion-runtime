@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.memory.adapter import MemoryBusinessAdapter
+from app.memory.lifecycle import decide_memory_consent
 from app.memory.lifecycle_backend import LifecycleMemoryBackend
 from app.memory.refuse import refuse_memory_note
 from app.tools.caretask_service import care_window_bounds, in_care_window
@@ -100,8 +101,10 @@ async def test_memory_note_refuses_prescription(monkeypatch):
 async def test_memory_note_pending_honest_display(monkeypatch):
     tool = MemoryTool()
     mid = str(uuid.uuid4())
+    captured = {}
 
     async def fake_add(self, **kwargs):
+        captured.update(kwargs)
         return mid
 
     monkeypatch.setenv("APP_ENV", "production")
@@ -122,6 +125,171 @@ async def test_memory_note_pending_honest_display(monkeypatch):
     assert "已记住" not in result.display_text
     assert "确认" in result.display_text
     assert result.data["memory_id"] == mid
+    assert captured["content"] == "以后记得我喜欢听评书"
+
+
+@pytest.mark.asyncio
+async def test_memory_note_rejects_model_only_consent_and_content(monkeypatch):
+    tool = MemoryTool()
+    called = False
+
+    async def fake_add(self, **kwargs):
+        nonlocal called
+        called = True
+        return str(uuid.uuid4())
+
+    monkeypatch.setattr(LifecycleMemoryBackend, "add", fake_add)
+
+    result = await tool.execute(
+        {
+            "action": "note",
+            "user_id": str(uuid.uuid4()),
+            "summary": "模型声称用户喜欢京剧",
+            "explicit_user_request": True,
+            "query": "我今天听了评书",
+        }
+    )
+
+    assert result.status == "success"
+    assert result.data["status"] == "refused"
+    assert result.data["refusal_code"] == "not_explicit"
+    assert result.data["reason"] == "not_explicit"
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_memory_note_without_query_keeps_trusted_caller_compatibility(monkeypatch):
+    tool = MemoryTool()
+    captured = {}
+
+    async def fake_add(self, **kwargs):
+        captured.update(kwargs)
+        return str(uuid.uuid4())
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setattr(LifecycleMemoryBackend, "add", fake_add)
+
+    result = await tool.execute(
+        {
+            "action": "note",
+            "user_id": str(uuid.uuid4()),
+            "summary": "可信调用方提供的长期记忆",
+            "explicit_user_request": True,
+        }
+    )
+
+    assert result.data["status"] == "granted"
+    assert captured["content"] == "可信调用方提供的长期记忆"
+
+
+@pytest.mark.asyncio
+async def test_production_note_pending_then_grant_enables_recall(monkeypatch):
+    user_id = uuid.uuid4()
+    memory_id = uuid.uuid4()
+    grant_id = uuid.uuid4()
+    state = {}
+
+    async def fake_add(self, **kwargs):
+        state.update(
+            {
+                "id": str(memory_id),
+                "content": kwargs["content"],
+                "purpose": kwargs["metadata"]["category"],
+                "sensitivity": "general",
+                "created_at": datetime.utcnow().isoformat(),
+                "importance": kwargs["metadata"]["importance_score"],
+                "consent_status": kwargs["metadata"]["consent_status"],
+                "deletion_state": "active",
+                "type": "preference",
+            }
+        )
+        return str(memory_id)
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(LifecycleMemoryBackend, "add", fake_add)
+    note = await MemoryTool().execute(
+        {
+            "action": "note",
+            "user_id": str(user_id),
+            "summary": "模型改写的偏好",
+            "explicit_user_request": False,
+            "query": "请记住我喜欢听评书",
+        }
+    )
+    assert note.data["status"] == "pending"
+    assert state["consent_status"] == "pending"
+    assert state["content"] == "请记住我喜欢听评书"
+
+    class _MappingResult:
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return {
+                "id": memory_id,
+                "user_id": user_id,
+                "purpose": state["purpose"],
+                "sensitivity": state["sensitivity"],
+                "retention_until": None,
+                "consent_grant_id": None,
+                "consent_status": state["consent_status"],
+            }
+
+    class _ScalarResult:
+        def scalar_one(self):
+            return grant_id
+
+    db = AsyncMock()
+    db.execute.side_effect = [_MappingResult(), _ScalarResult(), AsyncMock()]
+    decision = await decide_memory_consent(
+        db,
+        memory_id=memory_id,
+        user_id=user_id,
+        approved=True,
+    )
+    state["consent_status"] = decision["consent_status"]
+    state["consent_grant_id"] = decision["consent_grant_id"]
+    assert state["consent_status"] == "granted"
+
+    class FakeBackend:
+        name = "lifecycle"
+
+        async def add(self, **kwargs):
+            return None
+
+        async def search(self, **kwargs):
+            return [
+                {
+                    "id": state["id"],
+                    "content": state["content"],
+                    "score": state["importance"],
+                    "category": state["purpose"],
+                    "consent_status": state["consent_status"],
+                    "metadata": state,
+                }
+            ]
+
+    async def fake_select(db, *, user_id, purpose="care_continuity", limit=5):
+        if purpose == state["purpose"] and state["consent_status"] == "granted":
+            return [state]
+        return []
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
+    monkeypatch.setattr("app.db.session.async_session", lambda: _SessionContext())
+
+    recall = await MemoryBusinessAdapter(backend=FakeBackend()).recall(
+        user_id=str(user_id),
+        query_intent="评书",
+    )
+    assert recall.status == "success"
+    assert [fragment["content"] for fragment in recall.fragments] == [state["content"]]
 
 
 @pytest.mark.asyncio

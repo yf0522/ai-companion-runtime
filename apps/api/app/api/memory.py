@@ -18,6 +18,10 @@ class ReflectionAcceptanceRequest(BaseModel):
     proposal_id: uuid.UUID
 
 
+class MemoryConsentRequest(BaseModel):
+    approved: bool
+
+
 @router.get("/memory/profile")
 async def get_user_profile(user_id: uuid.UUID = Depends(get_current_user_uuid)):
     """Get authenticated user's profile."""
@@ -85,6 +89,34 @@ async def correct_user_memory(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to correct memory: {e}")
+
+
+@router.post("/memory/memories/{memory_id}/consent")
+async def decide_user_memory_consent(
+    memory_id: uuid.UUID,
+    request: MemoryConsentRequest,
+    user_id: uuid.UUID = Depends(get_current_user_uuid),
+):
+    """Approve or reject an authenticated owner's pending memory."""
+    try:
+        from app.db.session import async_session
+        from app.memory.lifecycle import decide_memory_consent
+
+        async with async_session() as db:
+            decision = await decide_memory_consent(
+                db,
+                memory_id=memory_id,
+                user_id=user_id,
+                approved=request.approved,
+            )
+            if decision is None:
+                raise HTTPException(status_code=404, detail="Memory not found")
+            await db.commit()
+            return decision
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update memory consent: {e}")
 
 
 @router.delete("/memory/memories/{memory_id}")

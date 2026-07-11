@@ -21,9 +21,11 @@ _ACTION_ALIASES = {
     "store": "note",
 }
 
+_EXPLICIT_NOTE_PATTERN = re.compile(r"以后记得|帮我记住|记一下|请记住|别忘了")
+
 
 def _infer_action(query: str) -> str:
-    if re.search(r"以后记得|帮我记住|记一下我|别忘了我|请记住", query):
+    if _EXPLICIT_NOTE_PATTERN.search(query):
         return "note"
     if re.search(r"你还记得|记得我|我喜欢什么|我说过", query):
         return "recall"
@@ -81,7 +83,7 @@ class MemoryTool(ToolBase):
             "limit": {"type": "integer", "description": "Max fragments (default 5)"},
             "explicit_user_request": {
                 "type": "boolean",
-                "description": "True when elder explicitly asked to remember",
+                "description": "Used only when query is absent; query text is authoritative",
             },
             "query": {"type": "string", "description": "Natural language fallback"},
         },
@@ -176,13 +178,17 @@ class MemoryTool(ToolBase):
         risk_blocked: bool,
         risk_level: Any,
     ) -> ToolResult:
-        summary = str(params.get("summary") or "").strip()
-        if not summary:
+        # When present, query is the actual user turn injected by the bridge;
+        # it is authoritative over model-provided summary/explicit flags.
+        # Keep the legacy fields only for trusted non-sidecar callers that do
+        # not provide query.
+        if query.strip():
             summary = query.strip()
+            explicit = bool(_EXPLICIT_NOTE_PATTERN.search(query))
+        else:
+            summary = str(params.get("summary") or "").strip()
+            explicit = bool(params.get("explicit_user_request"))
         category = str(params.get("category") or _infer_category(summary))
-        explicit = params.get("explicit_user_request")
-        if explicit is None:
-            explicit = bool(re.search(r"以后记得|帮我记住|记一下|请记住|别忘了", query or summary))
         result = await adapter.note(
             user_id=user_id,
             summary=summary,

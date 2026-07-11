@@ -20,21 +20,19 @@ export function normalizeCareTaskParams(params, userText) {
 export function normalizeMemoryParams(params, userText) {
   const normalized = { ...(params || {}) };
   const text = String(userText || "").trim();
+  const noteRequested = /以后记得|帮我记住|记一下|请记住|别忘了/.test(text);
   if (text) normalized.query = text;
-  if (!normalized.action || normalized.action === "auto") {
-    if (/以后记得|帮我记住|记一下我|请记住|别忘了我/.test(text)) {
-      normalized.action = "note";
-    } else {
-      normalized.action = "recall";
-    }
+  if (noteRequested) {
+    normalized.action = "note";
+  } else if (!normalized.action || normalized.action === "auto") {
+    normalized.action = "recall";
   }
-  if (normalized.action === "note" && !normalized.summary && text) {
+  if (normalized.action === "note") {
+    // Note writes must be grounded in the actual user turn. Never trust a
+    // model-supplied summary or explicitness flag for persistence decisions.
+    normalized.query = text;
     normalized.summary = text;
-  }
-  if (normalized.action === "note" && normalized.explicit_user_request == null) {
-    normalized.explicit_user_request = /以后记得|帮我记住|记一下|请记住|别忘了/.test(
-      text,
-    );
+    normalized.explicit_user_request = noteRequested;
   }
   if (normalized.action === "recall" && !normalized.query_intent && text) {
     normalized.query_intent = text;

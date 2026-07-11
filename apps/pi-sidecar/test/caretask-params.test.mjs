@@ -57,3 +57,57 @@ test("memory recall from continuity phrasing", () => {
   assert.equal(out.action, "recall");
   assert.ok(out.query_intent);
 });
+
+test("memory note ignores model-only summary and explicit flag", () => {
+  const out = normalizeMemoryParams(
+    {
+      action: "note",
+      summary: "模型声称用户喜欢京剧",
+      explicit_user_request: true,
+    },
+    "我今天听了评书",
+  );
+  assert.equal(out.query, "我今天听了评书");
+  assert.equal(out.summary, "我今天听了评书");
+  assert.equal(out.explicit_user_request, false);
+});
+
+test("memory note derives content and consent only from explicit user text", () => {
+  const out = normalizeMemoryParams(
+    {
+      action: "note",
+      summary: "模型改写后的内容",
+      explicit_user_request: false,
+    },
+    "请记住我喜欢听评书",
+  );
+  assert.equal(out.query, "请记住我喜欢听评书");
+  assert.equal(out.summary, "请记住我喜欢听评书");
+  assert.equal(out.explicit_user_request, true);
+});
+
+test("explicit user note intent overrides model-injected recall action", () => {
+  const out = normalizeMemoryParams(
+    { action: "recall", query_intent: "模型误判为查询" },
+    "帮我记住我喜欢听评书",
+  );
+  assert.equal(out.action, "note");
+  assert.equal(out.query, "帮我记住我喜欢听评书");
+  assert.equal(out.summary, "帮我记住我喜欢听评书");
+  assert.equal(out.explicit_user_request, true);
+});
+
+test("memory note without user text cannot retain model-only write claims", () => {
+  const out = normalizeMemoryParams(
+    {
+      action: "note",
+      query: "模型伪造的用户请求",
+      summary: "模型伪造的记忆",
+      explicit_user_request: true,
+    },
+    "",
+  );
+  assert.equal(out.query, "");
+  assert.equal(out.summary, "");
+  assert.equal(out.explicit_user_request, false);
+});
