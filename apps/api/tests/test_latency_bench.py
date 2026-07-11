@@ -52,6 +52,62 @@ def test_compare_to_baseline_flags_regression():
     assert not any("ttft_ms_p95" in f for f in failures)
 
 
+def test_compare_to_baseline_allows_sub_millisecond_runner_noise():
+    mod = _load_latency_bench()
+    report = mod.BenchReport(iterations_per_fixture=5)
+    report.fixtures.append(
+        mod.FixtureStats(
+            fixture="scam_risk",
+            samples=5,
+            analyzer_ms={"p50": 5.6, "p95": 5.6, "max": 5.6},
+            ttft_ms={"p50": 9.0, "p95": 9.0, "max": 9.0},
+            total_ms={"p50": 10.0, "p95": 11.1, "max": 11.1},
+        )
+    )
+    baseline = {
+        "fixtures": [
+            {
+                "fixture": "scam_risk",
+                "analyzer_ms": {"p95": 5.6},
+                "ttft_ms": {"p95": 9.0},
+                "total_ms": {"p95": 9.102916810661554},
+            }
+        ]
+    }
+
+    failures = mod.compare_to_baseline(report, baseline, max_regression_pct=20.0)
+
+    assert not any("total_ms_p95" in failure for failure in failures)
+
+
+def test_compare_to_baseline_still_flags_meaningful_regression():
+    mod = _load_latency_bench()
+    report = mod.BenchReport(iterations_per_fixture=5)
+    report.fixtures.append(
+        mod.FixtureStats(
+            fixture="scam_risk",
+            samples=5,
+            analyzer_ms={"p50": 5.6, "p95": 5.6, "max": 5.6},
+            ttft_ms={"p50": 9.0, "p95": 9.0, "max": 9.0},
+            total_ms={"p50": 11.0, "p95": 12.0, "max": 12.0},
+        )
+    )
+    baseline = {
+        "fixtures": [
+            {
+                "fixture": "scam_risk",
+                "analyzer_ms": {"p95": 5.6},
+                "ttft_ms": {"p95": 9.0},
+                "total_ms": {"p95": 9.102916810661554},
+            }
+        ]
+    }
+
+    failures = mod.compare_to_baseline(report, baseline, max_regression_pct=20.0)
+
+    assert any("total_ms_p95" in failure for failure in failures)
+
+
 def test_absolute_thresholds():
     mod = _load_latency_bench()
     report = mod.BenchReport(iterations_per_fixture=1)
