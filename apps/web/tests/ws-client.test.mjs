@@ -44,7 +44,7 @@ class FakeWebSocket {
   }
 }
 
-test("socket open sends runtime auth but waits for server confirmation", () => {
+test("socket open defaults to Pi-only runtime auth", () => {
   const originalWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = FakeWebSocket;
   FakeWebSocket.instances = [];
@@ -56,7 +56,7 @@ test("socket open sends runtime auth but waits for server confirmation", () => {
     client.on("_status", ({ status }) => statuses.push(status));
     client.on("connected", (payload) => confirmations.push(payload));
 
-    client.connect("signed-token", undefined, undefined, "pi_experimental");
+    client.connect("signed-token");
     const socket = FakeWebSocket.instances[0];
     socket.open();
 
@@ -94,14 +94,14 @@ test("explicit disconnect drops stale events from the previous runtime", () => {
     client.on("_status", ({ status }) => statuses.push(status));
     client.on("connected", (payload) => confirmations.push(payload));
 
-    client.connect("signed-token", undefined, undefined, "harness");
+    client.connect("signed-token", undefined, undefined, "pi_experimental");
     const socket = FakeWebSocket.instances[0];
     socket.open();
     client.disconnect();
     socket.receive({
       type: "connected",
       session_id: "stale-session",
-      agent_runtime: "harness",
+      agent_runtime: "pi_experimental",
     });
 
     assert.deepEqual(statuses, []);

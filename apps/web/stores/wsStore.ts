@@ -22,7 +22,7 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
 export const useWsStore = create<WsState>((set, get) => ({
   status: "disconnected",
   sessionId: null,
-  activeRuntime: "harness",
+  activeRuntime: "pi_experimental",
   client: null,
 
   connect: (token?: string) => {

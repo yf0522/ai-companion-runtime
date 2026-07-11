@@ -11,6 +11,7 @@
     "test": "node --test tests/*.test.mjs",
     "test:e2e": "playwright test",
     "capture:quiet-care": "node scripts/capture-quiet-care.mjs",
+    "capture:pi-only-tools": "node scripts/capture-pi-only-tools.mjs",
     "astryx": "astryx"
   },
   "dependencies": {

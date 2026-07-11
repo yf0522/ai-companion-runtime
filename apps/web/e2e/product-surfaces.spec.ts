@@ -58,17 +58,13 @@ test("elder companion presents status, next action, safety entry, and all mobile
   await expect(page.getByText("帮我判断是否诈骗")).toBeVisible();
   await expect(page.getByLabel("输入给陪伴助手的消息")).toBeVisible();
   await expect(page.getByText(/Harness|Trace|runtime|outbox|权限隔离/i)).toHaveCount(0);
+  await expect(page.getByLabel("选择回应方式")).toHaveCount(0);
+  await expect(page.getByRole("radiogroup", { name: "回应方式" })).toHaveCount(0);
+  await expect(page.getByText("标准模式")).toHaveCount(0);
+  await expect(page.getByText("实验模式")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("companion.agent_runtime"))).toBe("pi_experimental");
   const helpBox = await visibleBox(page.getByRole("link", { name: "现在需要帮助？先联系家人" }));
   expect(helpBox.height).toBeGreaterThanOrEqual(44);
-  const modeBox = await visibleBox(page.getByLabel("选择回应方式"));
-  expect(modeBox.height).toBeGreaterThanOrEqual(44);
-  await page.getByLabel("选择回应方式").click();
-  const runtimeSelector = page.getByRole("radiogroup", { name: "回应方式" });
-  await expect(runtimeSelector.getByRole("radio", { name: "标准模式" })).toBeVisible();
-  await expect(runtimeSelector.getByRole("radio", { name: "实验模式" })).toBeVisible();
-  await runtimeSelector.getByRole("radio", { name: "实验模式" }).click();
-  await expect(runtimeSelector.getByRole("radio", { name: "实验模式" })).toHaveAttribute("aria-checked", "true");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("companion.agent_runtime"))).toBe("pi_experimental");
   if (testInfo.project.name === "mobile") {
     const nav = page.getByRole("navigation", { name: "长者移动导航" });
     await expect(nav.getByText("陪伴", { exact: true })).toBeVisible();
