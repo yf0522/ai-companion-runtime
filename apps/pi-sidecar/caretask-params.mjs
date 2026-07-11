@@ -39,3 +39,19 @@ export function normalizeMemoryParams(params, userText) {
   }
   return normalized;
 }
+
+/** Post-FC normalizer for utility (weather|calculator|search). */
+export function normalizeUtilityParams(params, userText) {
+  const normalized = { ...(params || {}) };
+  const text = String(userText || "").trim();
+  if (text) normalized.query = text;
+  const op = String(normalized.op || normalized.action || "").toLowerCase();
+  if (["weather", "calculator", "search"].includes(op)) {
+    normalized.op = op;
+    return normalized;
+  }
+  if (/天气|气温|下雨|温度/.test(text)) normalized.op = "weather";
+  else if (/等于多少|算一下|计算|[\d]\s*[+\-*/×÷]/.test(text)) normalized.op = "calculator";
+  else if (/搜一下|搜索|查一下|百度|谷歌/.test(text)) normalized.op = "search";
+  return normalized;
+}

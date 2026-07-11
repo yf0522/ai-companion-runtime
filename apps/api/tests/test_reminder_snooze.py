@@ -30,7 +30,7 @@ def test_detect_snooze_non_match():
 
 @pytest.mark.asyncio
 async def test_intent_routes_snooze_to_reminder():
-    """Care-domain snooze prefers CareTask; Reminder kept for pure timer snooze."""
+    """Care-domain snooze and timer phrases map to caretask (reminder absorbed)."""
     engine = IntentEngine()
     result = await engine.analyze(
         AnalyzerInput(
@@ -51,7 +51,8 @@ async def test_intent_routes_snooze_to_reminder():
             trace_id="t2",
         )
     )
-    assert "reminder" in timer.tool_needs
+    assert "caretask" in timer.tool_needs
+    assert "reminder" not in timer.tool_needs
 
 
 @pytest.mark.asyncio

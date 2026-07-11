@@ -18,13 +18,13 @@ def _input(msg: str) -> AnalyzerInput:
 @pytest.mark.asyncio
 async def test_weather_query_triggers_tool(engine):
     result = await engine.analyze(_input("上海天气怎么样"))
-    assert "weather" in result.tool_needs
+    assert "utility" in result.tool_needs
 
 
 @pytest.mark.asyncio
 async def test_calculator_triggers_tool(engine):
     result = await engine.analyze(_input("帮我算一下 3+5"))
-    assert "calculator" in result.tool_needs
+    assert "utility" in result.tool_needs
 
 
 # --- False positive suppression ---
@@ -33,13 +33,13 @@ async def test_calculator_triggers_tool(engine):
 async def test_weather_compliment_no_tool(engine):
     """'天气真好' is a statement, not a query — should not trigger weather tool."""
     result = await engine.analyze(_input("天气真好"))
-    assert "weather" not in result.tool_needs
+    assert "utility" not in result.tool_needs
 
 
 @pytest.mark.asyncio
 async def test_weather_nice_no_tool(engine):
     result = await engine.analyze(_input("今天天气不错"))
-    assert "weather" not in result.tool_needs
+    assert "utility" not in result.tool_needs
 
 
 # --- Intent classification ---
@@ -73,7 +73,7 @@ async def test_mixed_emotion_and_tool_prioritizes_task(engine):
     """When user has tool_needs AND emotion, task should win."""
     result = await engine.analyze(_input("好烦帮我算一下 100+200"))
     assert result.primary_intent == "task"
-    assert "calculator" in result.tool_needs
+    assert "utility" in result.tool_needs
 
 
 @pytest.mark.asyncio

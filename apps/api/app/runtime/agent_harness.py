@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from pathlib import Path
 
 import yaml
@@ -12,6 +11,16 @@ from nanoid import generate as nanoid
 from app.engines.base import (
     AnalyzerInput, IntentResult, EmotionResult, RiskResult,
     MemorySnapshot, PersonalityConfig,
+)
+from app.runtime.analyzers import (
+    analyzer_timeout_ms,
+    enqueue_post_process,
+    fast_reply_race,
+    get_cached_engine,
+    get_personality,
+    record_analyzer_events,
+    run_intent_emotion_memory,
+    stable_uuid,
 )
 from app.runtime.stream_manager import StreamManager
 from app.observability.trace_service import TraceService
@@ -37,9 +46,6 @@ def _load_harness_config() -> dict:
     return _harness_config
 
 
-_engine_cache: dict[str, object] = {}
-
-
 async def _record_analysis_events(
     *,
     trace_id: str,
@@ -51,82 +57,27 @@ async def _record_analysis_events(
     memory: MemorySnapshot,
     latency_ms: int,
 ) -> None:
-    await asyncio.gather(
-        _trace_svc.add_event(
-            trace_id=trace_id,
-            step_name="intent_detection",
-            step_index=1,
-            user_id=user_id,
-            session_id=session_id,
-            output_json=intent.model_dump(),
-            status="success",
-            latency_ms=latency_ms,
-        ),
-        _trace_svc.add_event(
-            trace_id=trace_id,
-            step_name="emotion_detection",
-            step_index=2,
-            user_id=user_id,
-            session_id=session_id,
-            output_json=emotion.model_dump(),
-            status="success",
-            latency_ms=latency_ms,
-        ),
-        _trace_svc.add_event(
-            trace_id=trace_id,
-            step_name="risk_detection",
-            step_index=3,
-            user_id=user_id,
-            session_id=session_id,
-            output_json=risk.model_dump(),
-            status="success",
-            latency_ms=latency_ms,
-        ),
-        _trace_svc.add_event(
-            trace_id=trace_id,
-            step_name="memory_recall",
-            step_index=4,
-            user_id=user_id,
-            session_id=session_id,
-            output_json={
-                "working_count": len(memory.working or []),
-                "vector_count": len(memory.vectors or []),
-                "has_summary": bool(memory.summary),
-                "has_profile": bool(memory.profile),
-                "profile_keys": list((memory.profile or {}).keys())[:12],
-            },
-            status="success",
-            latency_ms=latency_ms,
-        ),
+    # user_id/session_id already stable UUIDs from harness callers.
+    personality = PersonalityConfig()
+    await record_analyzer_events(
+        trace_id=trace_id,
+        user_id=user_id,
+        session_id=session_id,
+        intent=intent,
+        emotion=emotion,
+        personality=personality,
+        latency_ms=latency_ms,
+        risk=risk,
+        memory=memory,
     )
 
 
 def _stable_uuid(value: str) -> str:
-    try:
-        return str(uuid.UUID(value))
-    except (ValueError, AttributeError):
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, value))
+    return stable_uuid(value)
 
 
 def _get_cached_engine(name: str):
-    if name in _engine_cache:
-        return _engine_cache[name]
-    try:
-        if name == "intent":
-            from app.engines.intent_engine import IntentEngine
-            _engine_cache[name] = IntentEngine()
-        elif name == "emotion":
-            from app.engines.emotion_engine import EmotionEngine
-            _engine_cache[name] = EmotionEngine()
-        elif name == "risk":
-            from app.engines.risk_engine import RiskEngine
-            _engine_cache[name] = RiskEngine()
-        elif name == "memory":
-            from app.engines.memory_engine import MemoryEngine
-            _engine_cache[name] = MemoryEngine()
-    except ImportError:
-        return None
-    return _engine_cache.get(name)
+    return get_cached_engine(name)
 
 
 class AgentHarness:
@@ -494,53 +445,31 @@ class AgentHarness:
         }
 
     async def _run_analyzers(self, input: AnalyzerInput) -> tuple:
-        """Run all analyzers in parallel with individual timeouts."""
-        timeout_ms = self._timeout("analyzer")
+        """Run all analyzers in parallel with individual timeouts (shared module)."""
+        timeout_ms = analyzer_timeout_ms("analyzer")
 
-        async def _safe_analyze(engine_name: str, default):
+        async def _safe_risk(default: RiskResult) -> RiskResult:
             try:
-                engine = self._get_engine(engine_name)
+                engine = self._get_engine("risk")
                 if engine:
                     return await asyncio.wait_for(
                         engine.analyze(input),
                         timeout=timeout_ms / 1000,
                     )
             except asyncio.TimeoutError:
-                logger.warning(f"{engine_name} timed out ({timeout_ms}ms)")
+                logger.warning("risk timed out (%sms)", timeout_ms)
             except Exception as e:
-                logger.warning(f"{engine_name} failed: {e}")
-            if engine_name == "risk":
-                return RiskResult(
-                    level="critical",
-                    category="safety_unavailable",
-                    confidence=1.0,
-                    triggered_rules=["risk_engine_unavailable"],
-                )
-            return default
+                logger.warning("risk failed: %s", e)
+            return RiskResult(
+                level="critical",
+                category="safety_unavailable",
+                confidence=1.0,
+                triggered_rules=["risk_engine_unavailable"],
+            )
 
-        intent, emotion, risk, memory = await asyncio.gather(
-            _safe_analyze("intent", IntentResult(primary_intent="chitchat", confidence=0.5)),
-            _safe_analyze("emotion", EmotionResult()),
-            _safe_analyze("risk", RiskResult()),
-            self._safe_memory_load(input),
-        )
+        intent, emotion, memory = await run_intent_emotion_memory(input, include_memory=True)
+        risk = await _safe_risk(RiskResult())
         return intent, emotion, risk, memory
-
-    async def _safe_memory_load(self, input: AnalyzerInput) -> MemorySnapshot:
-        """Load memory with separate timeout."""
-        timeout_ms = self._timeout("memory_recall")
-        try:
-            engine = self._get_engine("memory")
-            if engine:
-                return await asyncio.wait_for(
-                    engine.analyze(input),
-                    timeout=timeout_ms / 1000,
-                )
-        except asyncio.TimeoutError:
-            logger.warning(f"Memory recall timed out ({timeout_ms}ms)")
-        except Exception as e:
-            logger.warning(f"Memory recall failed: {e}")
-        return MemorySnapshot()
 
     def _get_engine(self, name: str):
         return _get_cached_engine(name)
@@ -682,51 +611,12 @@ class AgentHarness:
         self, message: str, emotion: EmotionResult, personality: PersonalityConfig,
         stream_mgr: StreamManager, start_time: float, cancel_event: asyncio.Event,
     ) -> bool:
-        """Use dedicated fast model for a quick first reply. Returns True if sent.
-
-        Uses the "fast" role model (a cheaper/faster model) instead of primary,
-        so we don't double-bill the same expensive model.
-        Skips entirely if no fast model is configured.
-        """
-        timeout_ms = self._timeout("fast_reply")
-
-        try:
-            from app.models.router import model_router
-
-            try:
-                model = await model_router.get_model("fast")
-            except Exception:
-                logger.debug("No fast model configured, skipping fast reply")
-                return False
-
-            fast_prompt = [
-                {"role": "system", "content": f"你是一个{personality.tone}的 AI Companion。用户当前情绪：{emotion.emotion}(强度{emotion.intensity})。请用一句自然的话回应用户，不超过{personality.max_length or 80}字。"},
-                {"role": "user", "content": message},
-            ]
-
-            first_token = None
-            try:
-                async def get_first_token():
-                    async for token in model.stream_chat(fast_prompt):
-                        return token
-                    return None
-
-                first_token = await asyncio.wait_for(
-                    get_first_token(),
-                    timeout=timeout_ms / 1000,
-                )
-            except asyncio.TimeoutError:
-                logger.debug("Fast reply timed out after %sms", timeout_ms)
-
-            if first_token and not cancel_event.is_set():
-                ttft_ms = int((time.monotonic() - start_time) * 1000)
-                await stream_mgr.send_first_reply(first_token, ttft_ms)
-                return True
-
-        except Exception as exc:
-            logger.warning("Fast reply race failed: %s", exc)
-
-        return False
+        """Delegate to shared A2a fast-reply helper."""
+        sent, _ttft = await fast_reply_race(
+            message, emotion, personality, stream_mgr, start_time, cancel_event,
+            budget_ms=self._timeout("fast_reply"),
+        )
+        return sent
 
     async def _dispatch_tools(
         self,
@@ -754,42 +644,19 @@ class AgentHarness:
             return []
 
     async def _get_personality(self, emotion: EmotionResult, intent=None) -> PersonalityConfig:
-        """Get personality config using cached engine."""
-        engine = _get_cached_engine("personality")
-        if engine is None:
-            try:
-                from app.engines.personality_engine import PersonalityEngine
-                _engine_cache["personality"] = PersonalityEngine()
-                engine = _engine_cache["personality"]
-            except ImportError:
-                return PersonalityConfig()
-        return await engine.adapt(emotion=emotion, intent=intent)
+        """Get personality config using shared analyzer helper."""
+        return await get_personality(emotion, intent)
 
     async def _persist_conversation(
         self, session_id: str, user_id: str, user_message: str, ai_response: str,
     ):
-        """Write user message and AI response to L0 working memory."""
-        try:
-            from app.storage.working_memory import append_message
-            await append_message(session_id, "user", user_message)
-            if ai_response:
-                await append_message(session_id, "assistant", ai_response)
-        except Exception as e:
-            logger.warning(f"Failed to persist conversation to L0: {e}")
-
-        from app.config.settings import settings
-        if not settings.enable_celery_tasks:
-            return
-
-        try:
-            from app.workers.memory_worker import (
-                evaluate_importance, update_session_summary,
-            )
-            evaluate_importance.delay(user_id, user_message, session_id)
-            if ai_response:
-                update_session_summary.delay(session_id)
-        except Exception as exc:
-            logger.debug("Celery memory tasks skipped: %s", exc)
+        """L0 persist + Celery memory/reflection enqueue (shared post-process)."""
+        await enqueue_post_process(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            ai_response=ai_response,
+        )
 
     def _generate_trace_id(self, user_id: str) -> str:
         from datetime import datetime

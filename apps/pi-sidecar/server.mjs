@@ -3,7 +3,7 @@ import { Agent, convertToLlm } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
-import { normalizeCareTaskParams, normalizeMemoryParams } from "./caretask-params.mjs";
+import { normalizeCareTaskParams, normalizeMemoryParams, normalizeUtilityParams } from "./caretask-params.mjs";
 import { assistantErrorMessage } from "./pi-events.mjs";
 import { careTaskShouldTerminate } from "./tool-policy.mjs";
 
@@ -15,6 +15,7 @@ if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
 const PORT = Number(process.env.PI_SIDECAR_PORT || 8787);
 const DEFAULT_MODEL = process.env.PI_MODEL || "gemini-flash-latest";
 const DEFAULT_PROVIDER = process.env.PI_PROVIDER || "google";
+const HOST = process.env.PI_SIDECAR_HOST || "0.0.0.0";
 
 function resolveToolBridgeUrl() {
   const explicit = (process.env.TOOL_BRIDGE_URL || "").trim();
@@ -28,14 +29,16 @@ function resolveToolBridgeUrl() {
 const TOOL_BRIDGE_URL = resolveToolBridgeUrl();
 const TOOL_BRIDGE_TOKEN = process.env.TOOL_BRIDGE_TOKEN || "";
 const ENABLE_TOOLS = process.env.PI_ENABLE_TOOLS !== "0";
+const FC_TOOLS = ["caretask", "memory", "utility"];
 const SYSTEM_PROMPT =
   process.env.PI_SYSTEM_PROMPT ||
   [
     "You are a warm, concise AI companion for older adults.",
     "Reply in the user's language. Keep answers practical and kind.",
-    "When the user asks about medication, appointments, or care tasks, use the caretask tool.",
-    "For today's care tasks / 今日事项, use caretask action=list (defaults to today's care window) — do not invent a today_brief tool.",
+    "When the user asks about medication, appointments, care tasks, or reminders, use the caretask tool.",
+    "For today's care tasks / 今日事项, use caretask action=list (defaults to today's care-window) — do not invent a today_brief tool.",
     "When the user says 以后记得 / preferences / continuity facts, use the memory tool (note or recall).",
+    "For weather, math, or web search, use the utility tool with op=weather|calculator|search.",
     "Never store prescription doses or escalation rules in memory — those belong to caretask / care settings.",
     "Never claim a tool succeeded if the tool result status is failed or timeout.",
     "If a tool fails, apologize briefly and ask the user to try again — do not invent success.",
@@ -255,6 +258,46 @@ function makeMemoryTool(ctx) {
   };
 }
 
+function makeUtilityTool(ctx) {
+  return {
+    name: "utility",
+    label: "Utility",
+    description:
+      "Weather, calculator, or web search. Set op to weather | calculator | search. Reminder/care tasks belong in caretask; preferences in memory.",
+    parameters: Type.Object({
+      op: Type.Union([
+        Type.Literal("weather"),
+        Type.Literal("calculator"),
+        Type.Literal("search"),
+      ]),
+      query: Type.Optional(Type.String()),
+      city: Type.Optional(Type.String()),
+      expression: Type.Optional(Type.String()),
+    }),
+    async execute(_toolCallId, params) {
+      const result = await bridgeExecute(
+        "utility",
+        normalizeUtilityParams(params, ctx.userText),
+        ctx,
+      );
+      const status = result.status || "failed";
+      const text =
+        result.display_text ||
+        (status === "success" ? "Utility ok" : "Utility failed");
+      return {
+        content: [{ type: "text", text: `[${status}] ${text}` }],
+        details: {
+          status,
+          data: result.data ?? null,
+          tool_name: "utility",
+          display_text: text,
+        },
+        terminate: false,
+      };
+    },
+  };
+}
+
 async function streamAgentChat({ res, body }) {
   const model = resolveModel(body.provider, body.model);
   const userMessages = normalizeMessages(body);
@@ -269,7 +312,7 @@ async function streamAgentChat({ res, body }) {
   };
 
   const tools = ENABLE_TOOLS
-    ? [makeCareTaskTool(ctx), makeMemoryTool(ctx)]
+    ? [makeCareTaskTool(ctx), makeMemoryTool(ctx), makeUtilityTool(ctx)]
     : [];
   const toolsUsed = [];
   let agentError = null;
@@ -300,6 +343,13 @@ async function streamAgentChat({ res, body }) {
       }
       if (!ENABLE_TOOLS) {
         return { block: true, reason: "tools_disabled" };
+      }
+      // Reject legacy top-level tool names (weather/calculator/search/reminder).
+      if (toolCall.name && !FC_TOOLS.includes(toolCall.name)) {
+        return {
+          block: true,
+          reason: `unknown_tool:${toolCall.name}; use caretask|memory|utility`,
+        };
       }
       writeNdjson(res, {
         type: "tool_status",
@@ -457,7 +507,7 @@ const server = http.createServer(async (req, res) => {
           bridge: ENABLE_TOOLS ? "pi-agent-core" : "pi-experimental",
           provider: DEFAULT_PROVIDER,
           model: DEFAULT_MODEL,
-          tools: ENABLE_TOOLS ? ["caretask", "memory"] : [],
+          tools: ENABLE_TOOLS ? FC_TOOLS : [],
         }),
       );
       return;
@@ -527,9 +577,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, HOST, () => {
   console.log(
-    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask,memory" : "off"} bridge=${TOOL_BRIDGE_URL}`,
+    `[pi-sidecar] listening on http://${HOST}:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? FC_TOOLS.join(",") : "off"} bridge=${TOOL_BRIDGE_URL}`,
   );
   if (ENABLE_TOOLS) {
     const schemasUrl = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/schemas`;

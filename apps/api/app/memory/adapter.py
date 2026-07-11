@@ -336,8 +336,10 @@ class MemoryBusinessAdapter:
             if len(fragments) >= limit:
                 break
 
-        # If engine returned nothing usable, fall back to granted lifecycle dump.
-        if not fragments and granted:
+        # If engine returned nothing usable:
+        # - lifecycle backend: fall back to granted dump / importance top-N (legacy)
+        # - mem0 (A3): empty/timeout/empty-hits → empty only — NEVER dump granted lifecycle
+        if not fragments and granted and self.backend.name == "lifecycle":
             from app.memory.lifecycle_backend import _filter_query_intent, _filter_time_window
 
             rows = list(granted_by_id.values())
@@ -357,6 +359,11 @@ class MemoryBusinessAdapter:
                         "created_at": row.get("created_at"),
                     }
                 )
+        elif not fragments and granted and self.backend.name != "lifecycle":
+            logger.info(
+                "mem0/engine empty search — skipping lifecycle dump (backend=%s)",
+                self.backend.name,
+            )
         return fragments
 
 

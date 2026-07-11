@@ -69,8 +69,8 @@ class Settings(BaseSettings):
     rate_limit_failure_mode: str = "memory"  # memory (development only) | deny
     allow_ephemeral_sessions: bool = True  # development-only availability aid
 
-    # Experimental Pi agent runtime (TypeScript sidecar — off by default)
-    enable_pi_runtime: bool = False
+    # Production Pi agent runtime (TypeScript sidecar — always-on; no harness fallback)
+    enable_pi_runtime: bool = True
     pi_sidecar_url: str = "http://127.0.0.1:8787"
     pi_provider: str = "google"
     pi_model: str = "gemini-flash-latest"

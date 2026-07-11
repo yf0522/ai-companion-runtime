@@ -8,6 +8,17 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    environment:
+      - ENABLE_PI_RUNTIME=1
+      - PI_SIDECAR_URL=http://pi-sidecar:8787
+
+  pi-sidecar:
+    env_file:
+      - ../.env.production
+    ports: []
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   web:
     env_file:
