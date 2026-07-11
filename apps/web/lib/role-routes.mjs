@@ -3,6 +3,7 @@ export const ROLE_NAV = {
     { href: "/elder/companion", label: "陪伴", description: "对话与照护确认" },
     { href: "/elder/today", label: "今日事项", description: "当前提醒和确认记录" },
     { href: "/elder/help", label: "帮助", description: "联系家人或人工支持" },
+    { href: "/elder/memory", label: "记忆与隐私", description: "长期记忆同意与本机记录" },
   ],
   family: [
     { href: "/family/overview", label: "概览", description: "需要关注的事项" },

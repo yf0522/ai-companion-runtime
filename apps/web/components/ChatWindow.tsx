@@ -2,66 +2,89 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@astryxdesign/core/Button";
-import { ChatComposer, ChatComposerInput, ChatLayout, ChatMessageList } from "@astryxdesign/core/Chat";
-import { Icon } from "@astryxdesign/core/Icon";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
-import { Text } from "@astryxdesign/core/Text";
-import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, Settings2, ShieldAlert } from "lucide-react";
+import { ChatLayout, ChatMessageList } from "@astryxdesign/core/Chat";
+import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, ShieldAlert, ShieldCheck } from "lucide-react";
+import { fetchCareTasks, fetchContacts, type VerifiedContact } from "@/lib/api-client";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
-import { useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
 import CompanionSignal from "./CompanionSignal";
 import MessageBubble from "./MessageBubble";
+import CompanionActionDock from "./elder/CompanionActionDock";
+import styles from "./elder/ElderProduct.module.css";
 import type { CareTaskCandidate } from "./CareTaskClarifyCard";
 
 const clarifyVerbLabels: Record<string, string> = { 取消: "取消任务", 完成: "完成任务" };
-const quickActions = [
-  { title: "看看今天的安排", message: "我今天需要做什么", icon: CalendarCheck2 },
-  { title: "设置吃药提醒", message: "提醒我晚上八点吃药", icon: BellRing },
-  { title: "请家人联系我", message: "我想让家人知道我需要帮助", icon: PhoneCall },
-  { title: "帮我判断是否诈骗", message: "有人让我转账，我不确定", icon: ShieldAlert },
-];
+
+function phoneHref(value: string): string {
+  return `tel:${value.replace(/[^+\d]/g, "")}`;
+}
 
 export default function ChatWindow() {
   const [input, setInput] = useState("");
+  const [chatReady, setChatReady] = useState(false);
+  const [nextTaskTitle, setNextTaskTitle] = useState<string | null>(null);
+  const [directContact, setDirectContact] = useState<VerifiedContact | null>(null);
   const chatLayoutRef = useRef<HTMLDivElement>(null);
   const messages = useChatStore((state) => state.messages);
+  const activateUser = useChatStore((state) => state.activateUser);
   const isStreaming = useChatStore((state) => state.isStreaming);
   const wsStatus = useWsStore((state) => state.status);
   const connect = useWsStore((state) => state.connect);
   const sendMessage = useWsStore((state) => state.sendMessage);
   const stopGeneration = useWsStore((state) => state.stopGeneration);
-  const disconnect = useWsStore((state) => state.disconnect);
-  const activeRuntime = useWsStore((state) => state.activeRuntime);
   const token = useAuthStore((state) => state.token);
+  const userId = useAuthStore((state) => state.userId);
   const authHydrated = useAuthStore((state) => state.hydrated);
   const setAuthHydrated = useAuthStore((state) => state.setHydrated);
-  const runtime = useAgentRuntimeStore((state) => state.runtime);
-  const setRuntime = useAgentRuntimeStore((state) => state.setRuntime);
-  const runtimeHydrated = useAgentRuntimeStore((state) => state.hydrated);
-  const hydrateRuntime = useAgentRuntimeStore((state) => state.hydrate);
   const router = useRouter();
 
   useEffect(() => {
     if (useAuthStore.persist.hasHydrated()) { setAuthHydrated(); return; }
     void Promise.resolve(useAuthStore.persist.rehydrate()).finally(setAuthHydrated);
   }, [setAuthHydrated]);
-  useEffect(() => { hydrateRuntime(); }, [hydrateRuntime]);
+
   useEffect(() => {
-    if (!authHydrated || !runtimeHydrated) return;
+    if (!authHydrated) return;
+    let active = true;
+    setChatReady(false);
+    void Promise.resolve(useChatStore.persist.rehydrate()).finally(() => {
+      if (!active) return;
+      activateUser(userId);
+      setChatReady(true);
+    });
+    return () => { active = false; };
+  }, [activateUser, authHydrated, userId]);
+
+  useEffect(() => {
+    if (!authHydrated || !chatReady) return;
     if (!token) { router.push("/login"); return; }
     connect(token);
     return () => useWsStore.getState().disconnect();
-  }, [authHydrated, runtimeHydrated, connect, token, router]);
+  }, [authHydrated, chatReady, connect, token, router]);
+
   useEffect(() => {
-    if (messages.length > 0) return;
-    const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      if (chatLayoutRef.current) chatLayoutRef.current.scrollTop = 0;
-    }));
-    return () => window.cancelAnimationFrame(frame);
-  }, [messages.length, wsStatus]);
+    if (!token) return;
+    let active = true;
+    void Promise.allSettled([
+      fetchCareTasks({ scope: "today", limit: 1 }),
+      fetchContacts(),
+    ]).then(([tasksResult, contactsResult]) => {
+      if (!active) return;
+      if (tasksResult.status === "fulfilled") {
+        setNextTaskTitle(tasksResult.value[0]?.title || null);
+      }
+      if (contactsResult.status === "fulfilled") {
+        const contact = contactsResult.value.items.find((item) =>
+          item.verification_status === "verified" &&
+          item.available !== false &&
+          ["phone", "sms"].includes(item.channel),
+        );
+        setDirectContact(contact || null);
+      }
+    });
+    return () => { active = false; };
+  }, [token]);
 
   function handleSend(value = input) {
     const trimmed = value.trim();
@@ -70,10 +93,9 @@ export default function ChatWindow() {
     setInput("");
   }
 
-  function handleRuntimeChange(value: string) {
-    if ((value !== "harness" && value !== "pi_experimental") || value === runtime || !token) return;
-    setRuntime(value);
-    disconnect();
+  function handleReconnect() {
+    if (!token) return;
+    useWsStore.getState().disconnect();
     connect(token);
   }
 
@@ -83,23 +105,37 @@ export default function ChatWindow() {
     sendMessage(`${action} ${candidate.title} id=${candidate.id}`);
   }
 
-  const currentMode = activeRuntime === "pi_experimental" ? "实验模式" : "标准模式";
+  const quickActions = [
+    nextTaskTitle
+      ? { title: `看看“${nextTaskTitle}”`, message: `帮我确认今天的${nextTaskTitle}`, icon: CalendarCheck2 }
+      : { title: "看看今天的安排", message: "我今天需要做什么", icon: CalendarCheck2 },
+    { title: "设置吃药提醒", message: "提醒我晚上八点吃药", icon: BellRing },
+    { title: "请家人联系我", message: "我想让家人知道我需要帮助", icon: PhoneCall },
+    { title: "帮我判断是否诈骗", message: "有人让我转账，我不确定", icon: ShieldAlert },
+  ];
+
   const emptyState = (
     <div className="companion-empty">
       <div className="companion-empty-content">
         <div className="companion-presence" aria-hidden="true"><HeartHandshake size={24} /></div>
         <p className="companion-welcome">我在这里</p>
         <h2>今天想先说哪件事？</h2>
-        <p className="companion-empty-copy">身体不舒服、需要提醒、想联系家人，或者遇到可疑电话，都可以直接告诉我。</p>
+        <p className="companion-empty-copy">身体不舒服、需要提醒、想联系家人，或者遇到可疑电话，都可以直接告诉我。下面的选择只会填入草稿，由你确认发送。</p>
         <div className="companion-prompts">
           {quickActions.map(({ title, message, icon: PromptIcon }) => (
-            <button key={title} type="button" className="companion-prompt" disabled={wsStatus !== "connected"} onClick={() => handleSend(message)}>
+            <button key={title} type="button" className="companion-prompt" onClick={() => setInput(message)}>
               <PromptIcon size={20} aria-hidden="true" />
               <span><strong>{title}</strong><small>“{message}”</small></span>
             </button>
           ))}
         </div>
-        {wsStatus !== "connected" && <a className="companion-help-link" href="/elder/help">现在需要帮助？先联系家人</a>}
+        {directContact ? (
+          <a className="companion-help-link" href={phoneHref(directContact.value)} aria-label={`打电话给${directContact.name}`}>
+            直接打电话给{directContact.name}
+          </a>
+        ) : (
+          <a className="companion-help-link" href="/elder/help">现在需要帮助？查看已验证联系人</a>
+        )}
       </div>
     </div>
   );
@@ -109,52 +145,33 @@ export default function ChatWindow() {
       <div className="companion-stage">
         <div className="companion-stage-header">
           <CompanionSignal status={wsStatus} />
-          <div className="companion-stage-actions">
-            <details className="companion-mode-menu">
-              <summary aria-label="选择回应方式"><Settings2 size={17} /><span>{currentMode}</span></summary>
-              <div className="companion-mode-panel">
-                <strong>回应方式</strong>
-                <p>标准模式更稳定；实验模式仅用于体验新能力。</p>
-                <SegmentedControl
-                  value={runtime}
-                  onChange={handleRuntimeChange}
-                  label="回应方式"
-                  layout="fill"
-                  size="sm"
-                  isDisabled={isStreaming}
-                  disabledMessage="请等待当前回复完成后再切换"
-                >
-                  <SegmentedControlItem value="harness" label="标准模式" />
-                  <SegmentedControlItem value="pi_experimental" label="实验模式" />
-                </SegmentedControl>
-              </div>
-            </details>
-            <Button label="今日事项" href="/elder/today" variant="ghost" size="md" icon={<Icon icon={CalendarCheck2} size="sm" />} />
-          </div>
+          <a className={styles.stageLink} href="/elder/memory"><ShieldCheck size={17} aria-hidden="true" />记忆与隐私</a>
         </div>
         <div className="companion-chat">
           <ChatLayout
             ref={chatLayoutRef}
             density="spacious"
             emptyState={messages.length === 0 ? emptyState : undefined}
-            composer={
-              <ChatComposer
+            scrollButton={messages.length === 0 ? null : undefined}
+            composer={(
+              <CompanionActionDock
                 value={input}
                 onChange={setInput}
                 onSubmit={handleSend}
-                isStopShown={isStreaming}
                 onStop={stopGeneration}
-                isDisabled={wsStatus !== "connected"}
-                density="spacious"
-                placeholder={wsStatus === "connected" ? "说说现在最需要确认的事…" : "连接恢复后可以继续对话"}
-                input={<ChatComposerInput value={input} onChange={setInput} onSubmit={handleSend} label="输入给陪伴助手的消息" isDisabled={wsStatus !== "connected"} placeholder={wsStatus === "connected" ? "说说现在最需要确认的事…" : "连接恢复后可以继续对话"} maxRows={6} />}
-                headerContext={<Text type="supporting" color="secondary">{isStreaming ? "正在回应你" : "你可以按自己的方式慢慢说"}</Text>}
-                footerActions={<Text type="supporting" color="secondary">紧急情况请直接联系家人或本地急救服务</Text>}
-                status={wsStatus === "failed" ? { type: "error", message: "陪伴服务暂时不可用，请先联系家人或稍后重试。" } : undefined}
+                onReconnect={handleReconnect}
+                isStreaming={isStreaming}
+                status={wsStatus}
               />
-            }
+            )}
           >
-            {messages.length > 0 ? <ChatMessageList>{messages.map((message) => <MessageBubble key={message.id} message={message} isStreaming={isStreaming} onClarifySelect={handleClarifySelect} />)}</ChatMessageList> : null}
+            {messages.length > 0 ? (
+              <ChatMessageList isStreaming={isStreaming}>
+                {messages.map((message) => (
+                  <MessageBubble key={message.id} message={message} isStreaming={isStreaming} onClarifySelect={handleClarifySelect} />
+                ))}
+              </ChatMessageList>
+            ) : null}
           </ChatLayout>
         </div>
       </div>
