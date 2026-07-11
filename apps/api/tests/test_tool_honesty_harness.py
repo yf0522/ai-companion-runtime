@@ -1,11 +1,11 @@
-"""Harness-level contract: failed tools must not be verbally promised as success."""
+"""Tool honesty: failed tools must not be verbally promised as success."""
 from __future__ import annotations
 
 from app.tools.base import ToolResult
 from app.tools.honesty import enforce_no_verbal_promise
 
 
-def test_harness_honesty_helper_blocks_false_success():
+def test_honesty_helper_blocks_false_success():
     results = [
         ToolResult(
             tool_name="caretask",

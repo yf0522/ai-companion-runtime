@@ -1,7 +1,7 @@
-"""Shared analyzer orchestration for Pi (and temporary harness shell).
+"""Shared analyzer orchestration for the Pi production runtime.
 
 Parity contract (PRD A1/A8):
-- intent / emotion / personality: sync on the agent path with harness timeouts
+- intent / emotion / personality: sync on the agent path with timeout budgets
 - reflection: async Celery enqueue only (not a sync analyzer step)
 - 超时即跳过: analyzer failures/timeouts yield documented defaults
 """
@@ -31,27 +31,28 @@ from app.runtime.stream_manager import StreamManager
 logger = logging.getLogger(__name__)
 _trace_svc = TraceService()
 
-# TTFT / fast-reply budget (ms) — gate C / U7 parity target vs harness race.
+# TTFT / fast-reply budget (ms) — gate C / U7 parity target.
 FAST_REPLY_BUDGET_MS = 300
 ANALYZER_DEFAULT_TIMEOUT_MS = 100
 MEMORY_RECALL_DEFAULT_TIMEOUT_MS = 300
 
 _engine_cache: dict[str, object] = {}
-_harness_config: dict | None = None
+_runtime_config: dict | None = None
 
 
 def _load_timeout_config() -> dict:
-    global _harness_config
-    if _harness_config is not None:
-        return _harness_config
-    path = Path(__file__).parent.parent / "config" / "harness.yaml"
+    global _runtime_config
+    if _runtime_config is not None:
+        return _runtime_config
+    path = Path(__file__).parent.parent / "config" / "runtime.yaml"
     try:
         with open(path) as f:
-            _harness_config = yaml.safe_load(f).get("harness", {}) or {}
+            raw = yaml.safe_load(f) or {}
+            _runtime_config = raw.get("runtime", {}) or {}
     except Exception as exc:
-        logger.warning("Failed to load harness.yaml timeouts: %s — using defaults", exc)
-        _harness_config = {}
-    return _harness_config
+        logger.warning("Failed to load runtime.yaml timeouts: %s — using defaults", exc)
+        _runtime_config = {}
+    return _runtime_config
 
 
 def analyzer_timeout_ms(key: str = "analyzer") -> int:

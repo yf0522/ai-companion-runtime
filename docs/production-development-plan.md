@@ -16,7 +16,7 @@ This promise is valuable only if authorization, persistence, delivery, safety po
 
 ### Implemented and reusable
 
-- Authenticated WebSocket chat and device protocols route through `AgentHarness`.
+- Authenticated WebSocket chat and device protocols route through the Pi runtime (`pi_runtime` + sidecar; AgentHarness removed).
 - Intent, emotion, risk, memory, personality, prompt building, model routing, tools, and Trace events exist.
 - Elder risk categories cover health emergency, scam alert, and emotional low scenarios with tests.
 - `CareTask` supports creation, clarification, recurrence, snooze, cancellation, completion, and projection to `Reminder`.

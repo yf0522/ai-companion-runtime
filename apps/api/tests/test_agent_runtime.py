@@ -1,4 +1,4 @@
-"""Agent runtime selector — Pi default, fail-closed, no harness silent fallback."""
+"""Agent runtime selector — Pi-only factory, fail-closed, no harness escape."""
 from __future__ import annotations
 
 import asyncio
@@ -9,13 +9,11 @@ import pytest
 
 from app.runtime.agent_runtime import (
     DEFAULT_RUNTIME,
-    RUNTIME_HARNESS,
     RUNTIME_PI,
     RUNTIME_PI_EXPERIMENTAL,
     get_agent_runtime,
     normalize_runtime_name,
 )
-from app.runtime.harness_runtime import HarnessRuntime
 from app.runtime.pi_runtime import PiExperimentalRuntime
 
 
@@ -23,10 +21,18 @@ def test_normalize_runtime_defaults_to_pi():
     assert normalize_runtime_name(None) == RUNTIME_PI
     assert normalize_runtime_name("") == RUNTIME_PI
     assert DEFAULT_RUNTIME == RUNTIME_PI
-    assert normalize_runtime_name("harness") == RUNTIME_HARNESS
     assert normalize_runtime_name("pi") == RUNTIME_PI
     assert normalize_runtime_name("PI_EXPERIMENTAL") == RUNTIME_PI
     assert normalize_runtime_name("default") == RUNTIME_PI
+
+
+def test_normalize_runtime_rejects_harness_escape():
+    """U1 / S1 / S10: harness is unsupported — no FF escape."""
+    for name in ("harness", "standard", "agent_harness", "HARNESS"):
+        with pytest.raises(ValueError, match="unsupported|Pi-only|Unknown"):
+            normalize_runtime_name(name)
+        with pytest.raises(ValueError, match="unsupported|Pi-only|Unknown"):
+            get_agent_runtime(name)
 
 
 def test_normalize_runtime_rejects_unknown():
@@ -34,12 +40,10 @@ def test_normalize_runtime_rejects_unknown():
         normalize_runtime_name("openai_agents")
 
 
-def test_get_agent_runtime_factory():
-    assert isinstance(get_agent_runtime("harness"), HarnessRuntime)
+def test_get_agent_runtime_factory_pi_only():
     assert isinstance(get_agent_runtime("pi_experimental"), PiExperimentalRuntime)
     assert isinstance(get_agent_runtime("pi"), PiExperimentalRuntime)
     assert get_agent_runtime(None).name == RUNTIME_PI
-    assert get_agent_runtime(None).name != RUNTIME_HARNESS
 
 
 @pytest.mark.asyncio
@@ -118,8 +122,8 @@ async def test_pi_runtime_streams_from_sidecar_when_enabled(monkeypatch):
             intent=IntentResult(primary_intent="chitchat", confidence=0.5),
             emotion=EmotionResult(),
             memory=MemorySnapshot(),
-            personality=PersonalityConfig(tone="warm"),
-            latency_ms=2,
+            personality=PersonalityConfig(),
+            latency_ms=1,
         )
 
     class FakeResponse:
@@ -176,12 +180,15 @@ async def test_pi_runtime_streams_from_sidecar_when_enabled(monkeypatch):
     assert result["agent_runtime"] == RUNTIME_PI
     assert result.get("response_text") == "你好"
     assert "error" not in result
+    assert result.get("fail_closed") is not True
     stream.send_first_reply.assert_awaited()
     stream.send_final.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_pi_runtime_fail_closed_on_sidecar_down(monkeypatch):
+async def test_pi_runtime_fail_closed_when_sidecar_down(monkeypatch):
+    """I9 / S7: sidecar unreachable → fail-closed; no harness fallback."""
+
     async def fake_gate(**kwargs):
         from app.runtime.risk_gate import RiskGateOutcome
         from app.engines.base import RiskResult
@@ -189,8 +196,8 @@ async def test_pi_runtime_fail_closed_on_sidecar_down(monkeypatch):
         return RiskGateOutcome(
             blocked=False,
             risk=RiskResult(level="low"),
-            trace_id="trace_down",
-            metadata={"trace_id": "trace_down"},
+            trace_id="trace_sidecar_down",
+            metadata={"trace_id": "trace_sidecar_down"},
         )
 
     async def fake_chain(**kwargs):

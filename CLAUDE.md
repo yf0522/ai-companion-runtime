@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-基于 WebSocket 的实时 AI 情绪陪伴 + 通用助手系统。支持情绪识别、风险分级、工具调用、长期记忆、模型热插拔、Agent Harness 编排、全链路 TraceID 观测。
+基于 WebSocket 的实时 AI 情绪陪伴 + 通用助手系统。支持情绪识别、风险分级、工具调用、长期记忆、模型热插拔、Pi Agent 编排、全链路 TraceID 观测。
 
 ## 技术栈
 
@@ -30,9 +30,9 @@ ai-companion-runtime/
 │   │   └── lib/          # WebSocket 客户端 / API 客户端
 │   └── api/              # FastAPI 后端
 │       └── app/
-│           ├── config/       # 配置文件 (models.yaml / harness.yaml / personality.yaml / risk_rules.yaml)
+│           ├── config/       # 配置文件 (models.yaml / runtime.yaml / personality.yaml / risk_rules.yaml)
 │           ├── api/          # HTTP/WS 端点
-│           ├── runtime/      # 核心运行时 (gateway / harness / stream)
+│           ├── runtime/      # 核心运行时 (gateway / pi_runtime / stream)
 │           ├── engines/      # 分析引擎 (intent / emotion / risk / memory / personality / reflection)
 │           ├── models/       # 模型层 (router / registry / adapters)
 │           ├── tools/        # 工具系统 (weather / search / calculator / reminder)
@@ -56,7 +56,7 @@ ai-companion-runtime/
 - **接口定义**: 模块间通过 `ABC` 或 `Protocol` 定义接口，不依赖具体实现
 - **配置管理**: 运行时配置放 YAML 文件（`config/` 目录），密钥放 `.env`
 - **导入顺序**: stdlib → 第三方 → 本项目，各组之间空一行
-- **错误处理**: 不静默吞异常；超时用 `asyncio.wait_for`；降级走 harness fallback 策略
+- **错误处理**: 不静默吞异常；超时用 `asyncio.wait_for`；降级走 runtime fallback 策略（无 Harness 回退）
 - **Migration**: 使用 Alembic，修改 `db/models.py` 后运行 `alembic revision --autogenerate`
 
 ### TypeScript 前端
@@ -109,7 +109,7 @@ ai-companion-runtime/
 |------|------|------|
 | `.env` | 项目根目录 | 密钥、数据库连接、API Key |
 | `models.yaml` | `apps/api/app/config/` | 模型配置（primary/fallback/fast），修改后自动热加载 |
-| `harness.yaml` | `apps/api/app/config/` | Agent Harness 超时、重试、降级策略 |
+| `runtime.yaml` | `apps/api/app/config/` | Pi runtime 超时、重试、降级策略 |
 | `personality.yaml` | `apps/api/app/config/` | 人格基础配置 + 动态适配矩阵 |
 | `risk_rules.yaml` | `apps/api/app/config/` | 风险关键词、正则、分级规则 |
 | `prometheus.yml` | `infra/` | Prometheus 采集配置 |

@@ -1,12 +1,15 @@
-"""Phase 1–3 unit tests: analyzers, utility whitelist, mem0 closed loop / no-dump."""
+"""Phase 1–5 unit tests: analyzers, FC whitelist, mem0, Gate C deletion guards."""
 from __future__ import annotations
 
+import ast
 import asyncio
 import uuid as uuid_mod
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from app.engines.base import EmotionResult, IntentResult, PersonalityConfig
 from app.runtime.analyzers import (
@@ -23,6 +26,8 @@ from app.tools.registry import (
     normalize_tool_request,
 )
 from app.tools.utility_tool import UtilityTool
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_registry_whitelist_exactly_three():
@@ -478,3 +483,52 @@ async def test_mem0_timeout_degrade_no_dump(monkeypatch):
     assert result.fragments == []
     assert result.degraded is True
     assert result.data and result.data.get("engine") == "mem0"
+
+
+# --- Gate C / Phase 5 deletion + infra guards ---
+
+
+def test_harness_shell_modules_physically_deleted():
+    """S10: AgentHarness shell must be gone; analyzers remain importable."""
+    import importlib.util
+
+    assert importlib.util.find_spec("app.runtime.agent_harness") is None
+    assert importlib.util.find_spec("app.runtime.harness_runtime") is None
+    assert importlib.util.find_spec("app.runtime.analyzers") is not None
+    harness_py = _REPO_ROOT / "apps/api/app/runtime/agent_harness.py"
+    assert not harness_py.exists()
+
+
+def test_pi_runtime_source_does_not_dispatch_tool_needs():
+    """U5 / A4: TOOL_RULES / intent.tool_needs must not drive Pi tool dispatch."""
+    src = (_REPO_ROOT / "apps/api/app/runtime/pi_runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "tool_needs":
+            pytest.fail("pi_runtime must not read intent.tool_needs as a tool router")
+    assert "TOOL_RULES" not in src
+
+
+def test_compose_defines_pi_sidecar_with_healthcheck():
+    """U8 / A5: compose includes pi-sidecar + healthcheck; no harness fallback."""
+    compose_path = _REPO_ROOT / "infra/docker-compose.yml"
+    data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    services = data["services"]
+    assert "pi-sidecar" in services
+    assert "healthcheck" in services["pi-sidecar"]
+    api_env = "\n".join(str(x) for x in services["api"].get("environment") or [])
+    assert "PI_SIDECAR_URL" in api_env
+    assert "ENABLE_PI_RUNTIME=1" in api_env
+    full = compose_path.read_text(encoding="utf-8")
+    assert "harness_fallback" not in full
+    assert "AgentHarness" not in full
+
+
+def test_runtime_yaml_timeouts_present():
+    """Timeout budgets live in runtime.yaml after harness.yaml deletion."""
+    path = _REPO_ROOT / "apps/api/app/config/runtime.yaml"
+    assert path.is_file()
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))["runtime"]
+    assert cfg["timeouts"]["fast_reply"] == 300
+    assert cfg["timeouts"]["analyzer"] == 100
+    assert not (_REPO_ROOT / "apps/api/app/config/harness.yaml").exists()

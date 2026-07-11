@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
-/** Product is Pi-only; harness remains typed only for transitional WS payloads. */
-export type AgentRuntimeId = "harness" | "pi_experimental";
+/** Sole production runtime id (legacy `pi_experimental` wire value retained). */
+export type AgentRuntimeId = "pi_experimental";
 
 export const PI_ONLY_RUNTIME: AgentRuntimeId = "pi_experimental";
 
@@ -22,7 +22,7 @@ export const AGENT_RUNTIME_OPTIONS: {
 
 function readStoredRuntime(): AgentRuntimeId {
   if (typeof window === "undefined") return PI_ONLY_RUNTIME;
-  // Migrate any legacy harness preference to Pi-only.
+  // Coerce any legacy preference (incl. harness) to Pi-only.
   localStorage.setItem(STORAGE_KEY, PI_ONLY_RUNTIME);
   return PI_ONLY_RUNTIME;
 }

@@ -1,6 +1,6 @@
 type MessageHandler = (data: any) => void;
 
-export type AgentRuntimeId = "harness" | "pi_experimental";
+export type AgentRuntimeId = "pi_experimental";
 
 export class CompanionWsClient {
   private ws: WebSocket | null = null;

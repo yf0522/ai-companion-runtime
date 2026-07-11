@@ -8,13 +8,11 @@ from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
 
-# Canonical production runtime is Pi. Harness remains importable until Phase 5 soak+delete
-# but is NOT the default and must not be used as a silent fallback.
+# Canonical (and sole) production runtime is Pi. Harness was physically deleted in Phase 5.
 RUNTIME_PI = "pi"
 RUNTIME_PI_EXPERIMENTAL = "pi_experimental"  # legacy alias → pi
-RUNTIME_HARNESS = "harness"
 
-SUPPORTED_RUNTIMES: frozenset[str] = frozenset({RUNTIME_PI, RUNTIME_HARNESS})
+SUPPORTED_RUNTIMES: frozenset[str] = frozenset({RUNTIME_PI})
 DEFAULT_RUNTIME = RUNTIME_PI
 
 _ALIASES: dict[str, str] = {
@@ -22,14 +20,15 @@ _ALIASES: dict[str, str] = {
     "pi_experimental": RUNTIME_PI,
     "experimental": RUNTIME_PI,
     "default": RUNTIME_PI,
-    "harness": RUNTIME_HARNESS,
-    "standard": RUNTIME_HARNESS,
 }
+
+# Explicitly rejected names (no FF escape).
+_REJECTED_RUNTIMES: frozenset[str] = frozenset({"harness", "standard", "agent_harness"})
 
 
 @runtime_checkable
 class AgentRuntime(Protocol):
-    """Pluggable agent execution path (production Pi; harness retained until Phase 5)."""
+    """Pluggable agent execution path — production Pi only."""
 
     name: str
 
@@ -45,10 +44,15 @@ class AgentRuntime(Protocol):
 
 
 def normalize_runtime_name(name: str | None) -> str:
-    """Map client/runtime aliases to canonical runtime ids."""
+    """Map client/runtime aliases to the sole Pi runtime id."""
     if not name:
         return DEFAULT_RUNTIME
     key = str(name).strip().lower()
+    if key in _REJECTED_RUNTIMES:
+        raise ValueError(
+            f"Agent runtime '{name}' is unsupported. Production is Pi-only "
+            f"(supported: {', '.join(sorted(SUPPORTED_RUNTIMES))})."
+        )
     if key not in _ALIASES:
         supported = ", ".join(sorted(SUPPORTED_RUNTIMES))
         raise ValueError(f"Unknown agent runtime '{name}'. Supported: {supported}")
@@ -56,19 +60,10 @@ def normalize_runtime_name(name: str | None) -> str:
 
 
 def get_agent_runtime(name: str | None) -> AgentRuntime:
-    """Factory for agent runtimes. Default is Pi (no harness silent fallback)."""
+    """Factory for agent runtimes. Pi only — harness requests raise."""
     runtime_id = normalize_runtime_name(name)
     if runtime_id == RUNTIME_PI:
         from app.runtime.pi_runtime import PiExperimentalRuntime
 
         return PiExperimentalRuntime()
-    if runtime_id == RUNTIME_HARNESS:
-        # Temporary until Phase 5 physical delete — explicit request only, never default.
-        from app.runtime.harness_runtime import HarnessRuntime
-
-        logger.warning(
-            "Harness runtime requested explicitly; production default is Pi. "
-            "Harness will be removed after gate C + soak."
-        )
-        return HarnessRuntime()
     raise ValueError(f"Unsupported runtime: {runtime_id}")
