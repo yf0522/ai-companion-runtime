@@ -1,37 +1,45 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Badge } from "@astryxdesign/core/Badge";
-import { Button } from "@astryxdesign/core/Button";
-import { Icon } from "@astryxdesign/core/Icon";
-import { Text } from "@astryxdesign/core/Text";
-import { ArrowUpRight, Clock3, RadioTower, UserRoundCheck } from "lucide-react";
-import PageIntro from "@/components/PageIntro";
+import { ArrowUpRight, Clock3, Search, UserRoundCheck } from "lucide-react";
 import RoleShell from "@/components/RoleShell";
-import { EmptyState, ErrorState, LoadingState } from "@/components/SurfaceStates";
-import { ApiError, fetchOperatorCases, type OperatorCaseItem, userFacingApiError } from "@/lib/api-client";
+import { ErrorState, LoadingState } from "@/components/SurfaceStates";
+import {
+  ApiError,
+  fetchOperatorCases,
+  type OperatorCaseItem,
+  userFacingApiError,
+} from "@/lib/api-client";
+import {
+  caseMatchesFilter,
+  caseOwnerLabel,
+  caseSlaState,
+  operatorSeverityLabel,
+  operatorStatusLabel,
+  type OperatorCaseFilter,
+} from "../_lib/operator";
+import styles from "../operator.module.css";
 
-const severityLabels: Record<string, string> = { critical: "紧急", high: "高风险", medium: "中风险", low: "低风险" };
-const statusLabels: Record<string, string> = { open: "待处理", assigned: "处理中", resolved: "已解决", closed: "已关闭" };
-function severityVariant(value: string): "error" | "warning" | "info" | "neutral" {
-  if (value === "critical") return "error";
-  if (value === "high" || !["medium", "low"].includes(value)) return "warning";
-  return value === "medium" ? "info" : "neutral";
-}
+const severityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function nextActionFor(item: OperatorCaseItem): string {
-  if (item.resolution) return "复核处置结果";
-  if (item.status === "open") return item.owner_id ? "负责人接单并记录首次触达" : "分配负责人";
-  if (item.status === "assigned") return "跟进照护方并补充证据";
-  if (item.status === "resolved") return "确认关闭条件";
-  return "查看案件证据";
+  if (item.status === "unstaffed") return "接单并确认首次联系";
+  if (item.status === "assigned") return "补充联系记录与处置证据";
+  if (item.status === "open") return "开始处理或记录关闭原因";
+  if (item.status === "resolved") return "复核后关闭或重新打开";
+  return item.next_action || "查看案件证据";
 }
 
-function formatTime(value: string | null): string {
-  if (!value) return "未设置";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "时间异常" : date.toLocaleString("zh-CN");
+function severityTone(value: string): "critical" | "warning" | "neutral" {
+  if (value === "critical") return "critical";
+  if (value === "high") return "warning";
+  return "neutral";
+}
+
+function shortId(value: string | null | undefined): string {
+  if (!value) return "未关联";
+  return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
 }
 
 export default function OpsCarePage() {
@@ -39,6 +47,11 @@ export default function OpsCarePage() {
   const [cases, setCases] = useState<OperatorCaseItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<OperatorCaseFilter>({
+    query: "",
+    status: "active",
+    severity: "all",
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,67 +73,130 @@ export default function OpsCarePage() {
     }
   }, [router]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
-  const criticalCount = cases.filter((item) => item.severity === "critical").length;
-  const openCount = cases.filter((item) => item.status === "open").length;
+  const now = useMemo(() => new Date(), [cases]);
+  const visibleCases = useMemo(() => cases
+    .filter((item) => caseMatchesFilter(item, filter, now))
+    .sort((left, right) => {
+      const severityDifference = (severityRank[left.severity] ?? 9) - (severityRank[right.severity] ?? 9);
+      if (severityDifference !== 0) return severityDifference;
+      const leftMinutes = caseSlaState(left.due_at, now).minutes ?? Number.POSITIVE_INFINITY;
+      const rightMinutes = caseSlaState(right.due_at, now).minutes ?? Number.POSITIVE_INFINITY;
+      return leftMinutes - rightMinutes;
+    }), [cases, filter, now]);
+
+  const unstaffed = cases.filter((item) => item.status === "unstaffed").length;
+  const mine = cases.filter((item) => item.ownership_status === "owned_by_me").length;
+  const overdue = cases.filter((item) => (caseSlaState(item.due_at, now).minutes ?? 0) < 0).length;
+  const critical = cases.filter((item) => item.severity === "critical").length;
 
   return (
-    <RoleShell role="operator" title="照护运营" subtitle="把风险、投递异常和人工跟进变成有负责人、有时限、有证据的处置队列。">
-      <div className="page-stack">
-        <PageIntro
-          title="安全案件"
-          description="按严重度、负责人和处理时限排列。"
-          action={<Button label="查看运行追踪" href="/ops/traces" variant="secondary" icon={<Icon icon={RadioTower} size="sm" />} />}
-        />
+    <RoleShell role="operator" title="照护运营" subtitle="案件、责任、时限与证据">
+      <div className={styles.workspace}>
+        <header className={styles.pageHeader}>
+          <div>
+            <h2>安全案件队列</h2>
+            <p>先接住无人负责和即将超时的案件，再进入授权证据链。队列不展示长者私人对话全文。</p>
+          </div>
+          <a className={styles.contextLink} href="/ops/households/readiness">查看家庭就绪</a>
+        </header>
+
         {loading ? (
           <LoadingState label="正在同步运营案件" />
         ) : error ? (
           <ErrorState description={error} onRetry={load} />
         ) : (
           <>
-            <div className="operator-summary" aria-label="运营案件状态">
-              <span data-tone="critical"><strong>{criticalCount}</strong> 紧急</span>
-              <span data-tone="warning"><strong>{openCount}</strong> 待接单</span>
-              <span><strong>{cases.length}</strong> 总案件</span>
-            </div>
-            <p className="operator-privacy-note">仅显示处置所需的授权证据，不默认展示长者私人聊天全文。</p>
-            {cases.length === 0 ? (
-              <EmptyState title="暂无待处理案件" description="高风险事件或通知投递异常出现后会进入这里。" />
-            ) : (
-              <section className="page-stack">
-                {cases.map((item) => (
-                  <article key={item.id} className="operator-case-card" data-severity={item.severity}>
-                    <div className="operator-case-grid">
-                      <div className="operator-case-cell" style={{ minWidth: 0 }}>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          <Badge label={severityLabels[item.severity] || "风险待确认"} variant={severityVariant(item.severity)} />
-                          <Badge label={statusLabels[item.status] || item.status} variant="neutral" />
-                        </div>
-                        <Text display="block" size="lg" weight="semibold" style={{ marginTop: 14 }}>{item.summary || "照护案件"}</Text>
-                        <Text display="block" type="code" color="secondary" style={{ marginTop: 8 }}>case {item.id}</Text>
+            <section className={styles.summaryStrip} aria-label="运营案件状态">
+              <div><span>待接单</span><strong>{unstaffed}</strong></div>
+              <div><span>我的案件</span><strong>{mine}</strong></div>
+              <div><span>已超时</span><strong>{overdue}</strong></div>
+              <div><span>紧急</span><strong>{critical}</strong></div>
+            </section>
+
+            <section className={styles.toolbar} aria-label="案件筛选">
+              <label className={styles.searchControl}>
+                <span className="sr-only">搜索案件</span>
+                <Search className={styles.searchIcon} size={16} aria-hidden="true" />
+                <input
+                  className={`${styles.searchField} ${styles.searchFieldWithIcon}`}
+                  value={filter.query}
+                  onChange={(event) => setFilter((value) => ({ ...value, query: event.target.value }))}
+                  placeholder="搜索摘要、案件或家庭 ID"
+                />
+              </label>
+              <div className={styles.filterGroup}>
+                <label htmlFor="case-view">视图</label>
+                <select
+                  id="case-view"
+                  className={styles.selectField}
+                  value={filter.status}
+                  onChange={(event) => setFilter((value) => ({ ...value, status: event.target.value as OperatorCaseFilter["status"] }))}
+                >
+                  <option value="active">全部进行中</option>
+                  <option value="unstaffed">待接单</option>
+                  <option value="mine">我的案件</option>
+                  <option value="overdue">已超时</option>
+                  <option value="all">当前返回全部</option>
+                </select>
+              </div>
+              <div className={styles.filterGroup}>
+                <label htmlFor="case-severity">风险</label>
+                <select
+                  id="case-severity"
+                  className={styles.selectField}
+                  value={filter.severity}
+                  onChange={(event) => setFilter((value) => ({ ...value, severity: event.target.value as OperatorCaseFilter["severity"] }))}
+                >
+                  <option value="all">全部等级</option>
+                  <option value="critical">紧急</option>
+                  <option value="high">高风险</option>
+                  <option value="medium">中风险</option>
+                  <option value="low">低风险</option>
+                </select>
+              </div>
+            </section>
+
+            <section className={styles.queue} aria-label="案件列表">
+              <div className={styles.queueHeader} aria-hidden="true">
+                <span>案件</span><span>负责人</span><span>处理时限</span><span>下一步</span><span>操作</span>
+              </div>
+              {visibleCases.length === 0 ? (
+                <div className={styles.emptyBlock}>
+                  {cases.length === 0 ? "当前没有进行中的运营案件。" : "没有符合当前筛选条件的案件。"}
+                </div>
+              ) : visibleCases.map((item) => {
+                const sla = caseSlaState(item.due_at, now);
+                return (
+                  <article key={item.id} className={styles.caseRow} data-severity={item.severity}>
+                    <div className={styles.caseTitle}>
+                      <div className={styles.badgeRow}>
+                        <span className={styles.badge} data-tone={severityTone(item.severity)}>{operatorSeverityLabel(item.severity)}</span>
+                        <span className={styles.badge}>{operatorStatusLabel(item.status)}</span>
                       </div>
-                      <div className="operator-case-cell">
-                        <Text display="block" type="supporting" color="secondary"><Icon icon={UserRoundCheck} size="xsm" /> 负责人</Text>
-                        <Text display="block" weight="semibold" style={{ marginTop: 6 }}>{item.owner_id || "未分配"}</Text>
-                        <Text display="block" type="supporting" color="secondary" style={{ marginTop: 16 }}><Icon icon={Clock3} size="xsm" /> 时限 {formatTime(item.due_at)}</Text>
-                      </div>
-                      <div className="operator-case-cell">
-                        <Text display="block" type="supporting" color="secondary">下一步</Text>
-                        <Text display="block" weight="semibold" style={{ marginTop: 8 }}>{nextActionFor(item)}</Text>
-                        <Text display="block" type="code" color="secondary" style={{ marginTop: 12 }}>decision {item.safety_decision_id ? item.safety_decision_id.slice(0, 8) : "none"}</Text>
-                        <Text display="block" type="code" color="secondary">outbox {item.notification_outbox_id ? item.notification_outbox_id.slice(0, 8) : "none"}</Text>
-                      </div>
-                      <div className="operator-case-action">
-                        <Button label="查看案件" href={`/ops/care/${item.id}`} variant="secondary" endContent={<Icon icon={ArrowUpRight} size="sm" />} />
-                      </div>
+                      <strong>{item.summary || "照护案件"}</strong>
+                      <small>案件 {shortId(item.id)} · 家庭 {shortId(item.household_id)}</small>
+                    </div>
+                    <div className={styles.ownerCell}>
+                      <strong><UserRoundCheck size={14} aria-hidden="true" /> {caseOwnerLabel(item)}</strong>
+                      <span className={styles.cellHint}>{item.ownership_status === "owned_by_other" ? "当前账号仅可查看" : item.owner_id ? "负责人已确认" : "等待运营人员接单"}</span>
+                    </div>
+                    <div className={styles.slaCell}>
+                      <strong data-tone={sla.tone}><Clock3 size={14} aria-hidden="true" /> {sla.label}</strong>
+                      <span className={styles.cellHint}>{item.due_at ? new Date(item.due_at).toLocaleString("zh-CN") : "尚未设置处理时限"}</span>
+                    </div>
+                    <div className={styles.nextCell}>
+                      <strong>{nextActionFor(item)}</strong>
+                      <span className={styles.cellHint}>{item.trace_id ? "已有案件授权追踪" : "尚未关联追踪"}</span>
+                    </div>
+                    <div className={styles.rowAction}>
+                      <a className={styles.compactButton} href={`/ops/care/${item.id}`}>处理 <ArrowUpRight size={15} aria-hidden="true" /></a>
                     </div>
                   </article>
-                ))}
-              </section>
-            )}
+                );
+              })}
+            </section>
           </>
         )}
       </div>

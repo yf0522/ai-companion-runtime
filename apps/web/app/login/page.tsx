@@ -82,6 +82,7 @@ export default function LoginPage() {
               <Button type="button" label={isRegister ? "已有账号，返回登录" : "创建新账号"} variant="ghost" size="lg" onClick={() => { setIsRegister((value) => !value); setError(null); }} />
             </div>
             <p className="auth-privacy-copy">你的权限由服务端验证，界面只显示已授权的照护信息。</p>
+            {!isRegister && <p className="auth-privacy-copy" style={{ marginTop: 8 }}>运营账号由管理员预置，请使用已分配的账号直接登录。</p>}
           </form>
         </section>
       </div>
