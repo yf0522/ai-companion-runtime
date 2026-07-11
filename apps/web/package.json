@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
     "test:e2e": "playwright test",
+    "capture:quiet-care": "node scripts/capture-quiet-care.mjs",
     "astryx": "astryx"
   },
   "dependencies": {

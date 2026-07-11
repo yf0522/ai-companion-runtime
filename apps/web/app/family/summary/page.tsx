@@ -70,7 +70,6 @@ export default function FamilySummaryPage() {
     <RoleShell
       role="family"
       title="摘要"
-      subtitle="摘要只包含授权范围内的照护结果，不展示私人对话。"
     >
       <div className="product-grid">
         <StatusBanner tone="info" title="隐私边界">
@@ -94,7 +93,7 @@ export default function FamilySummaryPage() {
             </section>
 
             <section className="product-panel">
-              <p className="eyebrow">Recent outcomes</p>
+              <p className="eyebrow">最近照护</p>
               <h2 className="section-heading">最近照护结果</h2>
               <div className="mt-4 grid gap-3">
               {summary.items.map((item) => (

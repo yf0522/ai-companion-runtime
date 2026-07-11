@@ -28,7 +28,7 @@ function toneFor(status: string): string {
 export default function HouseholdReadinessView({
   role = "family",
   title = "家庭就绪检查",
-  subtitle = "上线前确认同意、联系人、设备、通知渠道和首个照护任务。",
+  subtitle,
   householdId,
 }: {
   role?: "family" | "operator";
@@ -72,9 +72,10 @@ export default function HouseholdReadinessView({
   return (
     <RoleShell role={role} title={title} subtitle={subtitle}>
       <div className="grid gap-4">
-        {error && <ErrorState description={error} onRetry={load} />}
         {loading ? (
           <LoadingState label="正在加载家庭就绪检查" />
+        ) : error ? (
+          <ErrorState description={error} onRetry={load} />
         ) : !data ? (
           <EmptyState title="暂无就绪数据" description="服务端返回就绪检查后会显示每个上线前置条件。" />
         ) : (

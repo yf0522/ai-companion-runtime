@@ -7,7 +7,6 @@ export default function ElderHelpPage() {
     <RoleShell
       role="elder"
       title="帮助"
-      subtitle="需要帮助时，优先联系家人或本地紧急服务；系统不会替代急救。"
     >
       <div className="product-grid">
         <section className="rounded-lg border border-status-critical bg-status-critical-soft p-5">

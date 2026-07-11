@@ -2,19 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { ChatComposer, ChatComposerInput, ChatLayout, ChatMessageList } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
-import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, ShieldAlert } from "lucide-react";
+import { Text } from "@astryxdesign/core/Text";
+import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, Settings2, ShieldAlert } from "lucide-react";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
-import { AGENT_RUNTIME_OPTIONS, useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
+import { useAgentRuntimeStore } from "@/stores/agentRuntimeStore";
 import CompanionSignal from "./CompanionSignal";
 import MessageBubble from "./MessageBubble";
-import SignalField from "./SignalField";
 import type { CareTaskCandidate } from "./CareTaskClarifyCard";
 
 const clarifyVerbLabels: Record<string, string> = { 取消: "取消任务", 完成: "完成任务" };
@@ -58,10 +57,9 @@ export default function ChatWindow() {
   }, [authHydrated, runtimeHydrated, connect, token, router]);
   useEffect(() => {
     if (messages.length > 0) return;
-    const resetEmptyStateScroll = () => {
+    const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       if (chatLayoutRef.current) chatLayoutRef.current.scrollTop = 0;
-    };
-    const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(resetEmptyStateScroll));
+    }));
     return () => window.cancelAnimationFrame(frame);
   }, [messages.length, wsStatus]);
 
@@ -85,30 +83,23 @@ export default function ChatWindow() {
     sendMessage(`${action} ${candidate.title} id=${candidate.id}`);
   }
 
-  const runtimeLabel = AGENT_RUNTIME_OPTIONS.find((option) => option.id === activeRuntime)?.label || "标准 Harness";
-  const requestedRuntimeLabel = runtime === "pi_experimental" ? "Pi Agent" : "Standard Harness";
-  const runtimeStatus = activeRuntime === "pi_experimental" ? "Pi Agent · Experimental" : "Standard Harness";
-  const pendingRuntimeStatus = wsStatus === "failed"
-    ? "连接失败"
-    : wsStatus === "reconnecting" ? "正在重连" : "连接中";
-  const runtimeDescription = wsStatus === "connected"
-    ? `当前 ${runtimeLabel}`
-    : `请求 ${requestedRuntimeLabel} · ${pendingRuntimeStatus}`;
+  const currentMode = activeRuntime === "pi_experimental" ? "实验模式" : "标准模式";
   const emptyState = (
     <div className="companion-empty">
-      <SignalField />
       <div className="companion-empty-content">
-        <div className="companion-presence"><HeartHandshake size={26} /></div>
-        <h2>现在想先处理哪件事？</h2>
-        <p className="companion-empty-copy">你可以直接说身体不舒服、提醒、联系家人，或把可疑电话和转账要求告诉我。</p>
+        <div className="companion-presence" aria-hidden="true"><HeartHandshake size={24} /></div>
+        <p className="companion-welcome">我在这里</p>
+        <h2>今天想先说哪件事？</h2>
+        <p className="companion-empty-copy">身体不舒服、需要提醒、想联系家人，或者遇到可疑电话，都可以直接告诉我。</p>
         <div className="companion-prompts">
           {quickActions.map(({ title, message, icon: PromptIcon }) => (
             <button key={title} type="button" className="companion-prompt" disabled={wsStatus !== "connected"} onClick={() => handleSend(message)}>
-              <PromptIcon size={21} />
-              <span><strong style={{ display: "block" }}>{title}</strong><small style={{ display: "block", marginTop: 6, color: "var(--companion-muted)", lineHeight: 1.5 }}>“{message}”</small></span>
+              <PromptIcon size={20} aria-hidden="true" />
+              <span><strong>{title}</strong><small>“{message}”</small></span>
             </button>
           ))}
         </div>
+        {wsStatus !== "connected" && <a className="companion-help-link" href="/elder/help">现在需要帮助？先联系家人</a>}
       </div>
     </div>
   );
@@ -117,29 +108,29 @@ export default function ChatWindow() {
     <section className="companion-workspace">
       <div className="companion-stage">
         <div className="companion-stage-header">
-          <div className="companion-header-presence">
-            <CompanionSignal status={wsStatus} />
-            <span className="runtime-active-badge"><Badge label={runtimeStatus} variant={activeRuntime === "pi_experimental" ? "orange" : "neutral"} /></span>
+          <CompanionSignal status={wsStatus} />
+          <div className="companion-stage-actions">
+            <details className="companion-mode-menu">
+              <summary aria-label="选择回应方式"><Settings2 size={17} /><span>{currentMode}</span></summary>
+              <div className="companion-mode-panel">
+                <strong>回应方式</strong>
+                <p>标准模式更稳定；实验模式仅用于体验新能力。</p>
+                <SegmentedControl
+                  value={runtime}
+                  onChange={handleRuntimeChange}
+                  label="回应方式"
+                  layout="fill"
+                  size="sm"
+                  isDisabled={isStreaming}
+                  disabledMessage="请等待当前回复完成后再切换"
+                >
+                  <SegmentedControlItem value="harness" label="标准模式" />
+                  <SegmentedControlItem value="pi_experimental" label="实验模式" />
+                </SegmentedControl>
+              </div>
+            </details>
+            <Button label="今日事项" href="/elder/today" variant="ghost" size="md" icon={<Icon icon={CalendarCheck2} size="sm" />} />
           </div>
-          <div className="runtime-switcher">
-            <div className="runtime-switcher-label">
-              <span>Agent Runtime</span>
-              <small>{runtimeDescription}</small>
-            </div>
-            <SegmentedControl
-              value={runtime}
-              onChange={handleRuntimeChange}
-              label="Agent Runtime"
-              layout="fill"
-              size="sm"
-              isDisabled={isStreaming}
-              disabledMessage="请等待当前回复完成后再切换运行时"
-            >
-              <SegmentedControlItem value="harness" label="Standard Harness" />
-              <SegmentedControlItem value="pi_experimental" label="Pi Agent" />
-            </SegmentedControl>
-          </div>
-          <Button label="今日事项" href="/elder/today" variant="ghost" size="md" icon={<Icon icon={CalendarCheck2} size="sm" />} />
         </div>
         <div className="companion-chat">
           <ChatLayout
@@ -157,7 +148,9 @@ export default function ChatWindow() {
                 density="spacious"
                 placeholder={wsStatus === "connected" ? "说说现在最需要确认的事…" : "连接恢复后可以继续对话"}
                 input={<ChatComposerInput value={input} onChange={setInput} onSubmit={handleSend} label="输入给陪伴助手的消息" isDisabled={wsStatus !== "connected"} placeholder={wsStatus === "connected" ? "说说现在最需要确认的事…" : "连接恢复后可以继续对话"} maxRows={6} />}
-                status={wsStatus === "failed" ? { type: "error", message: "陪伴服务暂时不可用，请联系家人或稍后重试。" } : undefined}
+                headerContext={<Text type="supporting" color="secondary">{isStreaming ? "正在回应你" : "你可以按自己的方式慢慢说"}</Text>}
+                footerActions={<Text type="supporting" color="secondary">紧急情况请直接联系家人或本地急救服务</Text>}
+                status={wsStatus === "failed" ? { type: "error", message: "陪伴服务暂时不可用，请先联系家人或稍后重试。" } : undefined}
               />
             }
           >

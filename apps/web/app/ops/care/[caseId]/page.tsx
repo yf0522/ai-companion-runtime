@@ -122,13 +122,15 @@ export default function OpsCareDetailPage() {
   return (
     <RoleShell role="operator" title="案件详情" subtitle={caseId}>
       <div className="grid gap-4">
-        {error && <ErrorState description={error} onRetry={load} />}
         {loading ? (
           <LoadingState label="正在加载案件详情" />
+        ) : error && !item ? (
+          <ErrorState description={error} onRetry={load} />
         ) : !item ? (
           <EmptyState title="没有找到案件" description="请返回照护队列选择一个仍可访问的案件。" />
         ) : (
           <>
+            {error && <ErrorState description={error} onRetry={load} />}
             <StatusBanner tone={item.severity === "critical" ? "critical" : "info"} title="当前处置指令">
               {item.next_action || "请根据活动记录选择处理动作。"}
             </StatusBanner>
