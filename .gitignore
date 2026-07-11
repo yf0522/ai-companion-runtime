@@ -12,6 +12,7 @@ venv/
 
 # Build
 .next/
+.next-dev/
 dist/
 build/
 *.egg-info/

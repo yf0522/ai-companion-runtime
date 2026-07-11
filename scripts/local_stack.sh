@@ -101,6 +101,10 @@ _load_env() {
   [[ -f "$ROOT/.env" ]] && . "$ROOT/.env"
   [[ -f "$ROOT/apps/api/.env" ]] && . "$ROOT/apps/api/.env"
   set +a
+  export DATABASE_URL="${DATABASE_URL:-postgresql+asyncpg://companion:companion_secret@127.0.0.1:5432/companion}"
+  export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
+  export CELERY_BROKER_URL="${CELERY_BROKER_URL:-redis://127.0.0.1:6379/1}"
+  export CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-http://localhost:$WEB_PORT,http://$WEB_HOST:$WEB_PORT}"
   export ENABLE_PI_RUNTIME="${ENABLE_PI_RUNTIME:-1}"
   export PI_SIDECAR_URL="${PI_SIDECAR_URL:-$PI_URL}"
   export TOOL_BRIDGE_URL="$BRIDGE_URL"
@@ -192,7 +196,7 @@ _start_api() {
   log="$(_log_file api)"
   if _have_tmux; then
     _tmux_start companion-api "$ROOT/apps/api" \
-      "env ENABLE_PI_RUNTIME='$ENABLE_PI_RUNTIME' PI_SIDECAR_URL='$PI_SIDECAR_URL' TOOL_BRIDGE_URL='$TOOL_BRIDGE_URL' PYTHONPATH=. uv run uvicorn app.main:app --host '$API_HOST' --port '$API_PORT' 2>&1 | tee '$log'"
+      "set -a; [[ -f '$ROOT/.env' ]] && . '$ROOT/.env'; [[ -f '$ROOT/apps/api/.env' ]] && . '$ROOT/apps/api/.env'; set +a; export DATABASE_URL=\${DATABASE_URL:-postgresql+asyncpg://companion:companion_secret@127.0.0.1:5432/companion}; export REDIS_URL=\${REDIS_URL:-redis://127.0.0.1:6379/0}; export CELERY_BROKER_URL=\${CELERY_BROKER_URL:-redis://127.0.0.1:6379/1}; env CORS_ALLOWED_ORIGINS='$CORS_ALLOWED_ORIGINS' ENABLE_PI_RUNTIME='$ENABLE_PI_RUNTIME' PI_SIDECAR_URL='$PI_SIDECAR_URL' TOOL_BRIDGE_URL='$TOOL_BRIDGE_URL' PYTHONPATH=. uv run uvicorn app.main:app --host '$API_HOST' --port '$API_PORT' 2>&1 | tee '$log'"
   else
     (
       cd "$ROOT/apps/api"
@@ -208,13 +212,16 @@ _start_api() {
 _start_web() {
   local log
   log="$(_log_file web)"
+  # Keep local dev output separate from production builds and parallel review.
+  # Sharing .next lets `next build` invalidate a running dev server's chunks.
+  rm -rf "$ROOT/apps/web/.next-dev"
   if _have_tmux; then
     _tmux_start companion-web "$ROOT/apps/web" \
-      "env NEXT_PUBLIC_API_URL='$NEXT_PUBLIC_API_URL' NEXT_PUBLIC_WS_URL='$NEXT_PUBLIC_WS_URL' npm run dev -- -p '$WEB_PORT' -H '$WEB_HOST' 2>&1 | tee '$log'"
+      "env NEXT_DIST_DIR='.next-dev' NEXT_PUBLIC_API_URL='$NEXT_PUBLIC_API_URL' NEXT_PUBLIC_WS_URL='$NEXT_PUBLIC_WS_URL' npm run dev -- -p '$WEB_PORT' -H '$WEB_HOST' 2>&1 | tee '$log'"
   else
     (
       cd "$ROOT/apps/web"
-      (setsid env NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
+      (setsid env NEXT_DIST_DIR=".next-dev" NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
         npm run dev -- -p "$WEB_PORT" -H "$WEB_HOST" >"$log" 2>&1 &)
       sleep 0.2
       lsof -tiTCP:"$WEB_PORT" -sTCP:LISTEN >"$(_pid_file web)" 2>/dev/null || true
@@ -240,9 +247,9 @@ _start_celery() {
 
   if _have_tmux; then
     _tmux_start companion-celery-worker "$ROOT/apps/api" \
-      "env PYTHONPATH=. uv run celery -A app.workers.celery_app worker -l info -c 2 -Q celery,memory,embedding,reflection 2>&1 | tee '$worker_log'"
+      "set -a; [[ -f '$ROOT/.env' ]] && . '$ROOT/.env'; [[ -f '$ROOT/apps/api/.env' ]] && . '$ROOT/apps/api/.env'; set +a; export DATABASE_URL=\${DATABASE_URL:-postgresql+asyncpg://companion:companion_secret@127.0.0.1:5432/companion}; export REDIS_URL=\${REDIS_URL:-redis://127.0.0.1:6379/0}; export CELERY_BROKER_URL=\${CELERY_BROKER_URL:-redis://127.0.0.1:6379/1}; env PYTHONPATH=. uv run celery -A app.workers.celery_app worker -l info -c 2 -Q celery,memory,embedding,reflection 2>&1 | tee '$worker_log'"
     _tmux_start companion-celery-beat "$ROOT/apps/api" \
-      "env PYTHONPATH=. uv run celery -A app.workers.celery_app beat -l info -s '$beat_schedule' 2>&1 | tee '$beat_log'"
+      "set -a; [[ -f '$ROOT/.env' ]] && . '$ROOT/.env'; [[ -f '$ROOT/apps/api/.env' ]] && . '$ROOT/apps/api/.env'; set +a; export DATABASE_URL=\${DATABASE_URL:-postgresql+asyncpg://companion:companion_secret@127.0.0.1:5432/companion}; export REDIS_URL=\${REDIS_URL:-redis://127.0.0.1:6379/0}; export CELERY_BROKER_URL=\${CELERY_BROKER_URL:-redis://127.0.0.1:6379/1}; env PYTHONPATH=. uv run celery -A app.workers.celery_app beat -l info -s '$beat_schedule' 2>&1 | tee '$beat_log'"
   else
     (
       cd "$ROOT/apps/api"
