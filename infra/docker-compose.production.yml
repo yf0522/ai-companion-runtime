@@ -11,7 +11,8 @@ services:
     environment:
       - ENABLE_PI_RUNTIME=1
       - PI_SIDECAR_URL=http://pi-sidecar:8787
-
+      - MEM0_ENABLED=${MEM0_ENABLED:-1}
+      - MEM0_CONFIG_JSON=${MEM0_CONFIG_JSON:-}
   pi-sidecar:
     env_file:
       - ../.env.production

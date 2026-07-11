@@ -65,6 +65,14 @@ MEMORY_EMBEDDINGS_TOTAL = Counter(
     ["model", "state"],
 )
 
+MEMORY_ENGINE_TOTAL = Counter(
+    "companion_memory_engine_total",
+    "Memory engine path events (mem0 closed loop / degrade honesty)",
+    ["engine", "event"],
+    # event: backend_ready | unavailable | note_mirror_ok | note_mirror_fail |
+    #        search_hit | search_empty | timeout | no_dump | error
+)
+
 REFLECTION_PROPOSALS_TOTAL = Counter(
     "companion_reflection_proposals_total",
     "Reflection proposal lifecycle events",

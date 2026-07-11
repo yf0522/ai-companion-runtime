@@ -1,7 +1,9 @@
-"""Phase 1–2 unit tests: analyzers, utility whitelist, mem0 no-dump."""
+"""Phase 1–3 unit tests: analyzers, utility whitelist, mem0 closed loop / no-dump."""
 from __future__ import annotations
 
 import asyncio
+import uuid as uuid_mod
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -180,11 +182,21 @@ async def test_enqueue_post_process_reflection(monkeypatch):
     assert calls["reflection"] == 1
 
 
+def _fake_session_factory():
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    return FakeSession
+
+
 @pytest.mark.asyncio
 async def test_mem0_empty_does_not_dump_lifecycle(monkeypatch):
     """A3 / I7: mem0 empty search must not dump granted lifecycle rows."""
     from app.memory.adapter import MemoryBusinessAdapter
-    import uuid as uuid_mod
 
     class Mem0Backend:
         name = "mem0"
@@ -208,18 +220,11 @@ async def test_mem0_empty_does_not_dump_lifecycle(monkeypatch):
     async def fake_select(*args, **kwargs):
         return list(granted_rows)
 
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-    monkeypatch.setattr("app.db.session.async_session", lambda: FakeSession())
+    monkeypatch.setattr("app.db.session.async_session", _fake_session_factory())
     monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
 
     adapter = MemoryBusinessAdapter(backend=Mem0Backend())
-    fragments = await adapter._recall_inner(
+    fragments, meta = await adapter._recall_inner(
         user_id="11111111-1111-1111-1111-111111111111",
         uid=uuid_mod.UUID("11111111-1111-1111-1111-111111111111"),
         query_intent="喜欢什么",
@@ -228,12 +233,24 @@ async def test_mem0_empty_does_not_dump_lifecycle(monkeypatch):
         limit=5,
     )
     assert fragments == []
+    assert meta.get("no_dump") is True
+    assert meta.get("reason") == "mem0_empty_no_dump"
+
+    recall = await adapter.recall(
+        user_id="11111111-1111-1111-1111-111111111111",
+        query_intent="喜欢什么",
+    )
+    assert recall.status == "empty"
+    assert recall.fragments == []
+    assert recall.degraded is True
+    assert recall.data and recall.data.get("engine") == "mem0"
+    assert recall.data.get("no_dump") is True
+    assert recall.data.get("reason") == "mem0_empty_no_dump"
 
 
 @pytest.mark.asyncio
 async def test_lifecycle_backend_still_dumps_when_empty_engine(monkeypatch):
     from app.memory.adapter import MemoryBusinessAdapter
-    import uuid as uuid_mod
 
     class LifeBackend:
         name = "lifecycle"
@@ -257,18 +274,11 @@ async def test_lifecycle_backend_still_dumps_when_empty_engine(monkeypatch):
     async def fake_select(*args, **kwargs):
         return list(granted_rows)
 
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-    monkeypatch.setattr("app.db.session.async_session", lambda: FakeSession())
+    monkeypatch.setattr("app.db.session.async_session", _fake_session_factory())
     monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
 
     adapter = MemoryBusinessAdapter(backend=LifeBackend())
-    fragments = await adapter._recall_inner(
+    fragments, meta = await adapter._recall_inner(
         user_id="11111111-1111-1111-1111-111111111111",
         uid=uuid_mod.UUID("11111111-1111-1111-1111-111111111111"),
         query_intent="",
@@ -278,3 +288,193 @@ async def test_lifecycle_backend_still_dumps_when_empty_engine(monkeypatch):
     )
     assert len(fragments) == 1
     assert fragments[0]["content"] == "我喜欢早起"
+    assert meta.get("no_dump") is not True
+
+
+@pytest.mark.asyncio
+async def test_mem0_closed_loop_note_recall_consent(monkeypatch):
+    """I4: note → mem0 search hit matched via lifecycle_id + granted consent."""
+    from app.memory.adapter import MemoryBusinessAdapter
+
+    lifecycle_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    stored: dict[str, Any] = {}
+
+    class Mem0Backend:
+        name = "mem0"
+
+        async def add(self, **kwargs):
+            stored["content"] = kwargs["content"]
+            stored["metadata"] = dict(kwargs.get("metadata") or {})
+            return "mem0-engine-id-1"
+
+        async def search(self, **kwargs):
+            return [
+                {
+                    "id": "mem0-engine-id-1",
+                    "content": stored.get("content") or "我怕吵",
+                    "score": 0.91,
+                    "category": "preference",
+                    "metadata": {
+                        "lifecycle_id": lifecycle_id,
+                        "consent_status": "granted",
+                        "category": "preference",
+                    },
+                }
+            ]
+
+    granted_row = {
+        "id": lifecycle_id,
+        "content": "我怕吵",
+        "purpose": "preference",
+        "sensitivity": "normal",
+        "created_at": None,
+    }
+
+    async def fake_select(*args, **kwargs):
+        if kwargs.get("purpose") == "preference":
+            return [granted_row]
+        return []
+
+    async def fake_lifecycle_add(self, **kwargs):
+        return lifecycle_id
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setattr("app.db.session.async_session", _fake_session_factory())
+    monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
+    monkeypatch.setattr(
+        "app.memory.lifecycle_backend.LifecycleMemoryBackend.add",
+        fake_lifecycle_add,
+    )
+    monkeypatch.setenv("MEM0_ENABLED", "1")
+
+    adapter = MemoryBusinessAdapter(backend=Mem0Backend())
+    note = await adapter.note(
+        user_id="11111111-1111-1111-1111-111111111111",
+        summary="我怕吵",
+        category="preference",
+        explicit_user_request=True,
+    )
+    assert note.status == "granted"
+    assert note.memory_id == lifecycle_id
+    assert note.data and note.data.get("engine") == "mem0"
+    assert note.data.get("engine_id") == "mem0-engine-id-1"
+    assert note.data.get("consent_status") == "granted"
+    assert stored["metadata"].get("lifecycle_id") == lifecycle_id
+
+    recall = await adapter.recall(
+        user_id="11111111-1111-1111-1111-111111111111",
+        query_intent="怕吵",
+    )
+    assert recall.status == "success"
+    assert recall.data and recall.data.get("engine") == "mem0"
+    assert [f["content"] for f in recall.fragments] == ["我怕吵"]
+    assert recall.fragments[0]["id"] == lifecycle_id
+
+
+@pytest.mark.asyncio
+async def test_mem0_filters_ungranted_engine_hit(monkeypatch):
+    """I4: engine hit without matching granted lifecycle row is filtered out."""
+    from app.memory.adapter import MemoryBusinessAdapter
+
+    class Mem0Backend:
+        name = "mem0"
+
+        async def search(self, **kwargs):
+            return [
+                {
+                    "id": "orphan-mem0",
+                    "content": "未授权内容不应出现",
+                    "score": 0.99,
+                    "metadata": {"lifecycle_id": "dddddddd-dddd-dddd-dddd-dddddddddddd"},
+                }
+            ]
+
+        async def add(self, **kwargs):
+            return None
+
+    async def fake_select(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.db.session.async_session", _fake_session_factory())
+    monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
+
+    adapter = MemoryBusinessAdapter(backend=Mem0Backend())
+    recall = await adapter.recall(
+        user_id="11111111-1111-1111-1111-111111111111",
+        query_intent="什么",
+    )
+    assert recall.status == "empty"
+    assert recall.fragments == []
+    assert recall.data and recall.data.get("engine") == "mem0"
+
+
+@pytest.mark.asyncio
+async def test_mem0_enabled_unavailable_uses_degraded_not_lifecycle(monkeypatch):
+    """MEM0_ENABLED + init fail → DegradedMem0Backend (name=mem0), never lifecycle dump."""
+    from app.memory import backend as backend_mod
+
+    monkeypatch.setenv("MEM0_ENABLED", "1")
+    monkeypatch.setattr(
+        "app.memory.mem0_backend.try_build_mem0_backend",
+        lambda: None,
+    )
+    # Reset any cached imports by calling factory directly.
+    be = backend_mod.get_memory_backend()
+    assert be.name == "mem0"
+    assert getattr(be, "degraded", False) is True
+    assert await be.search(user_id="u", query="x") == []
+
+    granted_rows = [
+        {
+            "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            "content": "有很多已授权记忆",
+            "purpose": "preference",
+            "sensitivity": "normal",
+            "created_at": None,
+        }
+    ]
+
+    async def fake_select(*args, **kwargs):
+        return list(granted_rows)
+
+    monkeypatch.setattr("app.db.session.async_session", _fake_session_factory())
+    monkeypatch.setattr("app.memory.adapter.select_retrievable_memories", fake_select)
+
+    from app.memory.adapter import MemoryBusinessAdapter
+
+    adapter = MemoryBusinessAdapter(backend=be)
+    recall = await adapter.recall(
+        user_id="11111111-1111-1111-1111-111111111111",
+        query_intent="记得什么",
+    )
+    assert recall.status == "empty"
+    assert recall.fragments == []
+    assert recall.degraded is True
+    assert recall.data and recall.data.get("no_dump") is True
+    assert recall.data.get("engine") == "mem0"
+
+
+@pytest.mark.asyncio
+async def test_mem0_timeout_degrade_no_dump(monkeypatch):
+    """I7: mem0 timeout → empty/degrade; no granted dump into fragments."""
+    from app.memory.adapter import MemoryBusinessAdapter
+
+    class SlowMem0:
+        name = "mem0"
+
+        async def search(self, **kwargs):
+            await asyncio.sleep(1)
+            return [{"id": "x", "content": "should not appear"}]
+
+        async def add(self, **kwargs):
+            return None
+
+    adapter = MemoryBusinessAdapter(backend=SlowMem0(), recall_timeout_ms=50)
+    result = await adapter.recall(
+        user_id="11111111-1111-1111-1111-111111111111",
+        query_intent="x",
+    )
+    assert result.status == "timeout"
+    assert result.fragments == []
+    assert result.degraded is True
+    assert result.data and result.data.get("engine") == "mem0"

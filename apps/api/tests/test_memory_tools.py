@@ -318,7 +318,7 @@ async def test_memory_recall_timeout_degraded(monkeypatch):
 
     async def slow(**kwargs):
         await asyncio.sleep(1)
-        return []
+        return [], {}
 
     monkeypatch.setattr(adapter, "_recall_inner", slow)
     result = await adapter.recall(user_id=str(uuid.uuid4()), query_intent="x")

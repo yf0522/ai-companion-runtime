@@ -1,8 +1,9 @@
 """Optional mem0 OSS engine backend (AsyncMemory).
 
-Enable with ``MEM0_ENABLED=1`` and optional ``MEM0_CONFIG_JSON`` (mem0 from_config dict).
-Without a usable config / LLM+embedder, ``try_build_mem0_backend`` returns None and the
-adapter falls back to the lifecycle store.
+Enable with ``MEM0_ENABLED=1`` (or Settings.mem0_enabled) and optional
+``MEM0_CONFIG_JSON`` (mem0 ``from_config`` dict). Without a usable config /
+LLM+embedder, ``try_build_mem0_backend`` returns None and ``get_memory_backend``
+installs a degraded mem0 stub (empty search, **no** lifecycle dump).
 
 Consent, CareTask boundary, and refuse rules stay outside this module.
 """
@@ -108,6 +109,13 @@ def try_build_mem0_backend() -> Mem0MemoryBackend | None:
 
 def _load_mem0_config() -> dict[str, Any] | None:
     raw = os.environ.get("MEM0_CONFIG_JSON", "").strip()
+    if not raw:
+        try:
+            from app.config.settings import settings
+
+            raw = (settings.mem0_config_json or "").strip()
+        except Exception:
+            raw = ""
     if not raw:
         return None
     try:

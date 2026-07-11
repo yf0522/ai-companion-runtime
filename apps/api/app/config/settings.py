@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     pi_provider: str = "google"
     pi_model: str = "gemini-flash-latest"
 
+    # Long-term memory engine (mem0 OSS). Postgres consent remains SoT.
+    # When True but AsyncMemory unavailable → degraded empty/no-dump (not lifecycle dump).
+    mem0_enabled: bool = False
+    mem0_config_json: str = ""
+
     model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 
     def validate_security(self):
