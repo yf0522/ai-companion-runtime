@@ -76,6 +76,13 @@ class _AckFakeSession:
         return None
 
 
+async def _empty_ack_contexts(_db, logs):
+    return {
+        str(log.id): {"case": None, "outbox": None, "receipts": [], "ack_activity": None}
+        for log in logs
+    }
+
+
 def test_alerts_requires_authentication():
     app = FastAPI()
     app.include_router(alerts.router, prefix="/api")
@@ -167,6 +174,7 @@ def test_ack_notification_marks_acknowledged(monkeypatch):
         created_at=datetime(2026, 7, 9, 12, 0, 0),
     )
     monkeypatch.setattr("app.db.session.async_session", lambda: _AckFakeSession(fake_row))
+    monkeypatch.setattr(alerts, "_load_notification_contexts", _empty_ack_contexts)
 
     app = FastAPI()
     app.include_router(alerts.router, prefix="/api")
@@ -181,12 +189,16 @@ def test_ack_notification_marks_acknowledged(monkeypatch):
     payload = response.json()
     assert payload["status"] == "acknowledged"
     assert payload["item"]["status"] == "acknowledged"
-    assert fake_row.webhook_status == "acknowledged"
+    assert payload["item"]["delivery_status"] == "sent"
+    assert payload["item"]["acknowledged_by"] == user_id
+    assert payload["item"]["acknowledged_at"] is not None
+    assert fake_row.webhook_status == "sent"
 
 
 def test_ack_notification_404_when_missing(monkeypatch):
     user_id = "4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf"
     monkeypatch.setattr("app.db.session.async_session", lambda: _AckFakeSession(None))
+    monkeypatch.setattr(alerts, "_load_notification_contexts", _empty_ack_contexts)
 
     app = FastAPI()
     app.include_router(alerts.router, prefix="/api")
@@ -229,6 +241,7 @@ def test_family_ack_notification_via_binding(monkeypatch):
 
     monkeypatch.setattr(alerts, "_get_managed_elder_id", fake_managed_elder)
     monkeypatch.setattr("app.db.session.async_session", lambda: _AckFakeSession(fake_row))
+    monkeypatch.setattr(alerts, "_load_notification_contexts", _empty_ack_contexts)
 
     app = FastAPI()
     app.include_router(alerts.router, prefix="/api")
@@ -240,7 +253,9 @@ def test_family_ack_notification_via_binding(monkeypatch):
     )
     assert res.status_code == 200
     assert res.json()["item"]["status"] == "acknowledged"
-    assert fake_row.webhook_status == "acknowledged"
+    assert res.json()["item"]["delivery_status"] == "sent"
+    assert res.json()["item"]["acknowledged_by"] == family_id
+    assert fake_row.webhook_status == "sent"
 
 
 def test_family_without_binding_cannot_ack(monkeypatch):

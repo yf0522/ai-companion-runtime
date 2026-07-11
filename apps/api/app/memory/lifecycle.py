@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Column, DateTime, String, and_, insert, select, update
+from sqlalchemy import Column, DateTime, String, and_, func, insert, select, update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,12 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-v3"
 DEFAULT_EMBEDDING_MODEL_VERSION = "dashscope-compatible-2026-07-10"
 
 RETRIEVABLE_CONSENT_STATUSES = {"granted"}
+OWNER_VISIBLE_CONSENT_STATUSES = [
+    "pending",
+    "granted",
+    "rejected",
+    "legacy_unverified",
+]
 ACTIVE_DELETION_STATE = "active"
 CARE_SUMMARY_STATUS_MAP = {
     "done": "completed",
@@ -128,6 +134,19 @@ def _row_value(row: Any, key: str, default: Any = None) -> Any:
 
 
 def serialize_memory(row: Any) -> dict[str, Any]:
+    consent_status = _row_value(row, "consent_status")
+    correction_state = _row_value(row, "correction_state")
+    retention_until = _row_value(row, "retention_until")
+    current = datetime.now(UTC).replace(tzinfo=None)
+    retention_expired = retention_until is not None and retention_until < current
+    retention_status = (
+        "expired" if retention_expired else "unbounded" if retention_until is None else "active"
+    )
+    lifecycle_status = (
+        "expired"
+        if retention_expired
+        else "corrected" if correction_state == "corrected" else consent_status
+    )
     return {
         "id": str(_row_value(row, "id")),
         "content": _row_value(row, "content"),
@@ -135,14 +154,21 @@ def serialize_memory(row: Any) -> dict[str, Any]:
         "importance": float(_row_value(row, "importance_score", 0.0) or 0.0),
         "purpose": _row_value(row, "purpose"),
         "sensitivity": _row_value(row, "sensitivity"),
-        "consent_status": _row_value(row, "consent_status"),
-        "retention_until": _iso(_row_value(row, "retention_until")),
-        "correction_state": _row_value(row, "correction_state"),
+        "status": lifecycle_status,
+        "lifecycle_status": lifecycle_status,
+        "consent_status": consent_status,
+        "retention_until": _iso(retention_until),
+        "retention_status": retention_status,
+        "retrievable": is_retrievable_memory(row, now=current),
+        "correction_state": correction_state,
         "deletion_state": _row_value(row, "deletion_state"),
         "embedding_state": _row_value(row, "embedding_state"),
         "source": _row_value(row, "source"),
         "source_trace_id": _row_value(row, "source_trace_id"),
         "created_at": _iso(_row_value(row, "created_at")),
+        "updated_at": _iso(
+            _row_value(row, "updated_at") or _row_value(row, "created_at")
+        ),
     }
 
 
@@ -220,6 +246,36 @@ async def select_retrievable_memories(
         )
         .order_by(table.c.importance_score.desc(), table.c.created_at.desc())
         .limit(limit)
+    )
+    return [serialize_memory(row) for row in result.fetchall()]
+
+
+async def select_owner_memories(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """List active owner-visible memory lifecycle records, including pending decisions."""
+    table = memories_table()
+    corrections = Base.metadata.tables["memory_correction_events"]
+    corrected_at = (
+        select(func.max(corrections.c.applied_at))
+        .where(corrections.c.memory_id == table.c.id)
+        .correlate(table)
+        .scalar_subquery()
+    )
+    result = await db.execute(
+        select(table, corrected_at.label("updated_at"))
+        .where(
+            and_(
+                table.c.user_id == user_id,
+                table.c.deletion_state == ACTIVE_DELETION_STATE,
+                table.c.consent_status.in_(OWNER_VISIBLE_CONSENT_STATUSES),
+            )
+        )
+        .order_by(table.c.created_at.desc())
+        .limit(max(1, min(limit, 100)))
     )
     return [serialize_memory(row) for row in result.fetchall()]
 
@@ -385,7 +441,12 @@ async def delete_memory(db: AsyncSession, *, memory_id: uuid.UUID, user_id: uuid
     return True
 
 
-def build_privacy_safe_family_summary(care_outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+def build_privacy_safe_family_summary(
+    care_outcomes: list[dict[str, Any]],
+    *,
+    range_key: str = "30d",
+    previous_care_outcomes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     filtered = [
         {**item, "status": CARE_SUMMARY_STATUS_MAP[item["status"]]}
         for item in care_outcomes
@@ -395,18 +456,82 @@ def build_privacy_safe_family_summary(care_outcomes: list[dict[str, Any]]) -> di
     for item in filtered:
         status = str(item.get("status"))
         by_status[status] = by_status.get(status, 0) + 1
+    completed = sum(
+        count for status, count in by_status.items() if status in {"completed", "acknowledged"}
+    )
+    denominator = len(filtered)
+    completion_rate = round(completed / denominator, 4) if denominator else None
+
+    previous_filtered = None
+    if previous_care_outcomes is not None:
+        previous_filtered = [
+            {**item, "status": CARE_SUMMARY_STATUS_MAP[item["status"]]}
+            for item in previous_care_outcomes
+            if item.get("status") in CARE_SUMMARY_STATUS_MAP
+        ]
+    previous_denominator = len(previous_filtered) if previous_filtered is not None else None
+    previous_completed = (
+        sum(
+            1
+            for item in previous_filtered
+            if item.get("status") in {"completed", "acknowledged"}
+        )
+        if previous_filtered is not None
+        else None
+    )
+    previous_rate = (
+        round(previous_completed / previous_denominator, 4)
+        if previous_completed is not None and previous_denominator
+        else None
+    )
+    delta = (
+        round(completion_rate - previous_rate, 4)
+        if completion_rate is not None and previous_rate is not None
+        else None
+    )
+    direction = (
+        "up" if delta is not None and delta > 0 else "down" if delta is not None and delta < 0 else "flat"
+        if delta is not None
+        else "unavailable"
+    )
+
+    items = []
+    for item in filtered:
+        serialized = {
+            "task_id": str(item.get("id")),
+            "task_type": item.get("task_type"),
+            "status": item.get("status"),
+            "due_at": _iso(item.get("due_at")),
+            "completed_at": _iso(item.get("completed_at")),
+        }
+        # Keep the summary privacy-safe: only expose care-task display/audit fields
+        # explicitly supplied by the caller, never transcript or task notes.
+        if "title" in item:
+            serialized["title"] = item.get("title")
+        if "owner" in item:
+            serialized["owner"] = item.get("owner")
+        if "evidence" in item:
+            serialized["evidence"] = item.get("evidence")
+        if "evidence_at" in item:
+            serialized["evidence_at"] = _iso(item.get("evidence_at"))
+        items.append(serialized)
+
     return {
         "summary_type": "care_outcomes_only",
+        "range": range_key,
+        "range_basis": "updated_at",
+        "denominator": denominator,
+        "completion": {
+            "completed": completed,
+            "rate": completion_rate,
+        },
+        "trend": {
+            "previous_denominator": previous_denominator,
+            "previous_rate": previous_rate,
+            "delta": delta,
+            "direction": direction,
+        },
         "total_outcomes": len(filtered),
         "by_status": by_status,
-        "items": [
-            {
-                "task_id": str(item.get("id")),
-                "task_type": item.get("task_type"),
-                "status": item.get("status"),
-                "due_at": _iso(item.get("due_at")),
-                "completed_at": _iso(item.get("completed_at")),
-            }
-            for item in filtered
-        ],
+        "items": items,
     }

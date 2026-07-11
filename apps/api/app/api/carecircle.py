@@ -72,8 +72,25 @@ async def list_care_circle(user: dict = Depends(get_current_user)):
             )
         ).scalars().all()
     binding_by_user = {binding.family_user_id: binding for binding in bindings}
+    is_elder_owner = managed.role == "elder"
+    current_binding = next(
+        (binding for binding in bindings if binding.id == managed.binding_id),
+        None,
+    )
     return {
         "household_id": str(household_id),
+        "current_user": {
+            "user_id": str(managed.actor_id),
+            "role": managed.role,
+            "consent_status": current_binding.consent_status if current_binding else "owner",
+        },
+        "current_binding_id": str(managed.binding_id) if managed.binding_id else None,
+        "can_invite": is_elder_owner,
+        "can_manage_permissions": is_elder_owner,
+        "capabilities": {
+            "can_invite": is_elder_owner,
+            "can_manage_permissions": is_elder_owner,
+        },
         "members": [
             {
                 "id": str(member.id),
@@ -92,6 +109,7 @@ async def list_care_circle(user: dict = Depends(get_current_user)):
                     else "owner"
                 ),
                 "permissions": member.permissions or [],
+                "escalation_order": None,
             }
             for member in members
         ],
@@ -101,11 +119,13 @@ async def list_care_circle(user: dict = Depends(get_current_user)):
                 "family_user_id": str(binding.family_user_id),
                 "elder_user_id": str(binding.elder_user_id),
                 "permissions": binding.permissions or [],
+                "status": binding.status,
+                "consent_status": binding.consent_status,
                 "version": binding.version,
             }
             for binding in bindings
         ],
-        "permissions": [],
+        "permissions": current_binding.permissions if current_binding else ["owner"],
         "invites": [
             {
                 "email": invite.invitee_email,

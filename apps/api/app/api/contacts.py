@@ -122,6 +122,7 @@ async def _household_for_actor(user: dict, permission: str = "view_notifications
 
 def _contact_point_json(row) -> dict:
     return {
+        "resource_type": "contact_point",
         "id": str(row.id),
         "household_id": str(row.household_id),
         "user_id": str(row.user_id),
@@ -131,7 +132,8 @@ def _contact_point_json(row) -> dict:
         "name": row.label or row.value,
         "value": row.value,
         "priority": row.priority,
-        "escalation_order": row.priority,
+        # Escalation order belongs to EscalationStep, not a contact method.
+        "escalation_order": None,
         "availability": row.availability_json or {},
         "verification_state": row.verification_state,
         "verification_status": (
@@ -142,6 +144,30 @@ def _contact_point_json(row) -> dict:
         "verified_at": row.verified_at.isoformat() if row.verified_at else None,
         "last_verified_at": row.verified_at.isoformat() if row.verified_at else None,
         "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _emergency_contact_json(row) -> dict:
+    return {
+        "resource_type": "emergency_contact",
+        "id": str(row.id),
+        "household_id": str(row.household_id) if row.household_id else None,
+        "user_id": str(row.user_id),
+        "contact_point_id": str(row.contact_point_id) if row.contact_point_id else None,
+        "name": row.name,
+        "phone": row.phone,
+        "relation": row.relation,
+        "priority": row.priority,
+        "availability": row.availability_json or {},
+        "notify_on_levels": row.notify_on_levels or [],
+        "verification_state": row.verification_state,
+        "verified_at": row.verified_at.isoformat() if row.verified_at else None,
+        "is_active": row.is_active,
+        "status": "active" if row.is_active and row.revoked_at is None else "revoked",
+        "available": bool(row.is_active and row.revoked_at is None),
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
@@ -155,11 +181,16 @@ async def list_contact_points(user: dict = Depends(get_current_user)):
         rows = (
             await db.execute(
                 select(ContactPoint)
-                .where(ContactPoint.household_id == household_id)
+                .where(
+                    ContactPoint.household_id == household_id,
+                    ContactPoint.status == "active",
+                    ContactPoint.revoked_at.is_(None),
+                )
                 .order_by(ContactPoint.priority.asc(), ContactPoint.created_at.asc())
             )
         ).scalars().all()
-    return {"household_id": str(household_id), "items": [_contact_point_json(row) for row in rows]}
+    items = [_contact_point_json(row) for row in rows]
+    return {"household_id": str(household_id), "items": items, "total": len(items)}
 
 
 @router.post("")
@@ -393,14 +424,7 @@ async def create_emergency_contact(body: EmergencyContactCreate, user: dict = De
         db.add(row)
         await db.commit()
         await db.refresh(row)
-    return {
-        "id": str(row.id),
-        "contact_point_id": str(row.contact_point_id),
-        "name": row.name,
-        "priority": row.priority,
-        "verification_state": row.verification_state,
-        "is_active": row.is_active,
-    }
+    return _emergency_contact_json(row)
 
 
 @router.get("/emergency")
@@ -413,27 +437,16 @@ async def list_emergency_contacts(user: dict = Depends(get_current_user)):
         rows = (
             await db.execute(
                 select(EmergencyContact)
-                .where(EmergencyContact.household_id == household_id)
+                .where(
+                    EmergencyContact.household_id == household_id,
+                    EmergencyContact.is_active.is_(True),
+                    EmergencyContact.revoked_at.is_(None),
+                )
                 .order_by(EmergencyContact.priority.asc(), EmergencyContact.created_at.asc())
             )
         ).scalars().all()
-    return {
-        "household_id": str(household_id),
-        "items": [
-            {
-                "id": str(row.id),
-                "contact_point_id": str(row.contact_point_id) if row.contact_point_id else None,
-                "name": row.name,
-                "relation": row.relation,
-                "priority": row.priority,
-                "availability": row.availability_json or {},
-                "notify_on_levels": row.notify_on_levels or [],
-                "verification_state": row.verification_state,
-                "is_active": row.is_active,
-            }
-            for row in rows
-        ],
-    }
+    items = [_emergency_contact_json(row) for row in rows]
+    return {"household_id": str(household_id), "items": items, "total": len(items)}
 
 
 @router.post("/emergency/{contact_id}/revoke")
