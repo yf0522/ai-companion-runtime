@@ -29,6 +29,12 @@ test("Release A family navigation exposes people contacts and readiness", () => 
   assert.ok(hrefs.includes("/family/readiness"));
 });
 
+test("elder memory controls are discoverable without changing the primary route", () => {
+  const hrefs = navForRole("elder").map((item) => item.href);
+  assert.ok(hrefs.includes("/elder/memory"));
+  assert.equal(defaultRouteForRole("elder"), "/elder/companion");
+});
+
 test("operator navigation exposes case queue and household readiness", () => {
   const hrefs = navForRole("operator").map((item) => item.href);
   assert.ok(hrefs.includes("/ops/care"));

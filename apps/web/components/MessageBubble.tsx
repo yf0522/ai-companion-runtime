@@ -1,9 +1,10 @@
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
-import { ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatToolCalls, type ChatToolCallItem } from "@astryxdesign/core/Chat";
+import { ChatMessage, ChatMessageBubble, ChatMessageMetadata } from "@astryxdesign/core/Chat";
 import { Text } from "@astryxdesign/core/Text";
-import type { Message, ToolChipStatus } from "@/stores/chatStore";
+import type { Message } from "@/stores/chatStore";
 import CareTaskClarifyCard, { type CareTaskCandidate } from "./CareTaskClarifyCard";
+import OutcomeReceipt from "./elder/OutcomeReceipt";
 
 interface Props { message: Message; isStreaming?: boolean; onClarifySelect?: (candidate: CareTaskCandidate, verb: string) => void; }
 const SAFE_PROVIDER_FAILURE = "我现在暂时无法生成完整回复。提醒和安全功能仍然可用，请稍后再试。";
@@ -15,22 +16,9 @@ export function elderSafeMessage(content: string): string {
   return technicalFailure ? SAFE_PROVIDER_FAILURE : content;
 }
 
-function toolStatus(status: ToolChipStatus): ChatToolCallItem["status"] {
-  if (status === "calling") return "running";
-  if (status === "failed" || status === "timeout") return "error";
-  if (status === "needs_clarification") return "pending";
-  return "complete";
-}
-
 export default function MessageBubble({ message, isStreaming = false, onClarifySelect }: Props) {
   const isUser = message.role === "user";
   const visibleContent = isUser ? message.content : elderSafeMessage(message.content);
-  const calls: ChatToolCallItem[] = (message.toolsUsed || []).map((tool) => ({
-    name: tool.tool,
-    status: toolStatus(tool.status),
-    target: tool.action || (tool.status === "needs_clarification" ? "等待确认" : "照护动作"),
-    errorMessage: tool.status === "failed" || tool.status === "timeout" ? "工具未成功完成" : undefined,
-  }));
 
   if (isUser) {
     return (
@@ -50,10 +38,12 @@ export default function MessageBubble({ message, isStreaming = false, onClarifyS
           <Text display="block" style={{ marginTop: 8 }}>{message.riskAlert.message}</Text>
         </div>
       )}
-      {calls.length > 0 && <ChatToolCalls calls={calls} label="正在执行照护动作" />}
+      {(message.toolsUsed || []).map((tool, index) => (
+        <OutcomeReceipt key={`${tool.tool}-${index}`} tool={tool} />
+      ))}
       <ChatMessageBubble
         variant="ghost"
-        metadata={<ChatMessageMetadata footer={<Text type="supporting">{message.status === "streaming" ? "正在组织回复" : "已完成必要检查"}</Text>} />}
+        metadata={message.status === "streaming" ? <ChatMessageMetadata footer={<Text type="supporting">正在组织回复</Text>} /> : undefined}
       >
         <Text as="div" size="lg" style={{ whiteSpace: "pre-wrap", lineHeight: 1.75 }}>{visibleContent || (message.status === "streaming" ? "正在听你说…" : "")}</Text>
       </ChatMessageBubble>

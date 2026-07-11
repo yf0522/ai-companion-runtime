@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +22,7 @@ from app.api.family_auth import get_managed_elder_id
 from app.tools import caretask_service as svc
 
 router = APIRouter(tags=["care-tasks"])
+CareTaskStatus = Literal["pending", "due", "done", "snoozed", "missed", "cancelled"]
 
 
 class IdempotencyClaimState(str, Enum):
@@ -40,7 +41,7 @@ class CareTaskCreate(BaseModel):
     task_type: str = "medication"
     due_at: datetime | None = None
     notes: str | None = None
-    schedule_type: Literal["once", "daily", "weekly", "interval"] | None = None
+    schedule_type: Literal["once", "daily", "weekly"] | None = None
     query: str | None = None
 
 
@@ -48,6 +49,7 @@ class CareTaskUpdate(BaseModel):
     title: str | None = None
     due_at: datetime | None = None
     notes: str | None = None
+    schedule_type: Literal["once", "daily", "weekly"] | None = None
     expected_version: int = Field(..., ge=1)
 
 
@@ -231,6 +233,7 @@ async def list_care_tasks(
     include_terminal: bool = False,
     limit: int = 50,
     scope: str = "all",
+    statuses: list[CareTaskStatus] | None = Query(default=None),
     user: dict = Depends(get_current_user),
 ):
     elder_id = await _get_managed_elder_id(user, permission="view_reminders")
@@ -240,12 +243,14 @@ async def list_care_tasks(
         include_terminal=include_terminal,
         limit=max(1, min(limit, 100)),
         scope=scope_norm,
+        statuses=statuses,
     )
     return {
         "user_id": str(elder_id),
         "items": rows,
         "total": len(rows),
         "scope": scope_norm,
+        "statuses": statuses or [],
     }
 
 
@@ -304,9 +309,15 @@ async def update_care_task(
                 title=body.title,
                 due_at=body.due_at,
                 notes=body.notes,
+                schedule_type=body.schedule_type,
             )
         except svc.StaleCareTaskVersionError as exc:
             raise _stale_version_error(exc) from exc
+        except svc.CareTaskTransitionError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "terminal_care_task_immutable", "message": str(exc)},
+            ) from exc
         except LookupError:
             raise HTTPException(status_code=404, detail="CareTask not found")
         except ValueError:

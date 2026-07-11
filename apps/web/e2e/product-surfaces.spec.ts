@@ -51,24 +51,20 @@ test("login keeps the real action in the first mobile viewport", async ({ page }
   }
 });
 
-test("elder companion presents status, next action, safety entry, and all mobile routes", async ({ page }, testInfo) => {
+test("elder companion presents accountable actions, privacy controls, and all mobile routes", async ({ page }, testInfo) => {
   await seedRole(page, "elder");
   await page.goto("/elder/companion");
   await expect(page.getByText("今天想先说哪件事？")).toBeVisible();
   await expect(page.getByText("帮我判断是否诈骗")).toBeVisible();
   await expect(page.getByLabel("输入给陪伴助手的消息")).toBeVisible();
   await expect(page.getByText(/Harness|Trace|runtime|outbox|权限隔离/i)).toHaveCount(0);
-  const helpBox = await visibleBox(page.getByRole("link", { name: "现在需要帮助？先联系家人" }));
+  const helpBox = await visibleBox(page.getByRole("link", { name: /需要帮助/ }).first());
   expect(helpBox.height).toBeGreaterThanOrEqual(44);
-  const modeBox = await visibleBox(page.getByLabel("选择回应方式"));
-  expect(modeBox.height).toBeGreaterThanOrEqual(44);
-  await page.getByLabel("选择回应方式").click();
-  const runtimeSelector = page.getByRole("radiogroup", { name: "回应方式" });
-  await expect(runtimeSelector.getByRole("radio", { name: "标准模式" })).toBeVisible();
-  await expect(runtimeSelector.getByRole("radio", { name: "实验模式" })).toBeVisible();
-  await runtimeSelector.getByRole("radio", { name: "实验模式" }).click();
-  await expect(runtimeSelector.getByRole("radio", { name: "实验模式" })).toHaveAttribute("aria-checked", "true");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("companion.agent_runtime"))).toBe("pi_experimental");
+  const privacyBox = await visibleBox(page.getByRole("link", { name: "记忆与隐私" }));
+  expect(privacyBox.height).toBeGreaterThanOrEqual(44);
+  const sendBox = await visibleBox(page.getByRole("button", { name: "发送消息" }));
+  expect(sendBox.height).toBeGreaterThanOrEqual(48);
+  await expect(page.getByLabel("选择回应方式")).toHaveCount(0);
   if (testInfo.project.name === "mobile") {
     const nav = page.getByRole("navigation", { name: "长者移动导航" });
     await expect(nav.getByText("陪伴", { exact: true })).toBeVisible();
@@ -76,14 +72,14 @@ test("elder companion presents status, next action, safety entry, and all mobile
     await expect(nav.getByText("帮助", { exact: true })).toBeVisible();
     const composerBox = await visibleBox(page.locator(".astryx-chat-composer"));
     const navBox = await visibleBox(nav);
-    expect(composerBox.height).toBeGreaterThanOrEqual(80);
+    expect(composerBox.height).toBeGreaterThanOrEqual(60);
     expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(navBox.y);
   }
 });
 
 test("family overview prioritizes exceptions before due work", async ({ page }) => {
   await seedRole(page, "family");
-  await json(page, "**/api/care-tasks", [
+  await json(page, "**/api/care-tasks**", [
     { id: "task-1", title: "晚间降压药", status: "scheduled", next_fire_at: "2026-07-10T20:00:00Z", schedule_type: "daily", created_by: "family", version: 1 },
     { id: "task-2", title: "测量血压", status: "active", next_fire_at: "2026-07-11T08:00:00Z", schedule_type: "daily", created_by: "family", version: 1 },
     { id: "task-3", title: "午间问候", status: "scheduled", next_fire_at: "2026-07-11T12:00:00Z", schedule_type: "daily", created_by: "family", version: 1 },
@@ -116,7 +112,7 @@ test("family overview prioritizes exceptions before due work", async ({ page }) 
 
 test("family overview never presents an unavailable notification state as all clear", async ({ page }) => {
   await seedRole(page, "family");
-  await json(page, "**/api/care-tasks", [{
+  await json(page, "**/api/care-tasks**", [{
     id: "task-1", title: "晚间降压药", status: "scheduled", next_fire_at: "2026-07-10T20:00:00Z", schedule_type: "daily", created_by: "family", version: 1,
   }]);
   await json(page, "**/api/notifications", { user_id: "elder-1", total: 0, status: "unavailable", items: [] });
@@ -132,7 +128,7 @@ test("family overview never presents an unavailable notification state as all cl
 test("featured alert surface treatment follows severity", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "computed-style contract");
   await seedRole(page, "family");
-  await json(page, "**/api/care-tasks", []);
+  await json(page, "**/api/care-tasks**", []);
   let severity = "medium";
   await page.route("**/api/notifications", (route) => route.fulfill({
     status: 200,
@@ -147,8 +143,7 @@ test("featured alert surface treatment follows severity", async ({ page }, testI
 
   const surfaceSignature = () => page.locator(".attention-card").evaluate((element) => {
     const card = getComputedStyle(element);
-    const icon = getComputedStyle(element.querySelector(".attention-card-icon") as Element);
-    return [card.backgroundColor, card.borderLeftColor, icon.backgroundColor].join("|");
+    return [card.backgroundColor, card.borderLeftColor].join("|");
   });
 
   await page.goto("/family/overview");
@@ -169,7 +164,7 @@ test("featured alert surface treatment follows severity", async ({ page }, testI
 test("unknown family alert severity is conservative and outranks low", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "unknown-severity contract");
   await seedRole(page, "family");
-  await json(page, "**/api/care-tasks", []);
+  await json(page, "**/api/care-tasks**", []);
   await json(page, "**/api/notifications", {
     user_id: "elder-1",
     total: 2,
@@ -223,7 +218,7 @@ test("family alert read failure never presents zero counts", async ({ page }, te
 
 test("family task metrics and labels respect explicit disabled state", async ({ page }) => {
   await seedRole(page, "family");
-  await json(page, "**/api/care-tasks", [
+  await json(page, "**/api/care-tasks**", [
     { id: "task-active", title: "服药提醒", status: "scheduled", is_active: true, next_fire_at: "2026-07-10T20:00:00Z", schedule_type: "daily", created_by: "family", version: 1 },
     { id: "task-disabled", title: "已停用提醒", status: "scheduled", is_active: false, next_fire_at: "2026-07-10T21:00:00Z", schedule_type: "daily", created_by: "family", version: 1 },
     { id: "task-completed", title: "已完成提醒", status: "completed", is_active: true, next_fire_at: "2026-07-10T19:00:00Z", schedule_type: "daily", created_by: "family", version: 1 },
@@ -237,7 +232,7 @@ test("family task metrics and labels respect explicit disabled state", async ({ 
 test("family task read failure never presents zero counts", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "failed-read contract");
   await seedRole(page, "family");
-  await failingJson(page, "**/api/care-tasks");
+  await failingJson(page, "**/api/care-tasks**");
   await page.goto("/family/tasks");
   await expect(page.getByRole("main", { name: "照护任务" }).getByRole("alert")).toBeVisible();
   await expect(page.locator('[aria-label="照护任务统计"]')).toHaveCount(0);
@@ -269,7 +264,7 @@ test("secondary family read failures never present zero or empty claims", async 
 test("elder task read failure never presents an all-clear claim", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "failed-read contract");
   await seedRole(page, "elder");
-  await failingJson(page, "**/api/care-tasks");
+  await failingJson(page, /\/api\/care-tasks\?/);
   await page.goto("/elder/today");
   await expect(page.getByRole("heading", { name: "暂时无法确认今日事项" })).toBeVisible();
   await expect(page.getByRole("main", { name: "今日事项" }).getByRole("alert")).toBeVisible();
@@ -292,24 +287,24 @@ test("elder navigation remains reachable at the tablet release width", async ({ 
   expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(navBox.y);
 });
 
-test("operator queue exposes severity, owner, next action, and evidence handles", async ({ page }) => {
+test("operator queue exposes canonical responsibility, SLA, and next action", async ({ page }) => {
   await seedRole(page, "operator");
   await json(page, "**/api/operator/cases", { total: 1, items: [{
-    id: "case-1", user_id: "elder-1", safety_decision_id: "decision-12345678", notification_outbox_id: "outbox-12345678", status: "open", severity: "critical", owner_id: null, summary: "高风险诈骗，需要人工确认", resolution: null, due_at: "2026-07-10T09:00:00Z", created_at: "2026-07-10T08:00:00Z", resolved_at: null, state_version: 1,
+    id: "case-1", user_id: "elder-1", elder_user_id: "elder-1", household_id: "home-1", safety_decision_id: "decision-12345678", notification_outbox_id: "outbox-12345678", trace_id: "trace-1", status: "unstaffed", severity: "critical", owner_id: null, ownership_status: "unassigned", allowed_transitions: ["assigned"], can_add_activity: false, summary: "高风险诈骗，需要人工确认", resolution: null, due_at: "2026-07-10T09:00:00Z", created_at: "2026-07-10T08:00:00Z", resolved_at: null, state_version: 1,
   }] });
   await page.goto("/ops/care");
   await expect(page.getByText("高风险诈骗，需要人工确认")).toBeVisible();
-  await expect(page.getByText("未分配")).toBeVisible();
-  await expect(page.getByText(/decision decision/)).toBeVisible();
-  await expect(page.getByText(/outbox outbox/)).toBeVisible();
-  await expect(page.getByRole("link", { name: "查看案件" })).toBeVisible();
+  await expect(page.getByText("尚未接单")).toBeVisible();
+  await expect(page.getByText("接单并确认首次联系")).toBeVisible();
+  await expect(page.getByText(/decision decision|outbox outbox/i)).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "处理" })).toBeVisible();
 });
 
 test("unknown operator severity never renders as success", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "unknown-severity contract");
   await seedRole(page, "operator");
   await json(page, "**/api/operator/cases", { total: 1, items: [{
-    id: "case-unknown", user_id: "elder-1", safety_decision_id: null, notification_outbox_id: null, status: "open", severity: "unexpected", owner_id: null, summary: "风险等级待确认", resolution: null, due_at: null, created_at: "2026-07-10T08:00:00Z", resolved_at: null, state_version: 1,
+    id: "case-unknown", user_id: "elder-1", household_id: "home-1", safety_decision_id: null, notification_outbox_id: null, status: "unstaffed", severity: "unexpected", owner_id: null, ownership_status: "unassigned", allowed_transitions: ["assigned"], can_add_activity: false, summary: "风险等级待确认", resolution: null, due_at: null, created_at: "2026-07-10T08:00:00Z", resolved_at: null, state_version: 1,
   }] });
   await page.goto("/ops/care");
   const badge = page.getByText("风险待确认", { exact: true });
@@ -351,7 +346,7 @@ test("operator trace read failure never presents a zero queue", async ({ page },
 test("family mobile navigation keeps every route reachable", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile navigation contract");
   await seedRole(page, "family");
-  await json(page, "**/api/care-tasks", []);
+  await json(page, "**/api/care-tasks**", []);
   await json(page, "**/api/notifications", { user_id: "elder-1", total: 0, status: "persisted", items: [] });
   await page.goto("/family/overview");
   const nav = page.getByRole("navigation", { name: "家属移动导航" });

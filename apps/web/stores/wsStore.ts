@@ -89,6 +89,7 @@ export const useWsStore = create<WsState>((set, get) => ({
         status: data.status,
         text: data.text,
         action: data.action || payload.action,
+        data: payload,
         candidates: data.candidates || payload.candidates,
         clarifyVerb: payload.clarify_verb || data.clarify_verb,
       });

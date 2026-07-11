@@ -5,7 +5,7 @@
 - Store `.env.production.example` values in the deployment secret manager; do not commit `.env.production`.
 - Terminate TLS at a reviewed ingress or load balancer and forward only trusted traffic to the private Compose network.
 - Set explicit API runtime URLs: `PUBLIC_API_URL=https://...` and `PUBLIC_WS_URL=wss://...`.
-- Set `EXPECTED_MIGRATION_HEADS=f2a3b4c5d6e7` and verify `alembic heads` returns that single head.
+- Set `EXPECTED_MIGRATION_HEADS=a9c0d1e2f3b4` and verify `alembic heads` returns that single head.
 - Configure a real backup bucket and KMS key, then complete the restore drill in `backup-restore.md`.
 - Configure a production-capable `NOTIFICATION_PROVIDER`; `sandbox` and `unconfigured` are never production-ready.
 - Keep `DEVICE_IDENTITY_REQUIRED=true` and `ENABLE_CELERY_TASKS=true`; `/ready` requires a fresh worker heartbeat.
@@ -14,7 +14,7 @@
 ## Release sequence
 
 1. Build immutable API and web images from one commit SHA.
-2. Run `alembic upgrade f2a3b4c5d6e7` as a one-off migration job.
+2. Run `alembic upgrade a9c0d1e2f3b4` as a one-off migration job.
 3. Start API/workers with `infra/docker-compose.yml` plus `infra/docker-compose.production.yml`.
 4. Require `/ready` to report platform `status=ready` before routing traffic. The platform readiness payload is separate from household readiness and includes risk policy, database, Redis, migration DB heads, notification provider capability, device identity enforcement, and worker broker/heartbeat checks.
 5. Run role-authenticated care-task, device-auth, and production notification provider smoke checks.

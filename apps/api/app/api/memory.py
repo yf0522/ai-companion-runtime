@@ -1,6 +1,8 @@
 import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, select
 
@@ -50,13 +52,16 @@ async def get_memories(
     """Get authenticated user's stored memories."""
     try:
         from app.db.session import async_session
-        from app.memory.lifecycle import select_retrievable_memories
+        from app.memory.lifecycle import select_owner_memories
 
         async with async_session() as db:
-            memories = await select_retrievable_memories(db, user_id=user_id, limit=limit)
+            memories = await select_owner_memories(db, user_id=user_id, limit=limit)
             return {
                 "user_id": str(user_id),
+                "scope": "owner_lifecycle",
+                "items": memories,
                 "memories": memories,
+                "total": len(memories),
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load memories: {e}")
@@ -165,6 +170,7 @@ async def accept_reflection(
 @router.get("/memory/family-summary/{elder_user_id}")
 async def get_family_memory_summary(
     elder_user_id: uuid.UUID,
+    range_key: Literal["7d", "30d", "90d"] = Query(default="30d", alias="range"),
     family_user_id: uuid.UUID = Depends(get_current_user_uuid),
 ):
     """Return a privacy-safe family summary built from care outcomes, not transcripts."""
@@ -178,6 +184,9 @@ async def get_family_memory_summary(
                 select(FamilyBinding).where(
                     FamilyBinding.family_user_id == family_user_id,
                     FamilyBinding.elder_user_id == elder_user_id,
+                    FamilyBinding.status == "active",
+                    FamilyBinding.consent_status == "active",
+                    FamilyBinding.revoked_at.is_(None),
                 )
             )
             binding = binding_result.scalar_one_or_none()
@@ -185,43 +194,78 @@ async def get_family_memory_summary(
             if "view_reminders" not in permissions and "view_notifications" not in permissions:
                 raise HTTPException(status_code=403, detail="Not authorized for elder care summary")
 
+            days = int(range_key.removesuffix("d"))
+            range_end = datetime.now(UTC).replace(tzinfo=None)
+            range_start = range_end - timedelta(days=days)
+            previous_start = range_start - timedelta(days=days)
+            allowed_statuses = [
+                "pending",
+                "due",
+                "done",
+                "completed",
+                "acknowledged",
+                "missed",
+                "failed",
+                "expired",
+                "cancelled",
+                "snoozed",
+            ]
             result = await db.execute(
                 select(CareTask)
                 .where(
                     and_(
                         CareTask.user_id == elder_user_id,
-                        CareTask.status.in_(
-                            [
-                                "done",
-                                "completed",
-                                "acknowledged",
-                                "missed",
-                                "failed",
-                                "expired",
-                                "cancelled",
-                                "snoozed",
-                            ]
-                        ),
+                        CareTask.status.in_(allowed_statuses),
+                        CareTask.updated_at >= range_start,
+                        CareTask.updated_at < range_end,
                     )
                 )
                 .order_by(CareTask.updated_at.desc())
-                .limit(20)
             )
             tasks = result.scalars().all()
-            outcomes = [
+            previous_result = await db.execute(
+                select(CareTask).where(
+                    and_(
+                        CareTask.user_id == elder_user_id,
+                        CareTask.status.in_(allowed_statuses),
+                        CareTask.updated_at >= previous_start,
+                        CareTask.updated_at < range_start,
+                    )
+                )
+            )
+            previous_tasks = previous_result.scalars().all()
+
+            def _outcome(task) -> dict:
+                return {
+                    "id": task.id,
+                    "title": task.title,
+                    "task_type": task.task_type,
+                    "status": task.status,
+                    "owner": task.created_by,
+                    "due_at": task.due_at,
+                    "completed_at": task.completed_at,
+                    "evidence": {"source": "care_task", "version": task.version},
+                    "evidence_at": task.updated_at,
+                }
+
+            outcomes = [_outcome(task) for task in tasks]
+            previous_outcomes = [
                 {
                     "id": task.id,
                     "task_type": task.task_type,
                     "status": task.status,
-                    "due_at": task.due_at,
-                    "completed_at": task.completed_at,
                 }
-                for task in tasks
+                for task in previous_tasks
             ]
             return {
                 "elder_user_id": str(elder_user_id),
                 "family_user_id": str(family_user_id),
-                "summary": build_privacy_safe_family_summary(outcomes),
+                "range": range_key,
+                "summary": build_privacy_safe_family_summary(
+                    outcomes,
+                    range_key=range_key,
+                    previous_care_outcomes=previous_outcomes,
+                ),
             }
     except HTTPException:
         raise
@@ -231,6 +275,7 @@ async def get_family_memory_summary(
 
 @router.get("/memory/family-summary")
 async def get_current_family_memory_summary(
+    range_key: Literal["7d", "30d", "90d"] = Query(default="30d", alias="range"),
     family_user_id: uuid.UUID = Depends(get_current_user_uuid),
 ):
     """Resolve the current family binding and return care outcomes only."""
@@ -241,14 +286,23 @@ async def get_current_family_memory_summary(
         async with async_session() as db:
             result = await db.execute(
                 select(FamilyBinding)
-                .where(FamilyBinding.family_user_id == family_user_id)
+                .where(
+                    FamilyBinding.family_user_id == family_user_id,
+                    FamilyBinding.status == "active",
+                    FamilyBinding.consent_status == "active",
+                    FamilyBinding.revoked_at.is_(None),
+                )
                 .order_by(FamilyBinding.created_at.desc())
                 .limit(1)
             )
             binding = result.scalar_one_or_none()
             if not binding:
                 raise HTTPException(status_code=403, detail="No elder binding found")
-        return await get_family_memory_summary(binding.elder_user_id, family_user_id)
+        return await get_family_memory_summary(
+            binding.elder_user_id,
+            range_key=range_key,
+            family_user_id=family_user_id,
+        )
     except HTTPException:
         raise
     except Exception as e:

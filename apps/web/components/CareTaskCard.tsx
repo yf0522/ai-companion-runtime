@@ -4,7 +4,7 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { Text } from "@astryxdesign/core/Text";
 import { CalendarClock, Check, ChevronRight, Repeat2, UserRound } from "lucide-react";
 import type { CareTaskItem } from "@/lib/api-client";
-import { isCareTaskActive, isTerminalCareTaskStatus } from "@/lib/care-task-state";
+import { careTaskStatusLabel, isCareTaskActive, normalizeCareTaskStatus } from "@/lib/care-task-state";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return "尚未安排";
@@ -29,11 +29,8 @@ function scheduleLabel(value: string | null | undefined): string {
   return labels[value || ""] || "计划待确认";
 }
 function statusLabel(task: CareTaskItem): string {
-  const labels: Record<string, string> = { pending: "待处理", scheduled: "已安排", active: "进行中", completed: "已完成", snoozed: "已延后", cancelled: "已取消", archived: "已归档", expired: "已过期" };
-  const status = task.status || "";
-  if (isTerminalCareTaskStatus(status)) return labels[status];
-  if (task.is_active === false) return "已停用";
-  return labels[status] || (isCareTaskActive(task) ? "进行中" : "已停用");
+  if (task.is_active === false && normalizeCareTaskStatus(task.status) === "unknown") return "已停用";
+  return careTaskStatusLabel(task.status);
 }
 
 export default function CareTaskCard({
@@ -55,7 +52,7 @@ export default function CareTaskCard({
 }) {
   const active = isCareTaskActive(task);
   const description = task.notes || task.description;
-  const dueAt = task.next_fire_at || task.due_at;
+  const dueAt = task.snooze_until || task.next_fire_at || task.due_at;
   return (
     <article className="care-card care-task-card" data-compact={compact ? "true" : "false"}>
       <div className="care-task-layout">
