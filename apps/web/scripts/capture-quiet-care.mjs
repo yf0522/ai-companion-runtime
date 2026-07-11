@@ -33,9 +33,18 @@ async function removeDevelopmentChrome(page) {
   await page.addStyleTag({ content: "nextjs-portal,[data-next-badge-root]{display:none!important}" }).catch(() => {});
 }
 
+async function waitForProductSurface(page, role) {
+  if (role) {
+    await page.getByText("正在恢复照护空间", { exact: true }).waitFor({ state: "hidden", timeout: 15_000 }).catch(() => {});
+    await page.locator("main").waitFor({ state: "visible", timeout: 15_000 });
+    return;
+  }
+  await page.getByRole("heading", { name: "进入照护空间" }).waitFor({ state: "visible", timeout: 15_000 });
+}
+
 async function captureFamily(browser, viewport, filename) {
   const { context, page } = await createPage(browser, "family", viewport);
-  await page.route("**/api/care-tasks", (route) => route.fulfill({
+  await page.route("**/api/care-tasks**", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify([{
       id: "task-1",
@@ -67,6 +76,7 @@ async function captureFamily(browser, viewport, filename) {
     }),
   }));
   await page.goto(`${baseUrl}/family/overview`, { waitUntil: "networkidle" });
+  await waitForProductSurface(page, "family");
   await removeDevelopmentChrome(page);
   await page.screenshot({ path: path.join(outputDir, filename) });
   await context.close();
@@ -76,6 +86,7 @@ async function captureRoute(browser, { role, route, filename, setup, viewport = 
   const { context, page } = await createPage(browser, role, viewport);
   if (setup) await setup(page);
   await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
+  await waitForProductSurface(page, role);
   await removeDevelopmentChrome(page);
   await page.screenshot({ path: path.join(outputDir, filename) });
   await context.close();
@@ -92,6 +103,25 @@ try {
     route: "/elder/companion",
     filename: "actual-elder-tablet.png",
     viewport: { width: 768, height: 1024 },
+  });
+  await captureRoute(browser, {
+    role: "elder",
+    route: "/elder/memory",
+    filename: "actual-elder-memory-desktop.png",
+    setup: async (page) => {
+      await page.route("**/api/memory/memories**", (route) => route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          user_id: "elder-1",
+          total: 3,
+          items: [
+            { id: "pending", content: "我喜欢晚饭后听评书", consent_status: "pending", retention_status: "active", retrievable: false, deletion_state: "active", correction_state: "original" },
+            { id: "legacy", content: "旧系统记录：周末常和女儿通电话", consent_status: "legacy_unverified", retention_status: "unbounded", retrievable: false, deletion_state: "active", correction_state: "original" },
+            { id: "expired", content: "去年冬天习惯早晨散步", consent_status: "granted", retention_status: "expired", retrievable: false, deletion_state: "active", correction_state: "original" },
+          ],
+        }),
+      }));
+    },
   });
   await captureRoute(browser, {
     role: "family",
@@ -125,11 +155,17 @@ try {
           items: [{
             id: "case-1",
             user_id: "elder-1",
+            elder_user_id: "elder-1",
+            household_id: "home-1",
             safety_decision_id: "decision-12345678",
             notification_outbox_id: "outbox-12345678",
-            status: "open",
+            trace_id: "trace-1",
+            status: "unstaffed",
             severity: "critical",
             owner_id: null,
+            ownership_status: "unassigned",
+            allowed_transitions: ["assigned"],
+            can_add_activity: false,
             summary: "高风险诈骗，需要人工确认",
             resolution: null,
             due_at: "2026-07-10T09:00:00Z",

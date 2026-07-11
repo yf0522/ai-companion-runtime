@@ -18,8 +18,9 @@ async function installMockWebSocket(page: Page, mode: "connected" | "failed") {
   await page.addInitScript(({ wsMode }) => {
     if (wsMode === "failed") {
       const nativeSetTimeout = window.setTimeout.bind(window);
+      const reconnectDelays = new Set([1_000, 2_000, 5_000, 10_000, 30_000]);
       window.setTimeout = ((handler: TimerHandler, timeout = 0, ...args: unknown[]) => (
-        nativeSetTimeout(handler, timeout >= 1_000 ? 1 : timeout, ...args)
+        nativeSetTimeout(handler, reconnectDelays.has(Number(timeout)) ? 1 : timeout, ...args)
       )) as typeof window.setTimeout;
     }
 
