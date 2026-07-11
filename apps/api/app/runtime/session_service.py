@@ -77,7 +77,7 @@ async def ensure_session(user_id: str, session_id: str | None = None) -> str:
         elif owner != user_id and owner != str(
             uuid.uuid5(uuid.NAMESPACE_DNS, user_id)
         ):
-            # Allow deterministic uuid5 mapping used by AgentHarness for non-UUID subs
+            # Allow deterministic uuid5 mapping used by Pi runtime for non-UUID subs
             try:
                 if owner != str(uuid.UUID(user_id)):
                     logger.warning(

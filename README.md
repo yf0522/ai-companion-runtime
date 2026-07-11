@@ -13,18 +13,18 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Area | Current status |
 |---|---|
 | WebSocket companion runtime | Implemented: `/ws/chat` protocol, trace IDs, first reply, deltas, tool status/results, and final messages. |
-| Analyzer pipeline | Implemented: intent, emotion, risk, personality, memory, prompt builder, and timeout-oriented harness flow. |
+| Analyzer pipeline | Implemented: intent, emotion, risk, personality, memory, prompt builder on the Pi path (timeout-oriented). |
 | Risk detection | 已对接老龄场景类别：`health_emergency`、`scam_alert`、`emotional_low`；关键字/正则 + 否定词 + 安全上下文已由测试覆盖。 |
 | Model routing | Implemented: configurable model registry with primary/fallback/fast roles and OpenAI-compatible adapters. |
-| Tool dispatch | Implemented: weather, search, calculator, and reminder tool paths. Tool-call rows are persisted into Trace. |
+| Tool dispatch | Implemented: FC whitelist `caretask` \| `memory` \| `utility` via Pi sidecar (reminder→caretask; weather/calc/search→utility). |
 | Care tasks and device delivery | Implemented: `CareTask` is the canonical lifecycle with clarification, idempotency, version checks, completion, snooze, and cancellation; `Reminder` projects scheduling and device delivery attempts/receipts. |
-| Long-term memory | L0/L1 recall, DB profile and important memories, plus consent, provenance, correction, deletion, embedding lifecycle, and reviewable reflection proposals. Retrieval-quality evaluation remains roadmap work. |
-| Device realtime WebSocket | Implemented: `/ws/device/realtime` routes transcripts through `AgentHarness` (risk/tools/trace/notify) with JWT/PCM/ASR/TTS protocol tests. |
+| Long-term memory | mem0 OSS engine when enabled (consent SoT in Postgres); L0 scratch; empty/timeout degrade without lifecycle dump. |
+| Device realtime WebSocket | Implemented: `/ws/device/realtime` routes transcripts through Pi runtime (risk/tools/trace/notify) with JWT/PCM/ASR/TTS protocol tests. |
 | Audio HTTP endpoints | Implemented: `/v1/recognize` and `/v1/synthesize` require JWT and enforce size/rate limits. |
 | Family notification and cases | Contract primitives implemented: versioned safety decisions, atomic notification outbox, leases/retries, normalized receipt records, privacy-safe family alerts, and basic operator cases. Current providers are sandbox/unconfigured; a real provider, verified contacts, and full case activity are still required for a paid pilot. |
-| Firmware protocol | `firmware/` source aligns to `audio_start`/`audio_end` + backend event parse + NVS reminders. Expected protocol sequence docs are annotated harness text — live board serial capture still required before claiming hardware closed loop. |
+| Firmware protocol | `firmware/` source aligns to `audio_start`/`audio_end` + backend event parse + NVS reminders. Expected protocol sequence docs are annotated protocol text — live board serial capture still required before claiming hardware closed loop. |
 | Demo / CI | Repeatable smoke scripts under `scripts/`; GitHub Actions run backend pytest/ruff, web build, and latency regression on PRs. |
-| Agent runtime | Production default: `AgentHarness`. Optional experimental `pi_experimental` via WS auth `agent_runtime` + frontend toggle (Pi sidecar stub until `ENABLE_PI_RUNTIME=1`). Risk gate always runs before Pi path. |
+| Agent runtime | **Pi-only** production path (`pi_runtime` + `pi-sidecar`). AgentHarness physically removed (no FF escape). Risk gate always runs before Pi. |
 | Investor demo material | [docs/investor-demo.md](docs/investor-demo.md)；设备验证清单 [docs/device-test.md](docs/device-test.md)；Mock 场景图 [docs/evidence/README.md](docs/evidence/README.md)。 |
 | Product direction | [docs/product-roadmap-2026-h2.md](docs/product-roadmap-2026-h2.md) defines the family-funded home-care product shape and next PR sequence; [docs/production-development-plan.md](docs/production-development-plan.md) remains the architectural foundation. |
 | License | MIT, with a root `LICENSE` file so GitHub can detect it. |
@@ -36,7 +36,7 @@ This repository is the canonical home for the merged AI companion runtime and el
 | Chat WS + risk categories + Trace events (incl. tool calls) | Production voice clone / enrollment |
 | CareTask lifecycle + Reminder delivery attempts and device receipts | Phone OS call intercept |
 | Safety decision + notification outbox + receipt/case contracts | Configured production provider and verified household contacts |
-| Device WS through AgentHarness (protocol tests) | Flashed ESP32 two-turn serial as “fully verified” |
+| Device WS through Pi runtime (protocol tests) | Flashed ESP32 two-turn serial as “fully verified” |
 | Importance-ranked memory recall + user profile | Full vector similarity search as default L3 |
 | Investor Mock UI under `docs/evidence/` | Treating Mock UI as production screenshots |
 | Smoke scripts + CI workflows | Live smoke evidence against a running stack |
@@ -127,7 +127,7 @@ WebSocket 流式返回: trace → first_reply → delta → tool_result → fina
 
 ### Agent Harness
 - 5 步流水线编排 (trace → analyzer → risk → fast reply → stream)
-- 可配置超时 / 重试 / 降级策略 (`harness.yaml`)
+- 可配置超时 / 重试 / 降级策略 (`runtime.yaml`)
 - Fast Reply 赛马: 300ms 内主模型没出首 token 就用快速模型兜底
 - 工具调用不阻塞主回复
 
@@ -280,7 +280,7 @@ ai-companion-runtime/
 | 文件 | 说明 |
 |------|------|
 | `models.yaml` | 模型配置 (primary/fallback/fast), 修改后自动热加载 |
-| `harness.yaml` | Agent Harness 超时/重试/降级策略 |
+| `runtime.yaml` | Pi runtime 超时/重试/降级策略 |
 | `personality.yaml` | AI 人格 + 情绪适配矩阵 |
 | `risk_rules.yaml` | 风险关键词/正则/分级规则 |
 

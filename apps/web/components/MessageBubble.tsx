@@ -3,6 +3,7 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatToolCalls, type ChatToolCallItem } from "@astryxdesign/core/Chat";
 import { Text } from "@astryxdesign/core/Text";
 import type { Message, ToolChipStatus } from "@/stores/chatStore";
+import { toolChipCopy, toolChipTarget, toolGroupLabel } from "@/lib/toolLabels";
 import CareTaskClarifyCard, { type CareTaskCandidate } from "./CareTaskClarifyCard";
 
 interface Props { message: Message; isStreaming?: boolean; onClarifySelect?: (candidate: CareTaskCandidate, verb: string) => void; }
@@ -25,12 +26,17 @@ function toolStatus(status: ToolChipStatus): ChatToolCallItem["status"] {
 export default function MessageBubble({ message, isStreaming = false, onClarifySelect }: Props) {
   const isUser = message.role === "user";
   const visibleContent = isUser ? message.content : elderSafeMessage(message.content);
-  const calls: ChatToolCallItem[] = (message.toolsUsed || []).map((tool) => ({
-    name: tool.tool,
-    status: toolStatus(tool.status),
-    target: tool.action || (tool.status === "needs_clarification" ? "等待确认" : "照护动作"),
-    errorMessage: tool.status === "failed" || tool.status === "timeout" ? "工具未成功完成" : undefined,
-  }));
+  const tools = message.toolsUsed || [];
+  const calls: ChatToolCallItem[] = tools.map((tool) => {
+    const copy = toolChipCopy(tool.tool);
+    return {
+      name: copy.name,
+      status: toolStatus(tool.status),
+      target: toolChipTarget(tool.tool, tool.action, tool.status),
+      node: copy.family,
+      errorMessage: tool.status === "failed" || tool.status === "timeout" ? "工具未成功完成" : undefined,
+    };
+  });
 
   if (isUser) {
     return (
@@ -50,7 +56,13 @@ export default function MessageBubble({ message, isStreaming = false, onClarifyS
           <Text display="block" style={{ marginTop: 8 }}>{message.riskAlert.message}</Text>
         </div>
       )}
-      {calls.length > 0 && <ChatToolCalls calls={calls} label="正在执行照护动作" />}
+      {calls.length > 0 && (
+        <ChatToolCalls
+          calls={calls}
+          label={toolGroupLabel(tools.map((t) => t.tool))}
+          defaultIsExpanded
+        />
+      )}
       <ChatMessageBubble
         variant="ghost"
         metadata={<ChatMessageMetadata footer={<Text type="supporting">{message.status === "streaming" ? "正在组织回复" : "已完成必要检查"}</Text>} />}

@@ -7,22 +7,18 @@ from app.engines.base import AnalyzerInput, BaseEngine, IntentResult
 
 logger = logging.getLogger(__name__)
 
-# Tool keyword mappings — each entry has patterns and negative contexts
-# A tool is only triggered if a pattern matches AND no negative context matches.
-# Regex TOOL_RULES are FALLBACK-ONLY tool selection (harness when model FC unavailable).
-# Prefer model/Pi function-calling; do not treat these as the primary orchestration path.
+# Regex TOOL_RULES are NON-PRIMARY classification signals only.
+# Production Pi tool routing is LLM function calling (caretask|memory|utility).
+# Do NOT use tool_needs as a production tool dispatcher on the Pi path (ADR-002/A4).
+# Labels below are collapsed to the 3-tool whitelist for secondary_intents / analytics.
 TOOL_RULES: dict[str, dict] = {
-    "weather": {
-        "patterns": [r"天气(?:怎么样|如何|预报|情况)", r"气温多少", r"会不会下雨", r"会不会下雪", r"温度多少"],
-        "negative": [r"天气真好", r"天气不错", r"天气好"],  # describing weather, not querying
-    },
-    "search": {
-        "patterns": [r"搜索一下", r"搜一下", r"查一下", r"帮我[找查搜]", r"百度一下", r"谷歌一下"],
-        "negative": [],
-    },
-    "calculator": {
-        "patterns": [r"计算一下", r"算一下", r"帮我算", r"\d+\s*[+\-*/×÷]\s*\d+", r"等于多少"],
-        "negative": [],
+    "utility": {
+        "patterns": [
+            r"天气(?:怎么样|如何|预报|情况)", r"气温多少", r"会不会下雨", r"会不会下雪", r"温度多少",
+            r"搜索一下", r"搜一下", r"查一下", r"帮我[找查搜]", r"百度一下", r"谷歌一下",
+            r"计算一下", r"算一下", r"帮我算", r"\d+\s*[+\-*/×÷]\s*\d+", r"等于多少",
+        ],
+        "negative": [r"天气真好", r"天气不错", r"天气好"],
     },
     "caretask": {
         "patterns": [
@@ -32,8 +28,17 @@ TOOL_RULES: dict[str, dict] = {
             r"吃完了", r"已经吃", r"晚点再吃", r"等会儿再吃",
             r"我的.*任务", r"待办.*药",
             r"今天.*(?:药|任务|提醒)", r"今日.*(?:事项|任务)",
+            # Reminder absorbed into caretask (no standalone reminder tool).
+            r"提醒我", r"别忘了.{2,}", r"记得.{2,}点",
+            r"定个闹钟", r"定时提醒", r"设置.*提醒",
+            r"\d+分钟.*叫", r"叫.{1,3}起床",
+            r"计时(?:器|\d+)", r"倒计时",
+            r"(?:早上|下午|晚上|明天|今天)?\d{1,2}点[叫喊呼唤]",
+            r"帮我定.{1,6}(?:闹钟|提醒|计时)", r"闹钟",
+            r"过一会儿再提醒", r"再提醒我", r"推迟.*提醒",
+            r"半小时后再说", r"\d+\s*分钟后再", r"晚点再提醒",
         ],
-        "negative": [r"吃药真麻烦"],  # venting, not a task request
+        "negative": [r"吃药真麻烦"],
     },
     "memory": {
         "patterns": [
@@ -41,22 +46,7 @@ TOOL_RULES: dict[str, dict] = {
             r"你还记得", r"记得我(?:喜欢|不喜欢|说过)",
             r"别忘了我", r"我喜欢.{2,20}",
         ],
-        "negative": [r"记得吃药", r"记得复诊"],  # caretask domain
-    },
-    "reminder": {
-        "patterns": [
-            r"提醒我", r"别忘了.{2,}", r"记得.{2,}点",
-            r"定个闹钟", r"定时提醒", r"设置.*提醒",
-            r"\d+分钟.*叫", r"叫.{1,3}起床",
-            r"计时(?:器|\d+)", r"倒计时",
-            r"(?:早上|下午|晚上|明天|今天)?\d{1,2}点[叫喊呼唤]",
-            r"帮我定.{1,6}(?:闹钟|提醒|计时)", r"闹钟",
-            # Snooze / 二次提醒 (demo: 晚点再吃) — also covered by caretask; reminder kept for timers
-            r"晚点再吃", r"等会儿再吃", r"一会儿再吃",
-            r"过一会儿再提醒", r"再提醒我", r"推迟.*提醒",
-            r"半小时后再说", r"\d+\s*分钟后再", r"晚点再提醒",
-        ],
-        "negative": [],
+        "negative": [r"记得吃药", r"记得复诊"],
     },
 }
 
@@ -85,22 +75,23 @@ class IntentEngine(BaseEngine):
         tool_needs = []
         secondary_intents = []
 
-        # Fallback-only regex tool selection (demoted from primary orchestration).
+        # Fallback-only regex classification labels (NOT Pi production FC router).
+        # Output tool_needs ⊆ {caretask, memory, utility} for analytics only.
         for tool, rule in TOOL_RULES.items():
-            # Check if any negative context matches first
             if any(re.search(neg, message) for neg in rule.get("negative", [])):
                 continue
-            # Then check positive patterns
             for pattern in rule["patterns"]:
                 if re.search(pattern, message):
                     tool_needs.append(tool)
                     secondary_intents.append(tool)
                     break
 
-        # Prefer CareTask over Reminder when both match care-domain utterances.
-        if "caretask" in tool_needs and "reminder" in tool_needs:
-            tool_needs = [t for t in tool_needs if t != "reminder"]
-            secondary_intents = [t for t in secondary_intents if t != "reminder"]
+        # Prefer CareTask over Memory when both match care-domain utterances.
+        if "caretask" in tool_needs and "memory" in tool_needs:
+            # Keep both when memory-specific phrasing dominates; else caretask wins for meds.
+            if any(re.search(p, message) for p in (r"记得吃药", r"记得复诊", r"提醒我.*药")):
+                tool_needs = [t for t in tool_needs if t != "memory"]
+                secondary_intents = [t for t in secondary_intents if t != "memory"]
 
         # Detect primary intent
         has_emotion = any(

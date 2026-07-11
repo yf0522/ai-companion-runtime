@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # CareTask retest after cancel-ambiguity / honesty / crisis UI fixes.
-# Requires: API :8001 (harness default). Optional: AGENT_RUNTIME=pi
+# Requires: API :8001 with Pi runtime (DEFAULT_RUNTIME=pi). Harness is deleted.
 #
 # Usage:
 #   ./scripts/chat_retest_caretask.sh
-#   AGENT_RUNTIME=harness ./scripts/chat_retest_caretask.sh
-#   AGENT_RUNTIME=pi_experimental ./scripts/chat_retest_caretask.sh
+#   AGENT_RUNTIME=pi ./scripts/chat_retest_caretask.sh
 #
 # Clears stale pending CareTasks for DEMO_USER before chatting (demo_* only).
 
@@ -13,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="${BASE_URL:-http://127.0.0.1:8001}"
 WS_URL="${WS_URL:-ws://127.0.0.1:8001/ws/chat}"
-RUNTIME="${AGENT_RUNTIME:-harness}"
+RUNTIME="${AGENT_RUNTIME:-pi}"
 USER="${DEMO_USER:-demo_elder}"
 PASS="${DEMO_PASS:-demo1234}"
 SKIP_RESET="${SKIP_CARETASK_RESET:-0}"

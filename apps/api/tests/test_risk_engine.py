@@ -163,6 +163,46 @@ async def test_risk_gate_blocks_before_pi_sidecar(monkeypatch):
     notify.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_risk_gate_timeout_fail_closed(monkeypatch):
+    """Risk engine timeout → critical + blocked (never fail-open)."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.runtime.risk_gate import run_risk_gate
+
+    async def slow_analyze(self, input):
+        await asyncio.sleep(1)
+        raise AssertionError("should have timed out")
+
+    monkeypatch.setattr(
+        "app.engines.risk_engine.RiskEngine.analyze",
+        slow_analyze,
+    )
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._dispatch_family_notify",
+        AsyncMock(return_value={"status": "persisted", "outbox_ids": [], "webhook_status": "queued"}),
+    )
+
+    stream = AsyncMock()
+    stream.send_trace = AsyncMock()
+    stream.send_risk_alert = AsyncMock()
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    gate = await run_risk_gate(
+        user_id="u1",
+        session_id="s1",
+        message="hello",
+        stream_mgr=stream,
+        timeout_ms=20,
+    )
+    assert gate.blocked is True
+    assert gate.risk.level == "critical"
+    assert gate.risk.category == "safety_unavailable"
+    assert "risk_engine_unavailable" in gate.risk.triggered_rules
+
+
 def test_safety_response_does_not_claim_unconfirmed_delivery():
     from app.runtime.risk_gate import build_safety_response
 

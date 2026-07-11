@@ -832,8 +832,9 @@ async def test_registry_includes_caretask():
     assert "caretask" in reg
     assert "memory" in reg
     names = {s["name"] for s in list_tool_schemas()}
-    assert "caretask" in names
-    assert "memory" in names
+    assert names == {"caretask", "memory", "utility"}
+    assert "reminder" not in names
+    assert "weather" not in names
 
 
 @pytest.mark.asyncio

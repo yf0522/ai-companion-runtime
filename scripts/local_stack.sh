@@ -131,15 +131,25 @@ cmd_stop() {
 
 cmd_status() {
   echo "Local stack status (SHA $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?'))"
+  local pi_ok=0
   for pair in "web:$WEB_PORT:$WEB_URL/chat" "api:$API_PORT:$API_URL/health" "pi:$PI_PORT:$PI_URL/health"; do
     IFS=: read -r name port url <<<"$pair"
     if _is_listening "$port"; then
       code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 1 "$url" 2>/dev/null || echo 000)"
       echo "  UP   $name :$port HTTP $code"
+      if [[ "$name" == "pi" && "$code" == "200" ]]; then
+        pi_ok=1
+      fi
     else
       echo "  DOWN $name :$port"
+      if [[ "$name" == "pi" ]]; then
+        echo "  FAIL-CLOSED: pi-sidecar down — chat will not fall back to Harness" >&2
+      fi
     fi
   done
+  if [[ "$pi_ok" -ne 1 ]]; then
+    echo "  WARN pi-sidecar unhealthy — production path is Pi-only (no harness fallback)" >&2
+  fi
   for service in celery-worker celery-beat; do
     if tmux has-session -t "=companion-$service" 2>/dev/null; then
       echo "  UP   $service"

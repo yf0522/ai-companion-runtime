@@ -5,9 +5,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@astryxdesign/core/Button";
 import { ChatComposer, ChatComposerInput, ChatLayout, ChatMessageList } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Text } from "@astryxdesign/core/Text";
-import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, Settings2, ShieldAlert } from "lucide-react";
+import { BellRing, CalendarCheck2, HeartHandshake, PhoneCall, ShieldAlert } from "lucide-react";
 import { useChatStore } from "@/stores/chatStore";
 import { useWsStore } from "@/stores/wsStore";
 import { useAuthStore } from "@/stores/authStore";
@@ -33,22 +32,20 @@ export default function ChatWindow() {
   const connect = useWsStore((state) => state.connect);
   const sendMessage = useWsStore((state) => state.sendMessage);
   const stopGeneration = useWsStore((state) => state.stopGeneration);
-  const disconnect = useWsStore((state) => state.disconnect);
-  const activeRuntime = useWsStore((state) => state.activeRuntime);
   const token = useAuthStore((state) => state.token);
   const authHydrated = useAuthStore((state) => state.hydrated);
   const setAuthHydrated = useAuthStore((state) => state.setHydrated);
-  const runtime = useAgentRuntimeStore((state) => state.runtime);
-  const setRuntime = useAgentRuntimeStore((state) => state.setRuntime);
   const runtimeHydrated = useAgentRuntimeStore((state) => state.hydrated);
-  const hydrateRuntime = useAgentRuntimeStore((state) => state.hydrate);
   const router = useRouter();
 
   useEffect(() => {
     if (useAuthStore.persist.hasHydrated()) { setAuthHydrated(); return; }
     void Promise.resolve(useAuthStore.persist.rehydrate()).finally(setAuthHydrated);
   }, [setAuthHydrated]);
-  useEffect(() => { hydrateRuntime(); }, [hydrateRuntime]);
+  useEffect(() => {
+    // Prefer getState() so React Compiler / selector wrapping cannot skip S1 coerce.
+    useAgentRuntimeStore.getState().hydrate();
+  }, []);
   useEffect(() => {
     if (!authHydrated || !runtimeHydrated) return;
     if (!token) { router.push("/login"); return; }
@@ -70,20 +67,12 @@ export default function ChatWindow() {
     setInput("");
   }
 
-  function handleRuntimeChange(value: string) {
-    if ((value !== "harness" && value !== "pi_experimental") || value === runtime || !token) return;
-    setRuntime(value);
-    disconnect();
-    connect(token);
-  }
-
   function handleClarifySelect(candidate: CareTaskCandidate, verb: string) {
     if (isStreaming || wsStatus !== "connected") return;
     const action = clarifyVerbLabels[verb] || "选择任务";
     sendMessage(`${action} ${candidate.title} id=${candidate.id}`);
   }
 
-  const currentMode = activeRuntime === "pi_experimental" ? "实验模式" : "标准模式";
   const emptyState = (
     <div className="companion-empty">
       <div className="companion-empty-content">
@@ -110,25 +99,6 @@ export default function ChatWindow() {
         <div className="companion-stage-header">
           <CompanionSignal status={wsStatus} />
           <div className="companion-stage-actions">
-            <details className="companion-mode-menu">
-              <summary aria-label="选择回应方式"><Settings2 size={17} /><span>{currentMode}</span></summary>
-              <div className="companion-mode-panel">
-                <strong>回应方式</strong>
-                <p>标准模式更稳定；实验模式仅用于体验新能力。</p>
-                <SegmentedControl
-                  value={runtime}
-                  onChange={handleRuntimeChange}
-                  label="回应方式"
-                  layout="fill"
-                  size="sm"
-                  isDisabled={isStreaming}
-                  disabledMessage="请等待当前回复完成后再切换"
-                >
-                  <SegmentedControlItem value="harness" label="标准模式" />
-                  <SegmentedControlItem value="pi_experimental" label="实验模式" />
-                </SegmentedControl>
-              </div>
-            </details>
             <Button label="今日事项" href="/elder/today" variant="ghost" size="md" icon={<Icon icon={CalendarCheck2} size="sm" />} />
           </div>
         </div>

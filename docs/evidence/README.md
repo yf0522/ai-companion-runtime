@@ -22,13 +22,13 @@ Use them to explain the product thesis, interaction model, and value loop. Do no
 | `device-protocol-expected-sequence-*.txt` | Annotated expected protocol sequence — **not** a live ESP32 serial capture |
 | `device-serial-log-*.txt` (if present) | Only treat as live board evidence if the file header says so |
 | `demo-run-*.md` | Smoke checklist output; dry-run ≠ live API proof |
-| `latency-baseline.json` | Mocked AgentHarness p50/p95 latency baseline for CI regression checks |
+| `latency-baseline.json` | Mocked Pi runtime p50/p95 latency baseline for CI regression checks |
 
 ## Latency baseline (CI)
 
-`latency-baseline.json` stores p50/p95 timings from `scripts/latency_bench.py` using **mocked** model adapters (no API keys). GitHub Actions workflow `.github/workflows/latency.yml` fails PRs when p95 regresses more than **20%** vs this file, or exceeds absolute ceilings.
+`latency-baseline.json` stores p50/p95 timings from `scripts/latency_bench.py` using **mocked** Pi risk/analyzer/sidecar paths (no API keys). GitHub Actions workflow `.github/workflows/latency.yml` fails PRs when p95 regresses more than **20%** vs this file, or exceeds absolute ceilings.
 
-Update after intentional harness changes:
+Update after intentional Pi runtime latency changes:
 
 ```bash
 cd <repo-root>

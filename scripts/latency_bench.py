@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic latency benchmark for AgentHarness (CI-safe, mocked models).
+"""Deterministic latency benchmark for Pi runtime (CI-safe, mocked sidecar/models).
 
 Usage:
   python scripts/latency_bench.py
@@ -7,7 +7,7 @@ Usage:
   python scripts/latency_bench.py --baseline docs/evidence/latency-baseline.json
   python scripts/latency_bench.py --update-baseline docs/evidence/latency-baseline.json
 
-No real API keys or Docker required — all model adapters are mocked in-process.
+No real API keys or Docker required — risk gate, analyzers, and sidecar are mocked.
 """
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ from app.engines.base import (  # noqa: E402
     PersonalityConfig,
     RiskResult,
 )
-from app.runtime.agent_harness import AgentHarness  # noqa: E402
+from app.runtime.analyzers import AnalyzerBundle  # noqa: E402
+from app.runtime.pi_runtime import PiExperimentalRuntime  # noqa: E402
+from app.runtime.risk_gate import RiskGateOutcome  # noqa: E402
 
 DEFAULT_ITERATIONS = 5
 DEFAULT_REGRESSION_PCT = 20.0
@@ -89,9 +91,9 @@ FIXTURES: tuple[BenchFixture, ...] = (
         name="reminder",
         message="每天晚上8点提醒我吃降压药",
         intent=IntentResult(
-            primary_intent="reminder",
+            primary_intent="task",
             confidence=0.95,
-            tool_needs=["reminder"],
+            tool_needs=["caretask"],
         ),
         emotion=EmotionResult(emotion="neutral", intensity=0.4),
         risk=RiskResult(level="low", category="none"),
@@ -158,73 +160,6 @@ def summarize(values: list[float]) -> dict[str, float]:
     }
 
 
-class _MockModel:
-    def __init__(self, token_delay_ms: float, tokens: tuple[str, ...] = ("你", "好", "。")):
-        self.provider = "mock"
-        self.model_name = "latency-mock"
-        self._token_delay_ms = token_delay_ms
-        self._tokens = tokens
-
-    async def stream_chat(self, messages: list[dict[str, str]]):
-        for token in self._tokens:
-            if self._token_delay_ms > 0:
-                await asyncio.sleep(self._token_delay_ms / 1000.0)
-            yield token
-
-    def count_tokens(self, text: str) -> int:
-        return max(1, len(text or ""))
-
-
-def _install_harness_mocks(
-    harness: AgentHarness,
-    fixture: BenchFixture,
-    monkeypatch: Any,
-    timing: dict[str, float],
-) -> None:
-    """Patch harness dependencies for deterministic latency measurement."""
-
-    async def fake_analyzers(_input):
-        t0 = time.monotonic()
-        await asyncio.sleep(0.005)
-        timing["analyzer_ms"] = (time.monotonic() - t0) * 1000.0
-        return fixture.intent, fixture.emotion, fixture.risk, fixture.memory
-
-    async def fake_personality(*_args, **_kwargs):
-        return PersonalityConfig(tone="warm", max_length=80)
-
-    async def fake_fast_reply(*_args, **_kwargs):
-        return fixture.fast_reply
-
-    async def fake_persist(*_args, **_kwargs):
-        return None
-
-    async def fake_dispatch_tools(*_args, **_kwargs):
-        await asyncio.sleep(0.002)
-        return [{"tool_name": "reminder", "status": "ok"}]
-
-    async def fake_risk_notification(*_args, **_kwargs):
-        return {"status": "skipped", "records": 0}
-
-    harness._run_analyzers = fake_analyzers  # type: ignore[method-assign]
-    harness._get_personality = fake_personality  # type: ignore[method-assign]
-    harness._fast_reply_race = fake_fast_reply  # type: ignore[method-assign]
-    harness._persist_conversation = fake_persist  # type: ignore[method-assign]
-    harness._dispatch_tools = fake_dispatch_tools  # type: ignore[method-assign]
-    harness._dispatch_risk_notification = fake_risk_notification  # type: ignore[method-assign]
-
-    class _Router:
-        async def get_model(self, role: str):
-            delay = fixture.model_token_delay_ms if role != "fast" else 1.0
-            return _MockModel(delay)
-
-    import app.models.router as router_mod
-    import app.runtime.agent_harness as harness_mod
-
-    monkeypatch.setattr(router_mod, "model_router", _Router())
-    monkeypatch.setattr(harness_mod._trace_svc, "add_event", _async_noop)
-    monkeypatch.setattr(harness_mod._trace_svc, "record_model_call", _async_noop)
-
-
 async def _async_noop(**_kwargs):
     return None
 
@@ -253,6 +188,12 @@ class _RecordingStreamManager:
     async def send_delta(self, text: str) -> None:
         return None
 
+    async def send_tool_result(self, *args, **kwargs) -> None:
+        return None
+
+    async def send_tool_status(self, *args, **kwargs) -> None:
+        return None
+
     async def send_final(self, **kwargs) -> None:
         self.final_at = time.monotonic()
 
@@ -275,18 +216,113 @@ class _MonkeyPatch:
             setattr(obj, name, orig)
 
 
+def _install_pi_mocks(
+    fixture: BenchFixture,
+    monkeypatch: Any,
+    timing: dict[str, float],
+) -> None:
+    """Patch Pi runtime dependencies for deterministic latency measurement."""
+
+    async def fake_gate(**kwargs):
+        blocked = fixture.risk.level in ("high", "critical")
+        if blocked:
+            # Mirror production risk-block path timing lightly.
+            await asyncio.sleep(0.002)
+        return RiskGateOutcome(
+            blocked=blocked,
+            risk=fixture.risk,
+            trace_id=f"bench_{fixture.name}",
+            metadata={
+                "trace_id": f"bench_{fixture.name}",
+                "blocked_by_risk": blocked,
+            },
+        )
+
+    async def fake_chain(**kwargs):
+        t0 = time.monotonic()
+        await asyncio.sleep(0.005)
+        timing["analyzer_ms"] = (time.monotonic() - t0) * 1000.0
+        return AnalyzerBundle(
+            intent=fixture.intent,
+            emotion=fixture.emotion,
+            memory=fixture.memory,
+            personality=PersonalityConfig(tone="warm", max_length=80),
+            latency_ms=int(timing["analyzer_ms"]),
+        )
+
+    async def fake_fast(*args, **kwargs):
+        if fixture.fast_reply or fixture.risk.level in ("high", "critical"):
+            return False, None
+        stream_mgr = args[3]
+        await asyncio.sleep(fixture.model_token_delay_ms / 1000.0)
+        ttft = int((time.monotonic() - args[4]) * 1000)
+        await stream_mgr.send_first_reply("先回一句", ttft)
+        return True, ttft
+
+    class FakeResponse:
+        status_code = 200
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            delay = max(0.0, fixture.model_token_delay_ms / 1000.0)
+            if delay:
+                await asyncio.sleep(delay)
+            yield json.dumps({"type": "text_delta", "delta": "你好。"})
+            yield json.dumps({"type": "done", "reason": "stop"})
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeClient:
+        def stream(self, method, url, json=None):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    import app.runtime.pi_runtime as pi_mod
+    from app.config.settings import settings
+
+    monkeypatch.setattr(pi_mod, "run_risk_gate", fake_gate)
+    monkeypatch.setattr(pi_mod, "run_analyzer_chain", fake_chain)
+    monkeypatch.setattr(pi_mod, "record_analyzer_events", _async_noop)
+    monkeypatch.setattr(pi_mod, "fast_reply_race", fake_fast)
+    monkeypatch.setattr(pi_mod, "enqueue_post_process", AsyncMockish())
+    monkeypatch.setattr(settings, "enable_pi_runtime", True)
+    monkeypatch.setattr(settings, "pi_sidecar_url", "http://127.0.0.1:8787")
+    monkeypatch.setattr(pi_mod, "httpx", _HttpxShim(FakeClient))
+
+
+class AsyncMockish:
+    async def __call__(self, *args, **kwargs):
+        return {}
+
+
+class _HttpxShim:
+    def __init__(self, client_cls):
+        self.AsyncClient = lambda **kwargs: client_cls()
+
+
 async def run_single(
-    harness: AgentHarness,
     fixture: BenchFixture,
     iteration: int,
     monkeypatch: _MonkeyPatch,
 ) -> RunSample:
     timing: dict[str, float] = {}
-    _install_harness_mocks(harness, fixture, monkeypatch, timing)
+    _install_pi_mocks(fixture, monkeypatch, timing)
+    runtime = PiExperimentalRuntime()
     stream = _RecordingStreamManager()
     cancel = asyncio.Event()
     t0 = time.monotonic()
-    result = await harness.run(
+    result = await runtime.run(
         user_id="bench-user-001",
         session_id="bench-session-001",
         message=fixture.message,
@@ -310,14 +346,13 @@ async def run_single(
 
 async def run_benchmark(iterations: int = DEFAULT_ITERATIONS) -> BenchReport:
     report = BenchReport(iterations_per_fixture=iterations)
-    harness = AgentHarness()
 
     for fixture in FIXTURES:
         samples: list[RunSample] = []
         for i in range(iterations):
             mp = _MonkeyPatch()
             try:
-                sample = await run_single(harness, fixture, i, mp)
+                sample = await run_single(fixture, i, mp)
             finally:
                 mp.restore()
             samples.append(sample)
@@ -472,7 +507,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="AgentHarness latency benchmark (mocked, CI-safe)")
+    parser = argparse.ArgumentParser(description="Pi runtime latency benchmark (mocked, CI-safe)")
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
     parser.add_argument("--baseline", type=str, default="", help="Baseline JSON for regression compare")
     parser.add_argument("--update-baseline", type=str, default="", help="Write baseline JSON from this run")

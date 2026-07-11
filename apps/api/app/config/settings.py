@@ -69,11 +69,19 @@ class Settings(BaseSettings):
     rate_limit_failure_mode: str = "memory"  # memory (development only) | deny
     allow_ephemeral_sessions: bool = True  # development-only availability aid
 
-    # Experimental Pi agent runtime (TypeScript sidecar — off by default)
-    enable_pi_runtime: bool = False
+    # Production Pi agent runtime (TypeScript sidecar — always-on; no harness fallback)
+    enable_pi_runtime: bool = True
     pi_sidecar_url: str = "http://127.0.0.1:8787"
     pi_provider: str = "google"
     pi_model: str = "gemini-flash-latest"
+
+    # Long-term memory engine (mem0 OSS). Postgres consent remains SoT.
+    # When True but AsyncMemory unavailable → degraded empty/no-dump (not lifecycle dump).
+    mem0_enabled: bool = False
+    mem0_config_json: str = ""
+
+    # Shared secret for Pi sidecar → API /tools/execute bridge.
+    tool_bridge_token: str = ""
 
     model_config = {"env_file": ["../../.env", ".env"], "extra": "ignore"}
 
@@ -156,6 +164,11 @@ class Settings(BaseSettings):
 
             if not self.controlled_elder_enrollment:
                 errors.append("CONTROLLED_ELDER_ENROLLMENT must be true in production.")
+
+            if self.enable_pi_runtime and not self.tool_bridge_token.strip():
+                errors.append(
+                    "TOOL_BRIDGE_TOKEN must be set in production when ENABLE_PI_RUNTIME is true."
+                )
 
         if is_prod and errors:
             raise RuntimeError(

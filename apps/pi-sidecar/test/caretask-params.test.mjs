@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   normalizeCareTaskParams,
   normalizeMemoryParams,
+  normalizeUtilityParams,
 } from "../caretask-params.mjs";
 
 test("corrects list to cancel for explicit cancellation intent", () => {
@@ -110,4 +111,18 @@ test("memory note without user text cannot retain model-only write claims", () =
   assert.equal(out.query, "");
   assert.equal(out.summary, "");
   assert.equal(out.explicit_user_request, false);
+});
+
+test("utility normalizer infers weather op", () => {
+  const out = normalizeUtilityParams({}, "明天北京天气怎么样");
+  assert.equal(out.op, "weather");
+  assert.match(out.query, /天气/);
+});
+
+test("utility normalizer keeps explicit calculator op", () => {
+  const out = normalizeUtilityParams(
+    { op: "calculator", expression: "1+2" },
+    "随便说点什么",
+  );
+  assert.equal(out.op, "calculator");
 });

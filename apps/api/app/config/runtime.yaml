@@ -1,4 +1,6 @@
-harness:
+# Shared timeout / fallback budgets for the Pi runtime analyzer + fast-reply path.
+# (Formerly harness.yaml — renamed after Phase 5 Harness deletion.)
+runtime:
   max_steps: 5
   max_tool_calls: 3
   max_retries: 2

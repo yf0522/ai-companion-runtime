@@ -1,6 +1,6 @@
 type MessageHandler = (data: any) => void;
 
-export type AgentRuntimeId = "harness" | "pi_experimental";
+export type AgentRuntimeId = "pi_experimental";
 
 export class CompanionWsClient {
   private ws: WebSocket | null = null;
@@ -13,7 +13,7 @@ export class CompanionWsClient {
   private token: string = "";
   private sessionId: string | null = null;
   private lastMsgId: string | null = null;
-  private agentRuntime: AgentRuntimeId = "harness";
+  private agentRuntime: AgentRuntimeId = "pi_experimental";
 
   constructor(baseUrl: string) {
     this.url = baseUrl;
@@ -23,7 +23,7 @@ export class CompanionWsClient {
     token: string,
     sessionId?: string,
     lastMsgId?: string,
-    agentRuntime: AgentRuntimeId = "harness",
+    agentRuntime: AgentRuntimeId = "pi_experimental",
   ) {
     this.token = token;
     this.sessionId = sessionId || null;

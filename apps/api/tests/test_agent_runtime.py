@@ -1,4 +1,4 @@
-"""Agent runtime selector tests — default harness, Pi stub, unknown rejection."""
+"""Agent runtime selector — Pi-only factory, fail-closed, no harness escape."""
 from __future__ import annotations
 
 import asyncio
@@ -9,21 +9,30 @@ import pytest
 
 from app.runtime.agent_runtime import (
     DEFAULT_RUNTIME,
-    RUNTIME_HARNESS,
+    RUNTIME_PI,
     RUNTIME_PI_EXPERIMENTAL,
     get_agent_runtime,
     normalize_runtime_name,
 )
-from app.runtime.harness_runtime import HarnessRuntime
 from app.runtime.pi_runtime import PiExperimentalRuntime
 
 
-def test_normalize_runtime_defaults_to_harness():
-    assert normalize_runtime_name(None) == DEFAULT_RUNTIME
-    assert normalize_runtime_name("") == DEFAULT_RUNTIME
-    assert normalize_runtime_name("harness") == RUNTIME_HARNESS
-    assert normalize_runtime_name("pi") == RUNTIME_PI_EXPERIMENTAL
-    assert normalize_runtime_name("PI_EXPERIMENTAL") == RUNTIME_PI_EXPERIMENTAL
+def test_normalize_runtime_defaults_to_pi():
+    assert normalize_runtime_name(None) == RUNTIME_PI
+    assert normalize_runtime_name("") == RUNTIME_PI
+    assert DEFAULT_RUNTIME == RUNTIME_PI
+    assert normalize_runtime_name("pi") == RUNTIME_PI
+    assert normalize_runtime_name("PI_EXPERIMENTAL") == RUNTIME_PI
+    assert normalize_runtime_name("default") == RUNTIME_PI
+
+
+def test_normalize_runtime_rejects_harness_escape():
+    """U1 / S1 / S10: harness is unsupported — no FF escape."""
+    for name in ("harness", "standard", "agent_harness", "HARNESS"):
+        with pytest.raises(ValueError, match="unsupported|Pi-only|Unknown"):
+            normalize_runtime_name(name)
+        with pytest.raises(ValueError, match="unsupported|Pi-only|Unknown"):
+            get_agent_runtime(name)
 
 
 def test_normalize_runtime_rejects_unknown():
@@ -31,14 +40,14 @@ def test_normalize_runtime_rejects_unknown():
         normalize_runtime_name("openai_agents")
 
 
-def test_get_agent_runtime_factory():
-    assert isinstance(get_agent_runtime("harness"), HarnessRuntime)
+def test_get_agent_runtime_factory_pi_only():
     assert isinstance(get_agent_runtime("pi_experimental"), PiExperimentalRuntime)
-    assert get_agent_runtime(None).name == RUNTIME_HARNESS
+    assert isinstance(get_agent_runtime("pi"), PiExperimentalRuntime)
+    assert get_agent_runtime(None).name == RUNTIME_PI
 
 
 @pytest.mark.asyncio
-async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
+async def test_pi_runtime_fail_closed_when_disabled(monkeypatch):
     gate_called = {"ok": False}
 
     async def fake_gate(**kwargs):
@@ -53,7 +62,21 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
             metadata={"trace_id": "trace_test_pi"},
         )
 
+    async def fake_chain(**kwargs):
+        from app.engines.base import EmotionResult, IntentResult, MemorySnapshot, PersonalityConfig
+        from app.runtime.analyzers import AnalyzerBundle
+
+        return AnalyzerBundle(
+            intent=IntentResult(primary_intent="chitchat", confidence=0.5),
+            emotion=EmotionResult(),
+            memory=MemorySnapshot(),
+            personality=PersonalityConfig(),
+            latency_ms=1,
+        )
+
     monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.run_analyzer_chain", fake_chain)
+    monkeypatch.setattr("app.runtime.pi_runtime.record_analyzer_events", AsyncMock())
     monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", False)
 
     runtime = PiExperimentalRuntime()
@@ -71,8 +94,10 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
     )
 
     assert gate_called["ok"] is True
-    assert result["agent_runtime"] == RUNTIME_PI_EXPERIMENTAL
-    assert result.get("error") == "pi_experimental_not_enabled"
+    assert result["agent_runtime"] == RUNTIME_PI
+    assert result.get("error") == "pi_not_enabled"
+    assert result.get("harness_fallback") is False
+    assert result.get("fail_closed") is True
     stream.send_first_reply.assert_awaited()
 
 
@@ -87,6 +112,18 @@ async def test_pi_runtime_streams_from_sidecar_when_enabled(monkeypatch):
             risk=RiskResult(level="low"),
             trace_id="trace_pi_sidecar",
             metadata={"trace_id": "trace_pi_sidecar"},
+        )
+
+    async def fake_chain(**kwargs):
+        from app.engines.base import EmotionResult, IntentResult, MemorySnapshot, PersonalityConfig
+        from app.runtime.analyzers import AnalyzerBundle
+
+        return AnalyzerBundle(
+            intent=IntentResult(primary_intent="chitchat", confidence=0.5),
+            emotion=EmotionResult(),
+            memory=MemorySnapshot(),
+            personality=PersonalityConfig(),
+            latency_ms=1,
         )
 
     class FakeResponse:
@@ -116,6 +153,10 @@ async def test_pi_runtime_streams_from_sidecar_when_enabled(monkeypatch):
             return False
 
     monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.run_analyzer_chain", fake_chain)
+    monkeypatch.setattr("app.runtime.pi_runtime.record_analyzer_events", AsyncMock())
+    monkeypatch.setattr("app.runtime.pi_runtime.fast_reply_race", AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr("app.runtime.pi_runtime.enqueue_post_process", AsyncMock(return_value={}))
     monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", True)
     monkeypatch.setattr("app.runtime.pi_runtime.settings.pi_sidecar_url", "http://127.0.0.1:8787")
     monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **kwargs: FakeClient())
@@ -136,12 +177,76 @@ async def test_pi_runtime_streams_from_sidecar_when_enabled(monkeypatch):
         cancel_event=asyncio.Event(),
     )
 
-    assert result["agent_runtime"] == RUNTIME_PI_EXPERIMENTAL
+    assert result["agent_runtime"] == RUNTIME_PI
     assert result.get("response_text") == "你好"
     assert "error" not in result
-    stream.send_first_reply.assert_awaited_once()
-    stream.send_delta.assert_not_awaited()
+    assert result.get("fail_closed") is not True
+    stream.send_first_reply.assert_awaited()
     stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pi_runtime_fail_closed_when_sidecar_down(monkeypatch):
+    """I9 / S7: sidecar unreachable → fail-closed; no harness fallback."""
+
+    async def fake_gate(**kwargs):
+        from app.runtime.risk_gate import RiskGateOutcome
+        from app.engines.base import RiskResult
+
+        return RiskGateOutcome(
+            blocked=False,
+            risk=RiskResult(level="low"),
+            trace_id="trace_sidecar_down",
+            metadata={"trace_id": "trace_sidecar_down"},
+        )
+
+    async def fake_chain(**kwargs):
+        from app.engines.base import EmotionResult, IntentResult, MemorySnapshot, PersonalityConfig
+        from app.runtime.analyzers import AnalyzerBundle
+
+        return AnalyzerBundle(
+            intent=IntentResult(primary_intent="chitchat"),
+            emotion=EmotionResult(),
+            memory=MemorySnapshot(),
+            personality=PersonalityConfig(),
+            latency_ms=1,
+        )
+
+    class BoomClient:
+        def stream(self, *args, **kwargs):
+            raise RuntimeError("connection refused")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.run_analyzer_chain", fake_chain)
+    monkeypatch.setattr("app.runtime.pi_runtime.record_analyzer_events", AsyncMock())
+    monkeypatch.setattr("app.runtime.pi_runtime.fast_reply_race", AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", True)
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.pi_sidecar_url", "http://127.0.0.1:8787")
+    monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **kwargs: BoomClient())
+
+    runtime = PiExperimentalRuntime()
+    stream = MagicMock()
+    stream.dead = False
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    result = await runtime.run(
+        user_id="u",
+        session_id="s",
+        message="你好",
+        stream_mgr=stream,
+        cancel_event=asyncio.Event(),
+    )
+    assert result["fail_closed"] is True
+    assert result["harness_fallback"] is False
+    assert result["error"] == "sidecar_unavailable"
+    assert result["agent_runtime"] == RUNTIME_PI
 
 
 @pytest.mark.asyncio
@@ -155,6 +260,18 @@ async def test_pi_runtime_discards_model_preamble_after_successful_caretask(monk
             risk=RiskResult(level="low"),
             trace_id="trace_pi_caretask",
             metadata={"trace_id": "trace_pi_caretask"},
+        )
+
+    async def fake_chain(**kwargs):
+        from app.engines.base import EmotionResult, IntentResult, MemorySnapshot, PersonalityConfig
+        from app.runtime.analyzers import AnalyzerBundle
+
+        return AnalyzerBundle(
+            intent=IntentResult(primary_intent="task", tool_needs=["caretask"]),
+            emotion=EmotionResult(),
+            memory=MemorySnapshot(),
+            personality=PersonalityConfig(),
+            latency_ms=1,
         )
 
     class FakeResponse:
@@ -194,6 +311,10 @@ async def test_pi_runtime_discards_model_preamble_after_successful_caretask(monk
             return False
 
     monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.run_analyzer_chain", fake_chain)
+    monkeypatch.setattr("app.runtime.pi_runtime.record_analyzer_events", AsyncMock())
+    monkeypatch.setattr("app.runtime.pi_runtime.fast_reply_race", AsyncMock(return_value=(True, 50)))
+    monkeypatch.setattr("app.runtime.pi_runtime.enqueue_post_process", AsyncMock(return_value={"reflection": True}))
     monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", True)
     monkeypatch.setattr("app.runtime.pi_runtime.settings.pi_sidecar_url", "http://127.0.0.1:8787")
     monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **kwargs: FakeClient())
@@ -217,8 +338,98 @@ async def test_pi_runtime_discards_model_preamble_after_successful_caretask(monk
     )
 
     assert result["response_text"] == "已为您记下：吃降糖药"
-    stream.send_first_reply.assert_awaited_once_with("已为您记下：吃降糖药", ANY)
-    stream.send_delta.assert_not_awaited()
+    assert result.get("post_process", {}).get("reflection") is True
+    stream.send_tool_result.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pi_fast_reply_does_not_wait_for_slow_sidecar(monkeypatch):
+    """U7/I8: A2a first_reply before sidecar tool-loop completion."""
+    async def fake_gate(**kwargs):
+        from app.runtime.risk_gate import RiskGateOutcome
+        from app.engines.base import RiskResult
+
+        return RiskGateOutcome(
+            blocked=False,
+            risk=RiskResult(level="low"),
+            trace_id="trace_ttft",
+            metadata={"trace_id": "trace_ttft"},
+        )
+
+    async def fake_chain(**kwargs):
+        from app.engines.base import EmotionResult, IntentResult, MemorySnapshot, PersonalityConfig
+        from app.runtime.analyzers import AnalyzerBundle
+
+        return AnalyzerBundle(
+            intent=IntentResult(primary_intent="chitchat"),
+            emotion=EmotionResult(emotion="neutral"),
+            memory=MemorySnapshot(),
+            personality=PersonalityConfig(),
+            latency_ms=1,
+        )
+
+    order: list[str] = []
+
+    async def fake_fast(*args, **kwargs):
+        order.append("fast")
+        stream_mgr = args[3]
+        await stream_mgr.send_first_reply("先回一句", 40)
+        return True, 40
+
+    class SlowResponse:
+        status_code = 200
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            await asyncio.sleep(0.15)
+            order.append("sidecar")
+            yield json.dumps({"type": "text_delta", "delta": "慢回复"})
+            yield json.dumps({"type": "done", "reason": "stop"})
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeClient:
+        def stream(self, method, url, json=None):
+            return SlowResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.run_analyzer_chain", fake_chain)
+    monkeypatch.setattr("app.runtime.pi_runtime.record_analyzer_events", AsyncMock())
+    monkeypatch.setattr("app.runtime.pi_runtime.fast_reply_race", fake_fast)
+    monkeypatch.setattr("app.runtime.pi_runtime.enqueue_post_process", AsyncMock(return_value={}))
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", True)
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.pi_sidecar_url", "http://127.0.0.1:8787")
+    monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **kwargs: FakeClient())
+
+    runtime = PiExperimentalRuntime()
+    stream = MagicMock()
+    stream.dead = False
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    result = await runtime.run(
+        user_id="u",
+        session_id="s",
+        message="你好",
+        stream_mgr=stream,
+        cancel_event=asyncio.Event(),
+    )
+    assert order[0] == "fast"
+    assert "sidecar" in order
+    assert result["fast_reply_sent"] is True
+    assert result["ttft_ms"] <= 200
 
 
 @pytest.mark.asyncio
@@ -247,4 +458,8 @@ async def test_pi_runtime_blocks_on_high_risk(monkeypatch):
     )
 
     assert result["blocked_by_risk"] is True
-    assert result["agent_runtime"] == RUNTIME_PI_EXPERIMENTAL
+    assert result["agent_runtime"] == RUNTIME_PI
+
+
+# Back-compat alias for older imports in docs/comments
+assert RUNTIME_PI_EXPERIMENTAL == "pi_experimental"

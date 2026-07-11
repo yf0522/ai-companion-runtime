@@ -62,16 +62,15 @@ python scripts/device_ws_smoke.py --base-url http://127.0.0.1:8001
 `--record` writes `docs/evidence/demo-run-YYYYMMDD.md` for diligence follow-up.
 Scenario mockups remain under `docs/evidence/` (Mock UI, not production screenshots).
 
-### Agent runtime (experimental)
+### Agent runtime (Pi-only)
 
-- **Default / diligence preferred:** `harness` — production AgentHarness (risk-first orchestration, tools, memory, device projection).
-- **Experimental:** `pi_experimental` — selectable in chat UI or WS auth field `agent_runtime`; shared risk gate first, then Pi sidecar when `ENABLE_PI_RUNTIME=1`.
+- **Production:** Pi runtime + `pi-sidecar` (risk gate first, then analyzer parity + A2a fast-reply ∥ FC tools).
+- AgentHarness has been **physically removed** — `agent_runtime=harness` is rejected (no FF escape / no UI picker).
 - Pi tool loop uses `TOOL_BRIDGE_URL` (must point at the companion API `/api` base, e.g. `http://127.0.0.1:8001/api`). In production, set `TOOL_BRIDGE_TOKEN` (required when `APP_ENV=production`).
-- Prefer **harness** for investor demos that need CareTask → device `reminder_*` projection; Pi bridge executes tools and records Trace `tool_calls`, but does not yet push device WS events by itself.
+- CareTask → device `reminder_*` projection remains the scheduling path; tools execute via the Pi bridge and record Trace `tool_calls`.
 
 ```bash
-# WebSocket auth example
-{"type":"auth","token":"<JWT>","agent_runtime":"harness"}
+# WebSocket auth example (Pi only)
 {"type":"auth","token":"<JWT>","agent_runtime":"pi_experimental"}
 ```
 

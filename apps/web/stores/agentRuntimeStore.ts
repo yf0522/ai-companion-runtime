@@ -1,31 +1,34 @@
 import { create } from "zustand";
 
-export type AgentRuntimeId = "harness" | "pi_experimental";
+/** Sole production runtime id (legacy `pi_experimental` wire value retained). */
+export type AgentRuntimeId = "pi_experimental";
+
+export const PI_ONLY_RUNTIME: AgentRuntimeId = "pi_experimental";
 
 const STORAGE_KEY = "companion.agent_runtime";
 
+/** Pi-only product — no selectable harness escape in UI. */
 export const AGENT_RUNTIME_OPTIONS: {
   id: AgentRuntimeId;
   label: string;
   description: string;
 }[] = [
   {
-    id: "harness",
-    label: "标准 Harness",
-    description: "生产默认路径：风险优先 + 工具 + 记忆",
-  },
-  {
     id: "pi_experimental",
-    label: "Pi (实验)",
-    description: "实验性 Pi Agent 运行时（需服务端启用）",
+    label: "Pi",
+    description: "生产路径：风险优先 + FC 工具 + mem0 记忆",
   },
 ];
 
-function readStoredRuntime(): AgentRuntimeId {
-  if (typeof window === "undefined") return "harness";
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw === "pi_experimental" || raw === "pi") return "pi_experimental";
-  return "harness";
+function coerceStoredRuntimeToPi(): AgentRuntimeId {
+  if (typeof window === "undefined") return PI_ONLY_RUNTIME;
+  // Coerce any legacy preference (incl. harness) to Pi-only — S1 dual-path guard.
+  try {
+    localStorage.setItem(STORAGE_KEY, PI_ONLY_RUNTIME);
+  } catch {
+    // Private mode / blocked storage must not block hydration.
+  }
+  return PI_ONLY_RUNTIME;
 }
 
 interface AgentRuntimeState {
@@ -35,17 +38,16 @@ interface AgentRuntimeState {
   hydrate: () => void;
 }
 
-/** Default harness on SSR + first client paint to avoid select title hydration mismatch. */
+/** Always Pi on SSR + client — no harness/runtime escape UI. */
 export const useAgentRuntimeStore = create<AgentRuntimeState>((set) => ({
-  runtime: "harness",
+  runtime: PI_ONLY_RUNTIME,
   hydrated: false,
   hydrate: () => {
-    set({ runtime: readStoredRuntime(), hydrated: true });
-  },
-  setRuntime: (runtime) => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, runtime);
-    }
+    const runtime = coerceStoredRuntimeToPi();
     set({ runtime, hydrated: true });
+  },
+  setRuntime: (_runtime) => {
+    coerceStoredRuntimeToPi();
+    set({ runtime: PI_ONLY_RUNTIME, hydrated: true });
   },
 }));

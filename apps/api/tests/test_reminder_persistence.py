@@ -101,8 +101,10 @@ async def test_persist_reminder_writes_db_row(monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatcher_passes_user_context_to_reminder(monkeypatch):
     from app.tools.dispatcher import ToolDispatcher
+    from app.tools.reminder_tool import ReminderTool
 
     dispatcher = ToolDispatcher()
+    dispatcher.register(ReminderTool())  # legacy tool retained for projection tests
     stream = MagicMock()
     stream.send_tool_status = AsyncMock()
     stream.send_tool_result = AsyncMock()
@@ -180,8 +182,10 @@ async def test_evening_chinese_hour_medicine_reminder(monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatcher_emits_reminder_snooze_device_sync(monkeypatch):
     from app.tools.dispatcher import ToolDispatcher
+    from app.tools.reminder_tool import ReminderTool
 
     dispatcher = ToolDispatcher()
+    dispatcher.register(ReminderTool())
     stream = MagicMock()
     stream.send_tool_status = AsyncMock()
     stream.send_tool_result = AsyncMock()
