@@ -1,56 +1,55 @@
 "use client";
 
-import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowUpRight, Search, ShieldCheck } from "lucide-react";
 import RoleShell from "@/components/RoleShell";
 import { EmptyState, ErrorState, LoadingState } from "@/components/SurfaceStates";
-import { ApiError, fetchTraces, userFacingApiError } from "@/lib/api-client";
+import {
+  ApiError,
+  fetchTraces,
+  type TraceListItem,
+  userFacingApiError,
+} from "@/lib/api-client";
+import {
+  formatRecordedMetric,
+  isFailedTraceStatus,
+  operatorSeverityLabel,
+  operatorStatusLabel,
+  traceStatusLabel,
+} from "../_lib/operator";
+import styles from "../operator.module.css";
 
-type TraceListItem = {
-  trace_id?: string;
-  id?: string;
-  started_at?: string;
-  created_at?: string;
-  user_id?: string;
-  status?: string;
-};
+type TraceFilter = "all" | "failed" | "completed" | "unknown";
 
-function statusTone(status: string | undefined): string {
-  if (status === "success" || status === "completed") return "border-status-success bg-status-success-soft text-ink";
-  if (status === "failed" || status === "error") return "border-status-critical bg-status-critical-soft text-ink";
-  if (status === "timeout") return "border-status-warning bg-status-warning-soft text-ink";
-  return "border-status-unknown bg-status-unknown-soft text-ink";
+function statusTone(status: string): "critical" | "success" | "neutral" {
+  if (isFailedTraceStatus(status)) return "critical";
+  if (["completed", "success"].includes(status)) return "success";
+  return "neutral";
 }
 
-function nextActionFor(status: string | undefined): string {
-  if (status === "failed" || status === "error") return "打开追踪并定位失败步骤";
-  if (status === "timeout") return "检查慢步骤和工具延迟";
-  if (status === "success" || status === "completed") return "抽查模型、工具、投递证据";
-  return "确认链路状态";
-}
-
-function traceIdOf(item: TraceListItem): string {
-  return item.trace_id || item.id || "";
+function formatTime(value: string | null): string {
+  if (!value) return "未记录";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间待确认" : date.toLocaleString("zh-CN");
 }
 
 export default function OpsTracesPage() {
   const router = useRouter();
   const [items, setItems] = useState<TraceListItem[]>([]);
+  const [scope, setScope] = useState<string>("operator_case");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<TraceFilter>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchTraces(20, 0);
-      const rows = Array.isArray(data)
-        ? data
-        : Array.isArray((data as { items?: unknown[] }).items)
-          ? (data as { items: TraceListItem[] }).items
-          : [];
-      setItems(rows);
+      const data = await fetchTraces(100, 0);
+      setItems(data.items);
+      setScope(data.scope);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
@@ -62,65 +61,96 @@ export default function OpsTracesPage() {
     }
   }, [router]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { void load(); }, [load]);
+
+  const visibleItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return items.filter((item) => {
+      const failed = isFailedTraceStatus(item.status);
+      if (filter === "failed" && !failed) return false;
+      if (filter === "completed" && !["completed", "success"].includes(item.status)) return false;
+      if (filter === "unknown" && item.status !== "unknown") return false;
+      if (!normalizedQuery) return true;
+      return [item.trace_id, item.case_id, item.user_id]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+    });
+  }, [filter, items, query]);
+
+  const failedCount = items.filter((item) => isFailedTraceStatus(item.status)).length;
+  const unknownCount = items.filter((item) => item.status === "unknown").length;
+  const linkedCases = new Set(items.flatMap((item) => item.case_ids || [])).size;
 
   return (
-    <RoleShell
-      role="operator"
-      title="追踪"
-      subtitle="技术追踪只在运营角色下展示，用于重建模型、工具、策略和投递链路。"
-    >
-      <div className="grid gap-4">
+    <RoleShell role="operator" title="运行追踪" subtitle="仅展示案件授权范围内的运行证据">
+      <div className={styles.workspace}>
+        <header className={styles.pageHeader}>
+          <div>
+            <h2>案件追踪证据</h2>
+            <p>运营账号只能查看与安全案件关联的 Trace；打开详情会写入案件审计时间线。</p>
+          </div>
+          <span className={styles.badge} data-tone={scope === "operator_case" ? "success" : "warning"}><ShieldCheck size={14} /> {scope === "operator_case" ? "案件授权范围" : "权限范围待确认"}</span>
+        </header>
+
         {loading ? (
-          <LoadingState label="正在加载追踪列表" />
+          <LoadingState label="正在加载案件追踪" />
         ) : error ? (
           <ErrorState description={error} onRetry={load} />
-        ) : items.length === 0 ? (
-          <EmptyState title="暂无追踪记录" description="有可查看的运行记录后会显示在这里。" />
         ) : (
-          <section className="grid gap-3">
-            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted">Trace Operations</p>
-                <h2 className="text-xl font-semibold text-ink">运行证据队列</h2>
+          <>
+            <section className={styles.summaryStrip} aria-label="追踪状态统计">
+              <div><span>可查看追踪</span><strong>{items.length}</strong></div>
+              <div><span>失败或超时</span><strong>{failedCount}</strong></div>
+              <div><span>状态未记录</span><strong>{unknownCount}</strong></div>
+              <div><span>关联案件</span><strong>{linkedCases}</strong></div>
+            </section>
+
+            <section className={`${styles.toolbar} ${styles.toolbarCompact}`} aria-label="追踪筛选">
+              <label className={styles.searchControl}>
+                <span className="sr-only">搜索追踪</span>
+                <Search className={styles.searchIcon} size={16} aria-hidden="true" />
+                <input className={`${styles.searchField} ${styles.searchFieldWithIcon}`} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Trace、案件或用户 ID" />
+              </label>
+              <div className={styles.filterGroup}>
+                <label htmlFor="trace-filter">状态</label>
+                <select id="trace-filter" className={styles.selectField} value={filter} onChange={(event) => setFilter(event.target.value as TraceFilter)}>
+                  <option value="all">全部</option>
+                  <option value="failed">失败或超时</option>
+                  <option value="completed">已完成</option>
+                  <option value="unknown">未记录</option>
+                </select>
               </div>
-              <div className="text-sm text-muted">{items.length} 条最近链路</div>
-            </div>
-            {items.map((item) => {
-              const traceId = traceIdOf(item);
-              return (
-                <Link
-                  key={traceId}
-                  href={`/ops/traces/${traceId}`}
-                  className="border border-border bg-surface text-ink hover:border-primary"
-                >
-                  <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_180px_minmax(220px,0.8fr)_auto]">
-                    <div className="min-w-0 border-b border-border p-4 lg:border-b-0 lg:border-r">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-muted">Trace ID</p>
-                      <div className="mt-1 break-all font-mono text-sm">{traceId || "unknown"}</div>
+            </section>
+
+            {visibleItems.length === 0 ? (
+              <EmptyState title={items.length === 0 ? "暂无案件授权追踪" : "没有符合筛选条件的追踪"} description={items.length === 0 ? "安全案件关联运行证据后才会出现在这里。" : "调整搜索或状态条件后重试。"} />
+            ) : (
+              <section className={styles.traceList} aria-label="追踪列表">
+                {visibleItems.map((item) => (
+                  <article key={item.trace_id} className={styles.traceRow}>
+                    <div>
+                      <div className={styles.traceId}>{item.trace_id}</div>
+                      <span className={styles.cellHint}>{formatTime(item.started_at)}</span>
                     </div>
-                    <div className="border-b border-border p-4 lg:border-b-0 lg:border-r">
-                      <p className="text-xs text-muted">严重度 / 状态</p>
-                      <span className={`mt-2 inline-flex border px-2.5 py-1 text-xs font-semibold ${statusTone(item.status)}`}>
-                        {item.status || "unknown"}
-                      </span>
+                    <div className={styles.badgeRow}>
+                      <span className={styles.badge} data-tone={statusTone(item.status)}>{traceStatusLabel(item.status)}</span>
                     </div>
-                    <div className="border-b border-border p-4 text-sm lg:border-b-0 lg:border-r">
-                      <p className="text-xs text-muted">负责人 / 下一步</p>
-                      <p className="mt-1 font-medium text-ink">运营值班</p>
-                      <p className="mt-1 text-muted">{nextActionFor(item.status)}</p>
+                    <div>
+                      <strong>{formatRecordedMetric(item.event_count)} 个事件</strong>
+                      <div className={styles.cellHint}>{item.failed_event_count == null ? "失败数未记录" : `${item.failed_event_count} 个失败步骤`}</div>
                     </div>
-                    <div className="grid gap-2 p-4 text-sm">
-                      <span className="text-muted">时间：{item.started_at || item.created_at || "unknown"}</span>
-                      <span className="font-mono text-xs text-muted">user {item.user_id || "unknown"}</span>
+                    <div>
+                      <strong>{operatorSeverityLabel(item.severity)}</strong>
+                      <div className={styles.cellHint}>{operatorStatusLabel(item.case_status)} · 案件 {item.case_id ? `${item.case_id.slice(0, 8)}…` : "未关联"}</div>
                     </div>
-                  </div>
-                </Link>
-              );
-            })}
-          </section>
+                    <div className={styles.rowAction}>
+                      <a className={styles.compactButton} href={`/ops/traces/${item.trace_id}`}>查看 <ArrowUpRight size={14} /></a>
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
+          </>
         )}
       </div>
     </RoleShell>
