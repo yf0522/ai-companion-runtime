@@ -3,9 +3,17 @@ import { Agent, convertToLlm } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
-import { normalizeCareTaskParams, normalizeMemoryParams } from "./caretask-params.mjs";
+import {
+  isExplicitFamilyContactRequest,
+  normalizeCareTaskParams,
+  normalizeContactParams,
+  normalizeMemoryParams,
+} from "./caretask-params.mjs";
 import { assistantErrorMessage } from "./pi-events.mjs";
-import { careTaskShouldTerminate } from "./tool-policy.mjs";
+import {
+  authoritativeToolResultText,
+  authoritativeToolShouldTerminate,
+} from "./tool-policy.mjs";
 
 // pi-ai's Google provider reads GEMINI_API_KEY; align with harness GOOGLE_API_KEY.
 if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
@@ -35,6 +43,8 @@ const SYSTEM_PROMPT =
     "Reply in the user's language. Keep answers practical and kind.",
     "When the user asks about medication, appointments, or care tasks, use the caretask tool.",
     "For today's care tasks / 今日事项, use caretask action=list (defaults to today's care window) — do not invent a today_brief tool.",
+    "When the user explicitly asks their family to contact, call, or help them, use the contact tool with action=request_contact.",
+    "For contact requests, repeat only the tool result: queued or recorded never means delivered.",
     "When the user says 以后记得 / preferences / continuity facts, use the memory tool (note or recall).",
     "Never store prescription doses or escalation rules in memory — those belong to caretask / care settings.",
     "Never claim a tool succeeded if the tool result status is failed or timeout.",
@@ -255,6 +265,59 @@ function makeMemoryTool(ctx) {
   };
 }
 
+function makeContactTool(ctx) {
+  return {
+    name: "contact",
+    label: "Contact family",
+    description:
+      "Record the elder's explicit request for verified family contacts to reach them. Use only for an explicit user request. The result reports recorded/queued state and must never be described as delivered unless the tool says so.",
+    parameters: Type.Object(
+      {
+        action: Type.Literal("request_contact"),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params) {
+      if (!isExplicitFamilyContactRequest(ctx.userText)) {
+        const text = "只有在您明确提出时，我才会记录家人联系请求。";
+        return {
+          content: [{ type: "text", text: `[failed] ${text}` }],
+          details: {
+            status: "failed",
+            data: { reason: "explicit_request_required" },
+            tool_name: "contact",
+            display_text: text,
+          },
+          terminate: false,
+        };
+      }
+      const result = await bridgeExecute(
+        "contact",
+        normalizeContactParams(params, ctx.userText),
+        ctx,
+      );
+      const status = result.status || "failed";
+      const text =
+        result.display_text ||
+        (status === "success"
+          ? "Contact request recorded; delivery is not confirmed"
+          : "Contact request failed");
+      return {
+        content: [{ type: "text", text: `[${status}] ${text}` }],
+        details: {
+          status,
+          data: result.data ?? null,
+          tool_name: "contact",
+          display_text: text,
+        },
+        // Failed contact requests stay in the loop so the model can give a
+        // brief recovery instruction. Success terminates in afterToolCall.
+        terminate: false,
+      };
+    },
+  };
+}
+
 async function streamAgentChat({ res, body }) {
   const model = resolveModel(body.provider, body.model);
   const userMessages = normalizeMessages(body);
@@ -269,7 +332,7 @@ async function streamAgentChat({ res, body }) {
   };
 
   const tools = ENABLE_TOOLS
-    ? [makeCareTaskTool(ctx), makeMemoryTool(ctx)]
+    ? [makeCareTaskTool(ctx), makeMemoryTool(ctx), makeContactTool(ctx)]
     : [];
   const toolsUsed = [];
   let agentError = null;
@@ -367,7 +430,7 @@ async function streamAgentChat({ res, body }) {
           ],
         };
       }
-      if (careTaskShouldTerminate(toolCall.name, status)) {
+      if (authoritativeToolShouldTerminate(toolCall.name, status)) {
         return { terminate: true };
       }
       return undefined;
@@ -457,7 +520,7 @@ const server = http.createServer(async (req, res) => {
           bridge: ENABLE_TOOLS ? "pi-agent-core" : "pi-experimental",
           provider: DEFAULT_PROVIDER,
           model: DEFAULT_MODEL,
-          tools: ENABLE_TOOLS ? ["caretask", "memory"] : [],
+          tools: ENABLE_TOOLS ? ["caretask", "memory", "contact"] : [],
         }),
       );
       return;
@@ -488,12 +551,15 @@ const server = http.createServer(async (req, res) => {
           await streamChatLegacy({ res: fakeRes, body });
         }
         let text = "";
+        let authoritativeText = "";
         const tools_used = [];
         for (const line of chunks.join("").split("\n")) {
           if (!line.trim()) continue;
           try {
             const ev = JSON.parse(line);
             if (ev.type === "text_delta") text += ev.delta || "";
+            authoritativeText =
+              authoritativeToolResultText(ev) || authoritativeText;
             if (ev.type === "done" && Array.isArray(ev.tools_used)) {
               tools_used.push(...ev.tools_used);
             }
@@ -502,7 +568,13 @@ const server = http.createServer(async (req, res) => {
           }
         }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ type: "text", text, tools_used }));
+        res.end(
+          JSON.stringify({
+            type: "text",
+            text: authoritativeText || text,
+            tools_used,
+          }),
+        );
         return;
       }
       if (useAgent) {
@@ -529,7 +601,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(
-    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask,memory" : "off"} bridge=${TOOL_BRIDGE_URL}`,
+    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask,memory,contact" : "off"} bridge=${TOOL_BRIDGE_URL}`,
   );
   if (ENABLE_TOOLS) {
     const schemasUrl = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/schemas`;

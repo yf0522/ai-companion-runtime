@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 import httpx
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import settings
 from app.workers.celery_app import app
@@ -366,6 +367,284 @@ async def _record_reconciliation(
             payload_json=payload or {},
         )
     )
+
+
+async def _claim_family_contact_request(
+    *,
+    user_id: uuid.UUID,
+    trace_id: str,
+    summary: str,
+) -> tuple[str, uuid.UUID | None, dict[str, Any] | None]:
+    """Claim one explicit contact request per trace before creating side effects."""
+    from app.db.models import IdempotencyRecord
+    from app.db.session import async_session
+
+    operation = "contact:request"
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {"user_id": str(user_id), "trace_id": trace_id, "summary": summary},
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    async with async_session() as db:
+        record = IdempotencyRecord(
+            user_id=user_id,
+            key=trace_id,
+            operation=operation,
+            resource_type="family_contact_request",
+            request_hash=request_hash,
+            response_json={},
+            error_json={},
+            status="in_progress",
+            status_code=202,
+        )
+        db.add(record)
+        try:
+            await db.commit()
+            return "won", record.id, None
+        except IntegrityError:
+            await db.rollback()
+            existing = (
+                await db.execute(
+                    select(IdempotencyRecord).where(
+                        IdempotencyRecord.user_id == user_id,
+                        IdempotencyRecord.key == trace_id,
+                        IdempotencyRecord.operation == operation,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                return "failed", None, {"reason": "idempotency_recovery_failed"}
+            if existing.request_hash != request_hash:
+                return "failed", existing.id, {"reason": "idempotency_payload_mismatch"}
+            if existing.status == "completed":
+                replay = dict(existing.response_json or {})
+                replay["idempotent_replay"] = True
+                return "replay", existing.id, replay
+            if existing.status == "failed":
+                return "failed", existing.id, dict(existing.error_json or {})
+            return "in_progress", existing.id, {
+                "status": "in_progress",
+                "request_id": str(existing.resource_id) if existing.resource_id else None,
+                "outbox_ids": [],
+                "case_opened": False,
+                "delivery_status": "pending",
+            }
+
+
+async def _finish_family_contact_request(
+    *,
+    record_id: uuid.UUID | None,
+    resource_id: uuid.UUID | None,
+    response: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> None:
+    if record_id is None:
+        return
+    from app.db.models import IdempotencyRecord
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        record = await db.get(IdempotencyRecord, record_id)
+        if record is None:
+            return
+        if record.status != "in_progress":
+            return
+        record.resource_id = resource_id
+        record.status = "completed" if response is not None else "failed"
+        record.response_json = response or {}
+        record.error_json = error or {}
+        record.status_code = 200 if response is not None else 500
+        record.updated_at = datetime.utcnow()
+        await db.commit()
+
+
+async def create_family_contact_request_pipeline(
+    *,
+    user_id: str,
+    summary: str,
+    trace_id: str,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    """Persist an explicit elder request to contact family without claiming delivery."""
+    from app.db.models import (
+        EmergencyContact,
+        IdempotencyRecord,
+        NotificationLog,
+        NotificationOutbox,
+        OperatorCase,
+        SafetyDecision,
+    )
+    from app.db.session import async_session
+
+    db_user_id = uuid.UUID(user_id)
+    claim_state, claim_id, claim_payload = await _claim_family_contact_request(
+        user_id=db_user_id,
+        trace_id=trace_id,
+        summary=summary,
+    )
+    if claim_state in {"replay", "in_progress"}:
+        return claim_payload or {
+            "status": "in_progress",
+            "outbox_ids": [],
+            "case_opened": False,
+            "delivery_status": "pending",
+        }
+    if claim_state == "failed":
+        return {
+            "status": "failed",
+            "outbox_ids": [],
+            "case_opened": False,
+            "delivery_status": "failed",
+            **(claim_payload or {}),
+        }
+
+    now = datetime.utcnow()
+    provider_name = provider or settings.notification_provider
+    decision_id: uuid.UUID | None = None
+    try:
+        async with async_session() as db:
+            decision = SafetyDecision(
+                user_id=db_user_id,
+                trace_id=trace_id,
+                policy_version="family-contact-request:v1",
+                risk_level="medium",
+                risk_category="family_contact_request",
+                action="notify_family_user_requested",
+                evidence_ref=f"trace:{trace_id}",
+                evidence_json={"explicit_user_request": True, "source": "elder_chat"},
+                confidence=1.0,
+                calibration="explicit_user_request",
+            )
+            db.add(decision)
+            await db.flush()
+            decision_id = decision.id
+
+            contacts = (
+                await db.execute(
+                    select(EmergencyContact)
+                    .where(
+                        EmergencyContact.user_id == db_user_id,
+                        EmergencyContact.is_active.is_(True),
+                        EmergencyContact.verification_state == "verified",
+                        EmergencyContact.revoked_at.is_(None),
+                    )
+                    .order_by(EmergencyContact.priority)
+                )
+            ).scalars().all()
+
+            outbox_ids: list[str] = []
+            if not contacts:
+                db.add(
+                    NotificationLog(
+                        user_id=db_user_id,
+                        contact_id=None,
+                        trace_id=trace_id,
+                        risk_level="medium",
+                        risk_category="family_contact_request",
+                        summary=summary,
+                        webhook_status="no_contact",
+                        safety_decision_id=decision.id,
+                    )
+                )
+                db.add(
+                    OperatorCase(
+                        user_id=db_user_id,
+                        safety_decision_id=decision.id,
+                        status="unstaffed",
+                        severity="medium",
+                        summary=summary,
+                        due_at=now + timedelta(minutes=30),
+                        sla_deadline_at=now + timedelta(minutes=30),
+                    )
+                )
+                response = {
+                    "status": "persisted",
+                    "request_id": str(decision.id),
+                    "outbox_ids": [],
+                    "case_opened": True,
+                    "delivery_status": "no_verified_contact",
+                }
+            else:
+                for contact in contacts:
+                    outbox = NotificationOutbox(
+                        user_id=db_user_id,
+                        safety_decision_id=decision.id,
+                        contact_id=contact.id,
+                        provider=provider_name,
+                        channel="webhook" if contact.webhook_url else "provider",
+                        idempotency_key=f"contact-request:{trace_id}:contact:{contact.id}",
+                        payload_json={
+                            "event_type": "family_contact_request",
+                            "user_id": str(db_user_id),
+                            "summary": summary,
+                            "trace_id": trace_id,
+                            "contact_id": str(contact.id),
+                            "contact_name": contact.name,
+                        },
+                        state="queued",
+                        next_attempt_at=now,
+                    )
+                    db.add(outbox)
+                    await db.flush()
+                    db.add(
+                        NotificationLog(
+                            user_id=db_user_id,
+                            contact_id=contact.id,
+                            trace_id=trace_id,
+                            risk_level="medium",
+                            risk_category="family_contact_request",
+                            summary=summary,
+                            webhook_status="queued",
+                            safety_decision_id=decision.id,
+                            outbox_id=outbox.id,
+                        )
+                    )
+                    db.add(
+                        OperatorCase(
+                            user_id=db_user_id,
+                            safety_decision_id=decision.id,
+                            notification_outbox_id=outbox.id,
+                            status="unstaffed",
+                            severity="medium",
+                            summary=summary,
+                            due_at=now + timedelta(minutes=30),
+                            sla_deadline_at=now + timedelta(minutes=30),
+                        )
+                    )
+                    outbox_ids.append(str(outbox.id))
+                response = {
+                    "status": "persisted",
+                    "request_id": str(decision.id),
+                    "outbox_ids": outbox_ids,
+                    "case_opened": True,
+                    "delivery_status": "queued",
+                }
+            if claim_id is None:
+                raise RuntimeError("contact_request_missing_idempotency_claim")
+            claim_record = await db.get(IdempotencyRecord, claim_id)
+            if claim_record is None or claim_record.status != "in_progress":
+                raise RuntimeError("contact_request_idempotency_claim_unavailable")
+            claim_record.resource_id = decision.id
+            claim_record.status = "completed"
+            claim_record.response_json = response
+            claim_record.error_json = {}
+            claim_record.status_code = 200
+            claim_record.updated_at = now
+            # The user-visible request, outbox/case, and replay response become
+            # durable in one commit. There is no successful side effect with a
+            # permanently in-progress idempotency record.
+            await db.commit()
+        return response
+    except Exception as exc:
+        await _finish_family_contact_request(
+            record_id=claim_id,
+            resource_id=decision_id,
+            error={"reason": "contact_request_persistence_failed", "error": str(exc)},
+        )
+        raise
 
 
 async def create_safety_notification_pipeline(

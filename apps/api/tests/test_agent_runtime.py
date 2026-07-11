@@ -222,6 +222,108 @@ async def test_pi_runtime_discards_model_preamble_after_successful_caretask(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contact_status", "contact_text", "delivery_status"),
+    [
+        (
+            "success",
+            "求助请求已记录并进入联系队列，送达状态还在确认。",
+            "queued",
+        ),
+        (
+            "failed",
+            "这次没有成功发出联系请求，请直接联系身边可信任的人。",
+            "failed",
+        ),
+    ],
+)
+async def test_pi_runtime_uses_truthful_contact_result_as_authoritative_reply(
+    monkeypatch,
+    contact_status,
+    contact_text,
+    delivery_status,
+):
+    async def fake_gate(**kwargs):
+        from app.runtime.risk_gate import RiskGateOutcome
+        from app.engines.base import RiskResult
+
+        return RiskGateOutcome(
+            blocked=False,
+            risk=RiskResult(level="low"),
+            trace_id="trace_pi_contact",
+            metadata={"trace_id": "trace_pi_contact"},
+        )
+
+    class FakeResponse:
+        status_code = 200
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            yield json.dumps({"type": "text_delta", "delta": "好的，我已经通知家人了。"})
+            yield json.dumps(
+                {
+                    "type": "tool_result",
+                    "tool": "contact",
+                    "status": contact_status,
+                    "text": contact_text,
+                    "action": "contact_help_request",
+                    "data": {
+                        "action": "contact_help_request",
+                        "delivery_status": delivery_status,
+                    },
+                }
+            )
+            yield json.dumps({"type": "done", "reason": "tool_terminated"})
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeClient:
+        def stream(self, method, url, json=None):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", True)
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.pi_sidecar_url", "http://127.0.0.1:8787")
+    monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **kwargs: FakeClient())
+
+    runtime = PiExperimentalRuntime()
+    stream = MagicMock()
+    stream.dead = False
+    stream.send_trace = AsyncMock()
+    stream.send_first_reply = AsyncMock()
+    stream.send_delta = AsyncMock()
+    stream.send_tool_result = AsyncMock()
+    stream.send_tool_status = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    result = await runtime.run(
+        user_id="user-1",
+        session_id="session-1",
+        message="我想让家人知道我需要帮助",
+        stream_mgr=stream,
+        cancel_event=asyncio.Event(),
+    )
+
+    expected = contact_text
+    assert result["response_text"] == expected
+    assert "已经通知" not in result["response_text"]
+    stream.send_first_reply.assert_awaited_once_with(expected, ANY)
+    stream.send_delta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_pi_runtime_blocks_on_high_risk(monkeypatch):
     async def fake_gate(**kwargs):
         from app.runtime.risk_gate import RiskGateOutcome

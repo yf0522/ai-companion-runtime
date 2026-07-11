@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isExplicitFamilyContactRequest,
   normalizeCareTaskParams,
+  normalizeContactParams,
   normalizeMemoryParams,
 } from "../caretask-params.mjs";
 
@@ -25,6 +27,76 @@ test("keeps genuine list requests and defaults scope=today", () => {
     normalizeCareTaskParams({ action: "list" }, "我有哪些照护任务"),
     { action: "list", query: "我有哪些照护任务", scope: "today" },
   );
+});
+
+test("overrides model create for read-only care task questions", () => {
+  for (const query of ["今日任务", "我问你今天有什么照护任务", "我今天需要做什么", "吃药"]) {
+    assert.deepEqual(
+      normalizeCareTaskParams({ action: "create", title: "模型误建任务" }, query),
+      { action: "list", title: "模型误建任务", query, scope: "today" },
+    );
+  }
+});
+
+test("keeps explicit reminder creation as a write", () => {
+  assert.deepEqual(
+    normalizeCareTaskParams({ action: "create" }, "提醒我晚上八点吃药"),
+    { action: "create", query: "提醒我晚上八点吃药" },
+  );
+});
+
+test("read-only text overrides any model-selected care task mutation", () => {
+  for (const action of ["create", "complete", "cancel", "snooze"]) {
+    assert.deepEqual(
+      normalizeCareTaskParams({ action }, "我今天有什么照护任务"),
+      { action: "list", query: "我今天有什么照护任务", scope: "today" },
+    );
+  }
+});
+
+test("read-only phrasing wins over mutation words", () => {
+  assert.deepEqual(
+    normalizeCareTaskParams({ action: "cancel" }, "今天取消了哪些任务"),
+    { action: "list", query: "今天取消了哪些任务", scope: "today" },
+  );
+  assert.deepEqual(
+    normalizeCareTaskParams({ action: "create" }, "今天有什么安排"),
+    { action: "list", query: "今天有什么安排", scope: "today" },
+  );
+});
+
+test("contact params keep only the trusted raw user request", () => {
+  assert.deepEqual(
+    normalizeContactParams(
+      {
+        action: "delivered",
+        query: "模型改写",
+        recipient: "attacker@example.com",
+        user_id: "spoofed-user",
+      },
+      "我想让家人知道我需要帮助",
+    ),
+    {
+      action: "request_contact",
+      query: "我想让家人知道我需要帮助",
+    },
+  );
+});
+
+test("contact side effects require an explicit non-negated family request", () => {
+  assert.equal(isExplicitFamilyContactRequest("我想让家人知道我需要帮助"), true);
+  assert.equal(isExplicitFamilyContactRequest("请家人联系我"), true);
+  assert.equal(isExplicitFamilyContactRequest("让女儿给我打电话"), true);
+  assert.equal(isExplicitFamilyContactRequest("请通知家人我需要帮助"), true);
+  assert.equal(isExplicitFamilyContactRequest("我今天有点累"), false);
+  assert.equal(isExplicitFamilyContactRequest("我不想让家人知道"), false);
+  assert.equal(isExplicitFamilyContactRequest("我已经告诉家人了"), false);
+  assert.equal(isExplicitFamilyContactRequest("医生让我联系家人"), false);
+  assert.equal(isExplicitFamilyContactRequest("我刚联系过女儿"), false);
+  assert.equal(isExplicitFamilyContactRequest("联系家人了吗"), false);
+  assert.equal(isExplicitFamilyContactRequest("我想告诉家人最近挺好的"), false);
+  assert.equal(isExplicitFamilyContactRequest("联系家人"), true);
+  assert.equal(isExplicitFamilyContactRequest("我想请你通知女儿"), true);
 });
 
 test("uses original user text instead of model-injected schedule text", () => {

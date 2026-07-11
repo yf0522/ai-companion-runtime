@@ -72,15 +72,30 @@ def _infer_title(text: str, task_type: str) -> str:
 
 
 def _infer_action_from_query(query: str) -> str:
+    # Read-only language wins over mutation words. This prevents phrases such
+    # as "今天完成了哪些任务" from being interpreted as a completion command.
+    if re.search(
+        r"有哪些|有什么|列出|查看|看看|查一下|我的.*任务|待办|还没吃|"
+        r"今日(?:事项|任务)|今天.*(?:任务|事项|安排)|今天需要做什么|需要做什么",
+        query,
+    ):
+        return "list"
     if re.search(r"晚点再|等会儿再|推迟|再提醒|分钟后再", query):
         return "snooze"
-    if re.search(r"吃完了|已经吃|完成了|打卡|确认.*吃", query):
+    if re.search(r"吃完了|吃过了|已经吃|完成了|打卡|确认.*吃", query):
         return "complete"
     if re.search(r"取消|不要了|删掉", query):
         return "cancel"
-    if re.search(r"有哪些|列出|我的.*任务|待办|还没吃", query):
-        return "list"
-    return "create"
+    if re.search(
+        r"提醒我|帮我记(?:一下|下)|记一下|记下|新增|添加|新建|创建|建立|设置|安排|"
+        r"(?:每天|每日|每周|明天|后天).*(?:吃药|服药|复诊|任务|提醒)|"
+        r"\d{1,2}\s*[点时:].*(?:吃药|服药|复诊|任务|提醒)",
+        query,
+    ):
+        return "create"
+    # Ambiguous care-domain utterances are read-only by default. A write must
+    # be grounded in an explicit user mutation cue.
+    return "list"
 
 
 def _format_candidates(candidates: list[dict[str, Any]]) -> str:
@@ -169,6 +184,26 @@ class CareTaskTool(ToolBase):
         query = str(params.get("query") or "")
         if not action or action == "auto":
             action = _infer_action_from_query(query)
+        elif (
+            action
+            in {
+                "create",
+                "add",
+                "complete",
+                "done",
+                "finish",
+                "snooze",
+                "delay",
+                "cancel",
+                "missed",
+            }
+            and query
+            and _infer_action_from_query(query) == "list"
+        ):
+            # The user's read-only wording is authoritative. A model-supplied
+            # mutation label cannot turn a question or ambiguous care phrase
+            # into a persisted change.
+            action = "list"
         action = _ACTION_ALIASES.get(action, action)
 
         user_id = params.get("user_id")
@@ -335,8 +370,7 @@ class CareTaskTool(ToolBase):
         lines = []
         for t in dump[:10]:
             due = f"（{t['due_at']}）" if t.get("due_at") else ""
-            st = t.get("status") or ""
-            lines.append(f"- [{st}] {t['title']}{due}")
+            lines.append(f"- {t['title']}{due}")
         return ToolResult(
             tool_name=self.name,
             status="success",

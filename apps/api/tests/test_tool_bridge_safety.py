@@ -107,3 +107,58 @@ async def test_tool_execute_records_trace_tool_call(monkeypatch):
     assert recorded["trace_id"] == "tr-bridge-1"
     assert recorded["tool_name"] == "caretask"
     assert recorded["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_contact_tool_uses_trusted_runtime_context(monkeypatch):
+    from app.api.tool_execute import ToolExecuteRequest, tool_execute
+    from app.tools.base import ToolResult
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("TOOL_BRIDGE_TOKEN", raising=False)
+
+    captured: dict = {}
+
+    async def fake_execute(name, params):
+        captured["name"] = name
+        captured["params"] = params
+        return ToolResult(
+            tool_name=name,
+            status="success",
+            display_text="求助请求已记录，送达状态还在确认。",
+            data={"action": "contact_help_request", "delivery_status": "queued"},
+        )
+
+    monkeypatch.setattr("app.api.tool_execute.execute_tool", fake_execute)
+    trusted_user = str(uuid.uuid4())
+    trusted_session = str(uuid.uuid4())
+
+    response = await tool_execute(
+        ToolExecuteRequest(
+            tool_name="contact",
+            params={
+                "action": "request_contact",
+                "query": "请家人联系我",
+                "user_id": str(uuid.uuid4()),
+                "session_id": "model-session",
+                "trace_id": "model-trace",
+                "recipient": "attacker@example.com",
+                "provider": "model-provider",
+                "risk_level": "critical",
+            },
+            user_id=trusted_user,
+            session_id=trusted_session,
+            trace_id="trusted-trace",
+        ),
+        authorization=None,
+        x_tool_bridge_token=None,
+    )
+
+    assert response.status == "success"
+    assert captured["name"] == "contact"
+    assert captured["params"]["user_id"] == trusted_user
+    assert captured["params"]["session_id"] == trusted_session
+    assert captured["params"]["trace_id"] == "trusted-trace"
+    assert "recipient" not in captured["params"]
+    assert "provider" not in captured["params"]
+    assert "risk_level" not in captured["params"]

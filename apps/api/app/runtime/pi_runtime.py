@@ -102,7 +102,7 @@ class PiExperimentalRuntime:
         seen_done = False
         tools_used: list[dict] = []
         honesty_tool_results: list = []
-        caretask_response_text: str | None = None
+        authoritative_tool_response_text: str | None = None
         sidecar_start = time.monotonic()
 
         def _upsert_tool(
@@ -212,8 +212,11 @@ class PiExperimentalRuntime:
                                 candidates=candidates if isinstance(candidates, list) else None,
                                 data=event_data if isinstance(event_data, dict) else None,
                             )
-                            if tool == "caretask" and status == "success":
-                                caretask_response_text = text
+                            if (
+                                (tool == "caretask" and status == "success")
+                                or tool == "contact"
+                            ):
+                                authoritative_tool_response_text = text
                         clarify_verb = None
                         if isinstance(event_data, dict):
                             clarify_verb = event_data.get("clarify_verb")
@@ -286,8 +289,8 @@ class PiExperimentalRuntime:
             tools_used,
         )
 
-        if caretask_response_text:
-            response_text = caretask_response_text
+        if authoritative_tool_response_text:
+            response_text = authoritative_tool_response_text
         elif not response_text:
             response_text = "（Pi 实验路径未返回内容，请稍后重试。）"
 
@@ -297,7 +300,7 @@ class PiExperimentalRuntime:
             honest = enforce_no_verbal_promise(response_text, honesty_tool_results)
             response_text = honest
 
-        if first_token or caretask_response_text:
+        if first_token or authoritative_tool_response_text:
             ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(response_text, ttft_ms)
 

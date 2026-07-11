@@ -424,6 +424,8 @@ async def test_caretask_list_defaults_today_scope(monkeypatch):
     assert result.data["dump"][0]["title"] == "降压药"
     assert result.data["dump"][0]["status"] == "due"
     assert "notes" in result.data["dump"][0]
+    assert "- 降压药" in result.display_text
+    assert "[due]" not in result.display_text
 
 
 @pytest.mark.asyncio

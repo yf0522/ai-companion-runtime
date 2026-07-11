@@ -110,6 +110,7 @@ _load_env() {
   export TOOL_BRIDGE_URL="$BRIDGE_URL"
   export NEXT_PUBLIC_API_URL="$API_URL"
   export NEXT_PUBLIC_WS_URL="$WS_URL"
+  export NEXT_PUBLIC_AGENT_RUNTIME="${NEXT_PUBLIC_AGENT_RUNTIME:-pi_experimental}"
 }
 
 cmd_stop() {
@@ -217,11 +218,11 @@ _start_web() {
   rm -rf "$ROOT/apps/web/.next-dev"
   if _have_tmux; then
     _tmux_start companion-web "$ROOT/apps/web" \
-      "env NEXT_DIST_DIR='.next-dev' NEXT_PUBLIC_API_URL='$NEXT_PUBLIC_API_URL' NEXT_PUBLIC_WS_URL='$NEXT_PUBLIC_WS_URL' npm run dev -- -p '$WEB_PORT' -H '$WEB_HOST' 2>&1 | tee '$log'"
+      "env NEXT_DIST_DIR='.next-dev' NEXT_PUBLIC_API_URL='$NEXT_PUBLIC_API_URL' NEXT_PUBLIC_WS_URL='$NEXT_PUBLIC_WS_URL' NEXT_PUBLIC_AGENT_RUNTIME='$NEXT_PUBLIC_AGENT_RUNTIME' npm run dev -- -p '$WEB_PORT' -H '$WEB_HOST' 2>&1 | tee '$log'"
   else
     (
       cd "$ROOT/apps/web"
-      (setsid env NEXT_DIST_DIR=".next-dev" NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
+      (setsid env NEXT_DIST_DIR=".next-dev" NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" NEXT_PUBLIC_AGENT_RUNTIME="$NEXT_PUBLIC_AGENT_RUNTIME" \
         npm run dev -- -p "$WEB_PORT" -H "$WEB_HOST" >"$log" 2>&1 &)
       sleep 0.2
       lsof -tiTCP:"$WEB_PORT" -sTCP:LISTEN >"$(_pid_file web)" 2>/dev/null || true

@@ -8,6 +8,19 @@ export interface OutcomeReceiptModel {
   tone: OutcomeReceiptTone;
 }
 
+export function assistantBodyAfterToolReceipts(
+  content: string,
+  tools: Pick<ToolChip, "status" | "displayText">[],
+): string {
+  const body = content.trim();
+  if (!body) return content;
+
+  const repeatedBySuccessfulTool = tools.some((tool) =>
+    tool.status === "success" && tool.displayText?.trim() === body,
+  );
+  return repeatedBySuccessfulTool ? "" : content;
+}
+
 function safeDetail(value: string | undefined, fallback: string): string {
   const detail = value?.trim();
   if (!detail) return fallback;

@@ -71,6 +71,8 @@ class CaseActivityCreate(BaseModel):
 
 
 def _notification_title(level: str, category: str | None) -> str:
+    if category == "family_contact_request":
+        return "长者请求联系"
     if category == "scam_alert":
         return "诈骗风险告警"
     if category == "health_emergency":
