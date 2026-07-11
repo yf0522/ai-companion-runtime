@@ -137,6 +137,10 @@ async def tool_execute(
         params["session_id"] = body.session_id
     if body.trace_id and "trace_id" not in params:
         params["trace_id"] = body.trace_id
+    # Propagate risk context so domain tools (e.g. memory) can empty/skip on crisis.
+    params["risk_blocked"] = bool(body.risk_blocked)
+    if body.risk_level is not None:
+        params["risk_level"] = body.risk_level
 
     start = time.monotonic()
     result: ToolResult = await execute_tool(body.tool_name, params)

@@ -824,12 +824,16 @@ async def test_tool_bridge_risk_blocks():
 
 @pytest.mark.asyncio
 async def test_registry_includes_caretask():
+    from app.tools import registry as reg_mod
     from app.tools.registry import get_tool_registry, list_tool_schemas
 
+    reg_mod._TOOLS = None
     reg = get_tool_registry()
     assert "caretask" in reg
+    assert "memory" in reg
     names = {s["name"] for s in list_tool_schemas()}
     assert "caretask" in names
+    assert "memory" in names
 
 
 @pytest.mark.asyncio

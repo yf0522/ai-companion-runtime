@@ -31,8 +31,17 @@ TOOL_RULES: dict[str, dict] = {
             r"照护任务", r"用药任务",
             r"吃完了", r"已经吃", r"晚点再吃", r"等会儿再吃",
             r"我的.*任务", r"待办.*药",
+            r"今天.*(?:药|任务|提醒)", r"今日.*(?:事项|任务)",
         ],
         "negative": [r"吃药真麻烦"],  # venting, not a task request
+    },
+    "memory": {
+        "patterns": [
+            r"以后记得", r"帮我记住", r"记一下我", r"请记住我",
+            r"你还记得", r"记得我(?:喜欢|不喜欢|说过)",
+            r"别忘了我", r"我喜欢.{2,20}",
+        ],
+        "negative": [r"记得吃药", r"记得复诊"],  # caretask domain
     },
     "reminder": {
         "patterns": [

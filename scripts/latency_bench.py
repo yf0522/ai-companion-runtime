@@ -37,6 +37,10 @@ from app.runtime.agent_harness import AgentHarness  # noqa: E402
 
 DEFAULT_ITERATIONS = 5
 DEFAULT_REGRESSION_PCT = 20.0
+# Synthetic wall-clock samples on shared hosted runners can cross a percentage
+# boundary by a fraction of a millisecond due to scheduler jitter. This is only
+# added to the baseline-relative limit; absolute ceilings remain unchanged.
+HOSTED_RUNNER_JITTER_MS = 0.5
 
 # Absolute ceilings (ms) — hard fail even without baseline drift.
 ABSOLUTE_THRESHOLDS: dict[str, float] = {
@@ -382,12 +386,16 @@ def compare_to_baseline(
             expected = base.get(section, {}).get(stat, 0.0)
             if expected <= 0:
                 continue
-            allowed = expected * (1.0 + max_regression_pct / 100.0)
+            allowed = (
+                expected * (1.0 + max_regression_pct / 100.0)
+                + HOSTED_RUNNER_JITTER_MS
+            )
             if current > allowed:
                 failures.append(
                     f"{fx.fixture}: {section}_{stat} regressed "
                     f"{current:.1f}ms > {allowed:.1f}ms "
-                    f"(baseline {expected:.1f}ms + {max_regression_pct:.0f}%)"
+                    f"(baseline {expected:.1f}ms + {max_regression_pct:.0f}% "
+                    f"+ {HOSTED_RUNNER_JITTER_MS:.1f}ms runner tolerance)"
                 )
     return failures
 

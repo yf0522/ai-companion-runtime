@@ -9,8 +9,8 @@ from sqlalchemy import Column, DateTime, String, and_, insert, select, update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.memory_models import MemoryConsentGrant
 from app.db.models import Base
-import app.db.memory_models  # noqa: F401
 
 MEMORY_POLICY_VERSION = "memory-lifecycle-2026-07-10"
 DEFAULT_EXTRACTION_MODEL = "rule_importance"
@@ -222,6 +222,98 @@ async def select_retrievable_memories(
         .limit(limit)
     )
     return [serialize_memory(row) for row in result.fetchall()]
+
+
+async def decide_memory_consent(
+    db: AsyncSession,
+    *,
+    memory_id: uuid.UUID,
+    user_id: uuid.UUID,
+    approved: bool,
+) -> dict[str, Any] | None:
+    """Apply an owner decision and link an approved memory to its consent grant."""
+    table = memories_table()
+    grants = MemoryConsentGrant.__table__
+    result = await db.execute(
+        select(
+            table.c.id,
+            table.c.user_id,
+            table.c.purpose,
+            table.c.sensitivity,
+            table.c.retention_until,
+            table.c.consent_grant_id,
+            table.c.consent_status,
+        )
+        .where(
+            and_(
+                table.c.id == memory_id,
+                table.c.user_id == user_id,
+                table.c.deletion_state == ACTIVE_DELETION_STATE,
+            )
+        )
+        .with_for_update()
+    )
+    memory = result.mappings().one_or_none()
+    if memory is None:
+        return None
+
+    current_status = str(memory.get("consent_status") or "pending")
+    current_grant_id = memory.get("consent_grant_id")
+    target_status = "granted" if approved else "rejected"
+    if current_status == target_status and (not approved or current_grant_id is not None):
+        return {
+            "memory_id": str(memory_id),
+            "consent_status": target_status,
+            "consent_grant_id": str(current_grant_id) if current_grant_id else None,
+        }
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    grant_id = current_grant_id
+    if approved:
+        retention_until = memory.get("retention_until")
+        retention_days = None
+        if retention_until is not None:
+            retention_days = max(0, (retention_until - now).days)
+        grant_result = await db.execute(
+            insert(grants)
+            .values(
+                user_id=user_id,
+                granted_by=user_id,
+                purpose=str(memory.get("purpose") or "care_continuity"),
+                scope_json={"memory_ids": [str(memory_id)]},
+                sensitivity_json={
+                    "values": [str(memory.get("sensitivity") or "general")]
+                },
+                retention_days=retention_days,
+                consent_version=MEMORY_POLICY_VERSION,
+                status="granted",
+            )
+            .returning(grants.c.id)
+        )
+        grant_id = grant_result.scalar_one()
+        await db.execute(
+            update(table)
+            .where(and_(table.c.id == memory_id, table.c.user_id == user_id))
+            .values(consent_status="granted", consent_grant_id=grant_id)
+        )
+    else:
+        if current_grant_id is not None:
+            await db.execute(
+                update(grants)
+                .where(grants.c.id == current_grant_id)
+                .values(status="rejected", revoked_at=now)
+            )
+        await db.execute(
+            update(table)
+            .where(and_(table.c.id == memory_id, table.c.user_id == user_id))
+            .values(consent_status="rejected")
+        )
+
+    return {
+        "memory_id": str(memory_id),
+        "consent_status": target_status,
+        "consent_grant_id": str(grant_id) if grant_id else None,
+    }
 
 
 async def correct_memory(
