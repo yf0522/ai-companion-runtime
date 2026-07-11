@@ -68,6 +68,7 @@ const iconMap: Record<string, LucideIcon> = {
   "/elder/companion": HeartHandshake,
   "/elder/today": CheckSquare,
   "/elder/help": HelpCircle,
+  "/elder/memory": ShieldCheck,
   "/family/overview": Home,
   "/family/tasks": ClipboardCheck,
   "/family/alerts": Bell,

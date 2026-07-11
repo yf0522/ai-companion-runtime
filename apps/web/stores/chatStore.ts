@@ -20,6 +20,8 @@ export interface ToolChip {
   tool: string;
   status: ToolChipStatus;
   action?: string;
+  displayText?: string;
+  data?: Record<string, unknown>;
   candidates?: CareTaskCandidate[];
   clarifyVerb?: string;
 }
@@ -81,6 +83,14 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
       ? statusRaw
       : "calling") as ToolChipStatus;
     const action = obj.action ? String(obj.action) : undefined;
+    const displayText = obj.displayText
+      ? String(obj.displayText)
+      : obj.text
+        ? String(obj.text)
+        : undefined;
+    const data = obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)
+      ? obj.data as Record<string, unknown>
+      : undefined;
     const candidates = normalizeCandidates(obj.candidates);
     const clarifyVerb = obj.clarify_verb
       ? String(obj.clarify_verb)
@@ -89,6 +99,8 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
         : undefined;
     const chip: ToolChip = { tool, status };
     if (action) chip.action = action;
+    if (displayText) chip.displayText = displayText;
+    if (data) chip.data = data;
     if (candidates) chip.candidates = candidates;
     if (clarifyVerb) chip.clarifyVerb = clarifyVerb;
     return chip;
@@ -133,9 +145,12 @@ function clarifyFromChips(chips: ToolChip[] | undefined): Message["careTaskClari
 
 interface ChatState {
   messages: Message[];
+  messagesByUser: Record<string, Message[]>;
+  activeUserId: string | null;
   currentTraceId: string | null;
   isStreaming: boolean;
 
+  activateUser: (userId: string | null) => void;
   addUserMessage: (content: string) => string;
   startAssistantMessage: (traceId: string) => void;
   appendDelta: (text: string) => void;
@@ -146,6 +161,7 @@ interface ChatState {
     status?: string;
     text?: string;
     action?: string;
+    data?: Record<string, unknown>;
     candidates?: unknown;
     clarifyVerb?: string;
   }) => void;
@@ -163,26 +179,108 @@ interface ChatState {
   clearMessages: () => void;
 }
 
+function stateWithMessages(
+  state: Pick<ChatState, "activeUserId" | "messagesByUser">,
+  messages: Message[],
+): Pick<ChatState, "messages" | "messagesByUser"> {
+  if (!state.activeUserId) return { messages, messagesByUser: state.messagesByUser };
+  return {
+    messages,
+    messagesByUser: { ...state.messagesByUser, [state.activeUserId]: messages },
+  };
+}
+
+function persistedToolName(tool: ToolChip): string {
+  const name = tool.tool.toLowerCase();
+  const action = (tool.action || "").toLowerCase();
+  if (name.includes("memory") || action.includes("memory") || action === "note") return "memory";
+  if (name.includes("caretask") || name.includes("reminder") || action.includes("task")) return "caretask";
+  if (name.includes("contact") || name.includes("notify") || action.includes("contact")) return "contact";
+  return "action";
+}
+
+function persistedToolData(data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!data) return undefined;
+  const safe: Record<string, unknown> = {};
+  for (const key of ["status", "consent_status"] as const) {
+    if (typeof data[key] === "string") safe[key] = data[key];
+  }
+  return Object.keys(safe).length ? safe : undefined;
+}
+
+function persistedToolChip(tool: ToolChip): ToolChip {
+  const toolName = persistedToolName(tool);
+  const persisted: ToolChip = {
+    tool: toolName,
+    status: tool.status,
+  };
+  if (tool.action) persisted.action = tool.action;
+  // Memory recall text may contain the full recalled fragments. The visible
+  // assistant message remains local history, but hidden tool copies do not.
+  if (tool.displayText && toolName !== "memory") persisted.displayText = tool.displayText;
+  const data = persistedToolData(tool.data);
+  if (data) persisted.data = data;
+  if (tool.candidates) persisted.candidates = tool.candidates;
+  if (tool.clarifyVerb) persisted.clarifyVerb = tool.clarifyVerb;
+  return persisted;
+}
+
+function persistedMessage(message: Message): Message {
+  const persisted: Message = {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    status: "complete",
+  };
+  if (message.toolsUsed?.length) persisted.toolsUsed = message.toolsUsed.map(persistedToolChip);
+  if (message.careTaskClarify) persisted.careTaskClarify = message.careTaskClarify;
+  if (message.riskAlert) persisted.riskAlert = message.riskAlert;
+  return persisted;
+}
+
+function persistedMessages(messages: Message[]): Message[] {
+  return messages
+    .filter((message) => message.status === "complete")
+    .map(persistedMessage);
+}
+
 export const useChatStore = create<ChatState>()(
   persist(
     (set, get) => ({
   messages: [],
+  messagesByUser: {},
+  activeUserId: null,
   currentTraceId: null,
   isStreaming: false,
 
+  activateUser: (userId) => {
+    set((state) => {
+      const nextByUser = { ...state.messagesByUser };
+      if (state.activeUserId) {
+        nextByUser[state.activeUserId] = persistedMessages(state.messages);
+      }
+      return {
+        activeUserId: userId,
+        messages: userId ? persistedMessages(nextByUser[userId] || []) : [],
+        messagesByUser: nextByUser,
+        currentTraceId: null,
+        isStreaming: false,
+      };
+    });
+  },
+
   addUserMessage: (content) => {
     const id = `user_${Date.now()}`;
-    set((s) => ({
-      messages: [...s.messages, { id, role: "user", content, status: "complete" }],
-    }));
+    set((s) => stateWithMessages(s, [
+      ...s.messages,
+      { id, role: "user", content, status: "complete" },
+    ]));
     return id;
   },
 
   startAssistantMessage: (traceId) => {
     set((s) => ({
-      currentTraceId: traceId,
-      isStreaming: true,
-      messages: [
+      ...stateWithMessages(s, [
         ...s.messages,
         {
           id: `ast_${Date.now()}`,
@@ -192,7 +290,9 @@ export const useChatStore = create<ChatState>()(
           status: "streaming",
           toolsUsed: [],
         },
-      ],
+      ]),
+      currentTraceId: traceId,
+      isStreaming: true,
     }));
   },
 
@@ -203,7 +303,7 @@ export const useChatStore = create<ChatState>()(
       if (last?.role === "assistant" && last.status === "streaming") {
         msgs[msgs.length - 1] = { ...last, content: text, ttftMs };
       }
-      return { messages: msgs };
+      return stateWithMessages(s, msgs);
     });
   },
 
@@ -214,7 +314,7 @@ export const useChatStore = create<ChatState>()(
       if (last?.role === "assistant" && last.status === "streaming") {
         msgs[msgs.length - 1] = { ...last, content: last.content + text };
       }
-      return { messages: msgs };
+      return stateWithMessages(s, msgs);
     });
   },
 
@@ -230,7 +330,7 @@ export const useChatStore = create<ChatState>()(
           careTaskClarify: clarifyFromChips(toolsUsed) || last.careTaskClarify,
         };
       }
-      return { messages: msgs };
+      return stateWithMessages(s, msgs);
     });
   },
 
@@ -243,6 +343,8 @@ export const useChatStore = create<ChatState>()(
       const candidates = normalizeCandidates(data.candidates);
       const toolsUsed = upsertToolChip(last.toolsUsed || [], data.tool, status, {
         action: data.action,
+        displayText: data.text,
+        data: data.data,
         candidates,
         clarifyVerb: data.clarifyVerb,
       });
@@ -258,7 +360,7 @@ export const useChatStore = create<ChatState>()(
         toolsUsed,
         careTaskClarify,
       };
-      return { messages: msgs };
+      return stateWithMessages(s, msgs);
     });
   },
 
@@ -269,7 +371,7 @@ export const useChatStore = create<ChatState>()(
       if (last?.role === "assistant") {
         msgs[msgs.length - 1] = { ...last, riskAlert: { level, message } };
       }
-      return { messages: msgs };
+      return stateWithMessages(s, msgs);
     });
   },
 
@@ -286,6 +388,8 @@ export const useChatStore = create<ChatState>()(
         for (const chip of fromFinal) {
           chips = upsertToolChip(chips, chip.tool, chip.status, {
             action: chip.action,
+            displayText: chip.displayText,
+            data: chip.data,
             candidates: chip.candidates,
             clarifyVerb: chip.clarifyVerb,
           });
@@ -301,7 +405,7 @@ export const useChatStore = create<ChatState>()(
           status: "complete",
         };
       }
-      return { messages: msgs, isStreaming: false, currentTraceId: null };
+      return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
     });
   },
 
@@ -312,7 +416,7 @@ export const useChatStore = create<ChatState>()(
       if (last?.role === "assistant" && last.status === "streaming") {
         msgs[msgs.length - 1] = { ...last, content: message, status: "error" };
       }
-      return { messages: msgs, isStreaming: false };
+      return { ...stateWithMessages(s, msgs), isStreaming: false };
     });
   },
 
@@ -324,15 +428,43 @@ export const useChatStore = create<ChatState>()(
       if (last?.role === "assistant" && last.status === "streaming") {
         msgs[msgs.length - 1] = { ...last, status: "error", content: last.content || "(连接中断，请重试)" };
       }
-      return { messages: msgs, isStreaming: false, currentTraceId: null };
+      return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
     });
   },
 
-  clearMessages: () => set({ messages: [], currentTraceId: null, isStreaming: false }),
+  clearMessages: () => set((state) => ({
+    ...stateWithMessages(state, []),
+    currentTraceId: null,
+    isStreaming: false,
+  })),
 }),
     {
       name: "companion-chat",
-      partialize: (state) => ({ messages: state.messages.filter((m) => m.status === "complete") }),
+      version: 3,
+      migrate: (persistedState) => {
+        const state = persistedState && typeof persistedState === "object"
+          ? persistedState as Partial<ChatState>
+          : {};
+        const entries = state.messagesByUser && typeof state.messagesByUser === "object"
+          ? Object.entries(state.messagesByUser)
+          : [];
+        return {
+          messagesByUser: Object.fromEntries(
+            entries.map(([userId, messages]) => [
+              userId,
+              Array.isArray(messages) ? persistedMessages(messages) : [],
+            ]),
+          ),
+        };
+      },
+      partialize: (state) => ({
+        messagesByUser: Object.fromEntries(
+          Object.entries(state.messagesByUser).map(([userId, messages]) => [
+            userId,
+            persistedMessages(messages),
+          ]),
+        ),
+      }),
     }
   )
 );
