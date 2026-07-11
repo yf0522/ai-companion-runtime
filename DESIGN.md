@@ -4,7 +4,7 @@
 - Status: Active
 - Last refreshed: 2026-07-11
 - Primary product surfaces: elder companion, elder daily care and help, family exception coordination, household readiness, operator cases, and runtime traces.
-- Evidence reviewed: `README.md`, `docs/product-roadmap-2026-h2.md`, `docs/superpowers/specs/2026-06-15-elder-companion-pivot-design.md`, `apps/web/app`, `apps/web/components`, `apps/web/stores`, `apps/web/lib`, `apps/web/e2e/product-surfaces.spec.ts`, and screenshots of the merged PR #45 UI at 1440x1000 and 390x844.
+- Evidence reviewed: `README.md`, `docs/product-roadmap-2026-h2.md`, `docs/superpowers/specs/2026-06-15-elder-companion-pivot-design.md`, `apps/web/app`, `apps/web/components`, `apps/web/stores`, `apps/web/lib`, `apps/web/e2e/product-surfaces.spec.ts`, the merged PR #48 visual artifacts, the July 2026 role-surface audit, Astryx upstream guidance, WAI older-user guidance, WCAG 2.2, and WAI-ARIA chat-log techniques.
 - Replacement decision: preserve PR #45's product information architecture, API/WebSocket/auth/RBAC contracts, and truthful state handling. Replace its graphite/electric-cyan visual layer, decorative signal field, repeated English badges, generic shared dashboard shell, and border-heavy page composition.
 
 ## Brand
@@ -46,17 +46,22 @@
 ## Information architecture
 - Elder:
   - `陪伴` is a conversation and next-action surface, not a dashboard.
+  - Its composer is a **Companion Action Dock**: compact text/dictation input plus truthful connection, memory, task, and human-fallback context.
   - `今日事项` is a focused confirmation queue.
   - `帮助` keeps trusted-person and emergency guidance continuously reachable.
+  - `记忆` is an owner-only control surface for pending consent, correction, and deletion; it is not a family feed.
   - Navigation is limited to these three destinations and does not use a desktop admin sidebar.
 - Family:
   - `概览` opens on the highest-priority unresolved exception or a clear all-good state.
   - Tasks, alerts, people, contacts, readiness, and summary remain supporting workspaces.
+  - Tasks and alerts share an accountability timeline vocabulary: created, attempted, delivered, acknowledged, completed/resolved, actor, and evidence.
+  - People describes household relationships and permissions; Contacts describes verified communication endpoints; Readiness describes whether those pieces form a usable care path. These are related but not interchangeable.
   - Metrics and privacy explanations are secondary; they never precede the current exception.
 - Operator:
   - Care cases are the primary command queue.
   - Readiness and traces are supporting evidence workspaces.
   - Desktop navigation may retain a compact operational sidebar.
+  - A case is the investigation context. Trace and delivery evidence are opened from a case or another explicitly authorized relationship rather than through unrestricted global access.
 - Content hierarchy:
   1. Current state in plain language.
   2. One accountable next action.
@@ -71,6 +76,25 @@
 5. **Different roles deserve different density.** Elder, family, and operator surfaces share brand tokens, not an identical shell.
 6. **State earns motion and color.** Animation and semantic color appear only when a real state changes.
 7. **Privacy is enforced, not advertised repeatedly.** Explain it where a sharing decision occurs; do not use “permission isolation” as ambient decoration.
+8. **Thickness comes from accountable truth.** A product surface earns depth by showing the current object, canonical state, responsible actor, relevant history, evidence, and available control. More cards, shadows, or explanatory text do not substitute for those fields.
+9. **Actions must be legal and recoverable.** Render only transitions the current role and state allow. Keep drafts and human fallback available when network or AI services are unavailable.
+
+## Product depth contract
+
+Every primary workflow should answer these questions without exposing implementation detail:
+
+1. **What is this about?** Name the elder, household, task, alert, case, memory, or trace context.
+2. **What is true now?** Use the backend canonical state and distinguish unknown, attempted, delivered, acknowledged, and completed.
+3. **What happened?** Show a compact chronological event history when state can change across people or systems.
+4. **Who owns the next step?** Name the person or team, due time, and escalation path; never replace an unknown owner with a generic fictional label.
+5. **What supports the claim?** Link to authorized delivery receipts, task outcomes, consent records, case activity, or trace evidence.
+6. **What can this user control?** Offer only authorized transitions, correction, consent, retry, snooze, contact, or deletion actions.
+
+Role-specific expression:
+
+- Elder surfaces compress the contract into one calm state, one next action, and an optional short receipt.
+- Family surfaces show outcome, owner, acknowledgement, and privacy-safe history without transcripts or raw memory.
+- Operator surfaces expose the full event/evidence chain, legal state machine, SLA, and audit identifiers.
 
 ## Visual language
 - Color:
@@ -116,10 +140,17 @@
   - `AttentionCard`: semantic risk surface with a direct next action and delivery evidence.
   - `CareTaskCard`: compact row on family/operator surfaces; legible confirmation surface on elder pages.
   - `CompanionSignal`: quiet text/state treatment driven by the real WebSocket state.
+  - `CompanionActionDock`: expandable text/dictation input that preserves drafts during reconnecting and keeps help outside the disabled send path.
+  - `OutcomeReceipt`: user-facing result for task, memory, notification, consent, or recovery actions; never a raw tool call name.
+  - `AccountabilityTimeline`: role-aware event history with actor, state, time, delivery/acknowledgement semantics, and authorized evidence.
+  - `MemoryControlCard`: owner-only pending/approved/rejected/corrected/deleted memory state with consent, correction, and deletion controls.
+  - `OperatorQueueToolbar`: persistent query, status, severity, owner, and SLA controls for dense case scanning.
 - Variants and states:
   - Severity changes border/background/icon treatment, not only a small badge.
   - Delivered, acknowledged, unresolved, and failed remain visually distinct.
   - Disabled controls retain legibility and explain recovery or fallback.
+  - Reconnecting disables only transmission-dependent actions. Drafting, clearing, navigation, and human fallback remain usable.
+  - Unknown metrics and receipts render as “未记录” or “尚未确认”, never numeric zero or completed state.
 - Token/component ownership:
   - Product colors, typography, spacing, radii, and elevation live in `apps/web/app/globals.css` CSS variables.
   - Astryx supplies behavior and accessibility; product CSS owns the consumer visual language.
@@ -128,8 +159,10 @@
 ## Accessibility
 - Target: WCAG 2.2 AA for primary flows.
 - All primary actions have at least 44px touch targets.
+- Elder send, dictation, task-confirmation, and human-help actions target 48px where layout permits.
 - Focus is visible and not communicated by color alone.
 - Live regions announce connection, streaming, delivery, and error states without repeating static decoration.
+- Sequential chat messages use a labelled `role="log"` region with polite updates; urgent safety guidance uses a separate, deliberately interruptive status only when required.
 - Body text remains at least 16px on elder surfaces; supporting text does not carry the only instance of critical information.
 - Reduced motion removes all nonessential animation.
 
@@ -138,6 +171,7 @@
 - Elder:
   - No desktop admin sidebar; three destinations remain reachable through a quiet header/bottom navigation pattern.
   - Composer and human-help fallback remain visible without hiding the current state.
+  - The idle action dock is 60–72px tall, expands for multiline text, and does not become a large empty hero surface.
 - Family:
   - The current exception and its action appear before metrics at 390x844.
   - Bottom navigation contains only primary destinations; the complete route set remains available through the mobile menu.
@@ -153,6 +187,8 @@
 - Success: confirm the completed outcome and whether another human or system acknowledgement is still pending.
 - Disabled: retain readable content and state why the action is unavailable.
 - Offline/slow network: expose human fallback immediately; never imply delivery or completion.
+- Reconnecting: preserve the current draft and contextual actions; only sending waits for transport recovery.
+- Consent pending: name what may be remembered, why, and who can approve it before presenting a durable-memory claim.
 - Risk: interrupt normal hierarchy with plain-language guidance and the safest next action.
 
 ## Content voice
@@ -164,6 +200,8 @@
   - Avoid “AI intelligence,” “runtime,” and capability lists when a user outcome can be stated.
   - Prefer “现在需要你确认一件事” over “1 件异常.”
   - Prefer “已送达家人，尚未确认处理” over a bare “delivered” badge.
+  - Prefer “今晚 8 点提醒已建立” over “caretask complete”; prefer “已记住，经你同意” over “memory updated”.
+  - “发送给服务”, “送达联系人”, “联系人确认”, and “任务完成” are distinct states and must not share one success label.
   - One sentence should not explain both product philosophy and the current action.
 
 ## Implementation constraints
@@ -171,12 +209,15 @@
 - No new dependencies for this visual refactor.
 - Astryx reset/core/theme styles load before product CSS; product tokens and scoped role styles intentionally override visual defaults.
 - Preserve API, WebSocket, auth, RBAC, persistence, privacy, safety, and exact care-task clarification contracts.
+- Canonical backend state machines and authorization checks are the source of truth for visible actions; frontend convenience states must be derived and covered by contract tests.
+- Browser speech recognition is progressive enhancement, not a production ASR guarantee. Text input remains complete when unsupported or denied.
+- Device-local chat persistence is partitioned by authenticated user and exposes a clear-record control; service-backed continuity requires explicit authorized loading.
 - Preserve public `CareTask` language and truthful notification/provider states.
 - Performance: no large raster background, animation library, or decorative WebGL/canvas layer.
 - Test/screenshot expectations:
   - Typecheck, unit tests, production build, Astryx doctor, and Playwright role tests pass.
   - Visual references and generated screenshots are stored under `.omx/artifacts/visual-ralph/quiet-care/`.
-  - Required screenshot states: login, elder companion, family overview with one high-risk alert, operator queue with one critical case; desktop 1440x1000 and mobile 390x844 where applicable.
+  - Required screenshot states: login; elder companion connected/reconnecting/failed/streaming/long-input; elder today/help/memory; all family workspaces; operator queue/case/readiness/trace; desktop 1440x1000, tablet 768x1024, and mobile 390x844 where applicable.
   - Family mobile verification asserts that the actionable exception is visible within the first viewport, not merely attached to the DOM.
 
 ## Open questions
