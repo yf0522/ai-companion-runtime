@@ -216,9 +216,7 @@ class AgentHarness:
         )
 
         if risk.level == "medium":
-            from app.runtime.risk_gate import _persist_nonblocking_decision
-
-            await _persist_nonblocking_decision(user_id, risk, trace_id)
+            await self._persist_nonblocking_risk_decision(user_id, risk, trace_id)
 
         if "contact" in intent.tool_needs:
             return await self._run_deterministic_contact(
@@ -708,6 +706,16 @@ class AgentHarness:
                 "webhook_status": None,
                 "error": str(exc),
             }
+
+    async def _persist_nonblocking_risk_decision(
+        self,
+        user_id: str,
+        risk: RiskResult,
+        trace_id: str,
+    ) -> dict:
+        from app.runtime.risk_gate import _persist_nonblocking_decision
+
+        return await _persist_nonblocking_decision(user_id, risk, trace_id)
 
     def _build_family_notification_summary(self, risk: RiskResult) -> str:
         if risk.category == "scam_alert":
