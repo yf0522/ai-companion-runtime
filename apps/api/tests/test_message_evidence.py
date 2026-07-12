@@ -16,11 +16,18 @@ class _Begin:
         return False
 
 
+class _Parent:
+    @property
+    def message_count(self):
+        raise AssertionError("Session.message_count must not participate in allocation")
+
+
 class _Session:
     def __init__(self, *, max_index=4, fail_flush=False):
-        self.scalars = [object(), max_index]
+        self.scalars = [_Parent(), max_index]
         self.added = []
         self.fail_flush = fail_flush
+        self.queries = []
 
     async def __aenter__(self):
         return self
@@ -31,7 +38,8 @@ class _Session:
     def begin(self):
         return _Begin()
 
-    async def scalar(self, _query):
+    async def scalar(self, query):
+        self.queries.append(query)
         return self.scalars.pop(0)
 
     def add_all(self, rows):
@@ -58,6 +66,8 @@ async def test_persist_turn_allocates_max_plus_one_without_message_count(monkeyp
     assert (result.user_message_index, result.assistant_message_index) == (5, 6)
     assert [row.message_index for row in session.added] == [5, 6]
     assert [row.role for row in session.added] == ["user", "assistant"]
+    queries = [str(query) for query in session.queries]
+    assert "FOR UPDATE" in queries[0]
 
 
 @pytest.mark.asyncio
@@ -72,3 +82,26 @@ async def test_persist_turn_retries_integrity_error_once(monkeypatch):
         assistant_content="助手",
     )
     assert result.user_message_index == 9
+
+
+@pytest.mark.asyncio
+async def test_persist_turn_stops_after_exactly_two_integrity_attempts(monkeypatch):
+    created = []
+
+    def make_session():
+        session = _Session(fail_flush=True)
+        created.append(session)
+        return session
+
+    monkeypatch.setattr(message_evidence, "async_session", make_session)
+    with pytest.raises(IntegrityError):
+        await message_evidence.persist_turn_messages(
+            session_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            trace_id="trace-two-attempts",
+            user_content="用户",
+            assistant_content="助手",
+        )
+
+    assert len(created) == 2
+    assert all(len(session.added) == 2 for session in created)
