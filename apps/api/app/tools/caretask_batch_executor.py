@@ -320,7 +320,7 @@ async def _apply_action_transaction(
     request_hash: str,
 ) -> dict[str, Any]:
     """Commit one domain mutation and its receipt under the same transaction."""
-    from app.db.models import CareTask, IdempotencyRecord, Reminder
+    from app.db.models import IdempotencyRecord
     from app.db.session import async_session
 
     async with async_session() as db:
@@ -329,7 +329,6 @@ async def _apply_action_transaction(
             raise RuntimeError("batch_ledger_not_found")
         _verify_ledger(ledger, owner=owner, request_hash=request_hash)
         kind = action["action"]
-        db_user = svc.normalize_user_id(user_id)
         if kind == "list":
             listed = await svc.snapshot_care_tasks(user_id=user_id, now=now)
             listed = _filter_list_snapshot(
@@ -337,100 +336,26 @@ async def _apply_action_transaction(
             )
             result: Any = {"count": len(listed), "titles": [item["title"] for item in listed]}
         elif kind == "create":
-            reminder_id = None
-            schedule_type = "daily" if re.search(r"每天|每日", action["query"]) else "once"
-            if action.get("reuse_task_id"):
-                row = await svc._get_versioned_task_for_update(
-                    db,
-                    db_user,
-                    action["reuse_task_id"],
-                    action["expected_version"],
-                )
-                reminder = await db.get(Reminder, row.reminder_id) if row.reminder_id else None
-                if action["due_at"] is not None:
-                    row.due_at = action["due_at"]
-                    row.status = svc.infer_initial_status(action["due_at"], now)
-                    if reminder is None:
-                        reminder = Reminder(
-                            user_id=db_user,
-                            title=row.title,
-                            description=f"caretask:{row.task_type}",
-                            schedule_type=schedule_type,
-                            time_of_day=action["due_at"],
-                            next_fire_at=action["due_at"],
-                            is_active=True,
-                            created_by="chat",
-                        )
-                        db.add(reminder)
-                        await db.flush()
-                        row.reminder_id = reminder.id
-                    else:
-                        reminder.schedule_type = schedule_type
-                        reminder.time_of_day = action["due_at"]
-                        reminder.next_fire_at = action["due_at"]
-                        reminder.is_active = True
-                    row.version = (row.version or 1) + 1
-                await db.flush()
-                result = svc.task_to_dict(row, schedule_type=schedule_type)
-                result["_action"] = "caretask_reuse"
-            elif action["due_at"] is not None:
-                reminder = Reminder(
-                    user_id=db_user,
-                    title=action["title"],
-                    description=f"caretask:{action['task_type']}",
-                    schedule_type=schedule_type,
-                    time_of_day=action["due_at"],
-                    next_fire_at=action["due_at"],
-                    is_active=True,
-                    created_by="chat",
-                )
-                db.add(reminder)
-                await db.flush()
-                reminder_id = reminder.id
-            if not action.get("reuse_task_id"):
-                row = CareTask(
-                    user_id=db_user,
-                    title=action["title"],
-                    task_type=action["task_type"],
-                    status=svc.infer_initial_status(action["due_at"], now),
-                    due_at=action["due_at"],
-                    reminder_id=reminder_id,
-                    created_by="chat",
-                )
-                db.add(row)
-                await db.flush()
-                result = svc.task_to_dict(row, schedule_type=schedule_type)
-        else:
-            row = await svc._get_versioned_task_for_update(
-                db, db_user, action["task_id"], action["expected_version"]
+            result = await svc.create_or_reuse_care_task_in_transaction(
+                db,
+                user_id=user_id,
+                title=action["title"],
+                task_type=action["task_type"],
+                due_at=action["due_at"],
+                query=action["query"],
+                now=now,
+                reuse_task_id=action.get("reuse_task_id"),
+                expected_version=action.get("expected_version"),
             )
-            reminder = await db.get(Reminder, row.reminder_id) if row.reminder_id else None
-            if kind == "snooze":
-                svc.assert_transition(row.status, "snoozed")
-                row.status = "snoozed"
-                row.snooze_until = now + timedelta(minutes=action["minutes"])
-                row.due_at = row.snooze_until
-                if reminder is not None:
-                    reminder.next_fire_at = row.snooze_until
-                    reminder.is_active = True
-            elif kind == "complete":
-                svc.assert_transition(row.status, "done")
-                row.status = "done"
-                row.completed_at = now
-                row.snooze_until = None
-                if reminder is not None:
-                    reminder.is_active = False
-            else:
-                svc.assert_transition(row.status, "cancelled")
-                row.status = "cancelled"
-                row.snooze_until = None
-                if reminder is not None:
-                    reminder.is_active = False
-            row.version = (row.version or 1) + 1
-            row.updated_at = now
-            await db.flush()
-            result = svc.task_to_dict(
-                row, schedule_type=reminder.schedule_type if reminder is not None else None
+        else:
+            result = await svc.transition_care_task_in_transaction(
+                db,
+                user_id=user_id,
+                task_id=action["task_id"],
+                expected_version=action.get("expected_version"),
+                transition=kind,
+                now=now,
+                minutes=action.get("minutes", 30),
             )
         receipts[action["index"]] = {
             **receipts[action["index"]],
