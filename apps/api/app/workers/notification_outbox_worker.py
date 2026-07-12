@@ -818,7 +818,7 @@ async def persist_nonblocking_safety_decision(
             policy_version="risk-rules:v1",
             risk_level=risk_level,
             risk_category=risk_category,
-            action="companion_support",
+            action="record_and_companion",
             evidence_ref=f"trace:{trace_id}" if trace_id else None,
             evidence_json=evidence_json or {},
             confidence=confidence,
