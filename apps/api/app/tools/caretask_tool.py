@@ -40,7 +40,11 @@ def parse_due_at(text: str, *, now: datetime | None = None) -> datetime | None:
         local_now = now_utc.replace(tzinfo=timezone.utc).astimezone(shanghai)
         local_due = local_now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
         explicit_today = "今天" in text
-        if local_due <= local_now:
+        if "后天" in text:
+            local_due += timedelta(days=2)
+        elif "明天" in text:
+            local_due += timedelta(days=1)
+        elif local_due <= local_now:
             if explicit_today:
                 return None
             local_due += timedelta(days=1)
