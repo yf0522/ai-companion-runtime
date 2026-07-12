@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import re
+import unicodedata
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -15,6 +16,11 @@ from app.tools.caretask_tool import _infer_task_type, _infer_title, parse_due_at
 from app.tools import caretask_service as svc
 
 _LEASE_SECONDS = 60
+
+
+def _stable_request_hash(query: str) -> str:
+    normalized = " ".join(unicodedata.normalize("NFKC", query).split()).strip()
+    return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 def _replay_snapshot(
@@ -186,7 +192,53 @@ def _filter_list_snapshot(
     ]
 
 
-async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[str, Any]]) -> tuple[Any, str | None, dict[str, Any] | None]:
+async def _lookup_replay(
+    user_id: str, key: str, request_hash: str, receipts: list[dict[str, Any]] | None = None
+) -> dict[str, Any] | None:
+    from sqlalchemy import select
+    from app.db.models import IdempotencyRecord
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        existing = (
+            await db.execute(
+                select(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.user_id == svc.normalize_user_id(user_id),
+                    IdempotencyRecord.key == key,
+                    IdempotencyRecord.operation == "caretask_batch",
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return None
+        now = datetime.utcnow()
+        payload, transition = _replay_snapshot(
+            status=existing.status,
+            existing_hash=existing.request_hash,
+            payload=existing.response_json or {},
+            request_hash=request_hash,
+            receipts=receipts or [],
+            now=now,
+        )
+        if transition:
+            existing.status = transition
+            existing.response_json = payload
+            existing.updated_at = now
+            await db.commit()
+        return payload
+
+
+async def _claim(
+    user_id: str,
+    key: str,
+    request_hash: str,
+    receipts: list[dict[str, Any]],
+    *,
+    plan_hash: str,
+    frozen_at: str,
+) -> tuple[Any, str | None, dict[str, Any] | None]:
     from sqlalchemy import select
     from sqlalchemy.exc import IntegrityError
     from app.db.models import IdempotencyRecord
@@ -213,13 +265,14 @@ async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[
                 await db.commit()
             return None, None, payload
         owner = uuid.uuid4().hex
-        record = IdempotencyRecord(user_id=db_user, key=key, operation="caretask_batch", resource_type="care_task_batch", request_hash=request_hash, status="claimed", response_json={"status": "claimed", "owner": owner, "heartbeat_at": now.isoformat(), "receipts": receipts})
+        record = IdempotencyRecord(user_id=db_user, key=key, operation="caretask_batch", resource_type="care_task_batch", request_hash=request_hash, status="claimed", response_json={"status": "claimed", "owner": owner, "heartbeat_at": now.isoformat(), "frozen_at": frozen_at, "plan_hash": plan_hash, "receipts": receipts})
         db.add(record)
         try:
             await db.commit()
         except IntegrityError:
             await db.rollback()
-            return await _claim(user_id, key, request_hash, receipts)
+            replay = await _lookup_replay(user_id, key, request_hash, receipts)
+            return None, None, replay
         await db.refresh(record)
         return record.id, owner, None
 
@@ -239,10 +292,16 @@ def _verify_ledger(record: Any, *, owner: str, request_hash: str) -> None:
 async def _save(record_id: Any, status: str, receipts: list[dict[str, Any]], *, owner: str, request_hash: str) -> dict[str, Any]:
     from app.db.models import IdempotencyRecord
     from app.db.session import async_session
-    payload = {"status": status, "owner": owner, "heartbeat_at": datetime.utcnow().isoformat(), "receipts": receipts}
     async with async_session() as db:
         record = await db.get(IdempotencyRecord, record_id, with_for_update=True)
         _verify_ledger(record, owner=owner, request_hash=request_hash)
+        payload = {
+            **(record.response_json or {}),
+            "status": status,
+            "owner": owner,
+            "heartbeat_at": datetime.utcnow().isoformat(),
+            "receipts": receipts,
+        }
         record.status = status
         record.response_json = payload
         record.updated_at = datetime.utcnow()
@@ -379,6 +438,7 @@ async def _apply_action_transaction(
             "result": result,
         }
         payload = {
+            **(ledger.response_json or {}),
             "status": "running",
             "owner": owner,
             "heartbeat_at": datetime.utcnow().isoformat(),
@@ -399,15 +459,27 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
             display_text="已取消，本次没有更改照护事项。",
             data={"action": "caretask_batch", "status": "cancelled", "receipts": []},
         )
+    request_hash = _stable_request_hash(query)
+    key = idempotency_key or request_hash
+    replay = await _lookup_replay(user_id, key, request_hash)
+    if replay is not None:
+        return _result_from_replay(replay)
+
     now = datetime.utcnow()
     actions, reason = await _preflight(user_id, query, now)
     if reason:
-        request_hash = hashlib.sha256(query.strip().encode()).hexdigest()
         receipts = [{"index": 0, "action": "clarify", "status": "needs_clarification", "reason": reason}]
         record_id, owner, replay = await _claim(
-            user_id, idempotency_key or request_hash, request_hash, receipts
+            user_id,
+            key,
+            request_hash,
+            receipts,
+            plan_hash=hashlib.sha256(reason.encode()).hexdigest(),
+            frozen_at=now.isoformat(),
         )
-        payload = replay or await _save(
+        if replay is not None:
+            return _result_from_replay(replay)
+        payload = await _save(
             record_id,
             "completed",
             receipts,
@@ -416,12 +488,18 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
         )
         return ToolResult(tool_name="caretask", status="needs_clarification", display_text="为了准确处理，请再说明具体事项或时间。", data={"action": "caretask_batch", "reason": reason, **payload})
     normalized = json.dumps(actions, ensure_ascii=False, sort_keys=True, default=str)
-    request_hash = hashlib.sha256(normalized.encode()).hexdigest()
+    plan_hash = hashlib.sha256(normalized.encode()).hexdigest()
     receipts = [{"index": a["index"], "action": a["action"], "status": "planned"} for a in actions]
-    record_id, owner, replay = await _claim(user_id, idempotency_key or request_hash, request_hash, receipts)
+    record_id, owner, replay = await _claim(
+        user_id,
+        key,
+        request_hash,
+        receipts,
+        plan_hash=plan_hash,
+        frozen_at=now.isoformat(),
+    )
     if replay is not None:
-        status = replay.get("status", "failed")
-        return ToolResult(tool_name="caretask", status="success" if status == "completed" else status, display_text=_display(replay.get("receipts", [])), data={"action": "caretask_batch", **replay})
+        return _result_from_replay(replay)
     if cancel_event and cancel_event.is_set():
         receipts = [{**r, "status": "unattempted", "reason": "cancelled"} for r in receipts]
         payload = await _save(record_id, "cancelled", receipts, owner=owner, request_hash=request_hash)
@@ -454,3 +532,25 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
             return ToolResult(tool_name="caretask", status="failed", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
     payload = await _save(record_id, "completed", receipts, owner=owner, request_hash=request_hash)
     return ToolResult(tool_name="caretask", status="success", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
+
+
+def _result_from_replay(payload: dict[str, Any]) -> ToolResult:
+    ledger_status = str(payload.get("status") or "failed")
+    receipts = payload.get("receipts") or []
+    clarifying = any(receipt.get("status") == "needs_clarification" for receipt in receipts)
+    status = "needs_clarification" if clarifying else (
+        "success" if ledger_status == "completed" else ledger_status
+    )
+    if payload.get("reason") == "idempotency_conflict":
+        status = "failed"
+    display = (
+        "为了准确处理，请再说明具体事项或时间。"
+        if clarifying
+        else _display(receipts)
+    )
+    return ToolResult(
+        tool_name="caretask",
+        status=status,
+        display_text=display,
+        data={"action": "caretask_batch", **payload},
+    )

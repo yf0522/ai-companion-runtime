@@ -225,6 +225,7 @@ async def test_stale_version_marks_current_failed_and_later_unattempted(monkeypa
         {"index": 1, "action": "cancel", "task_id": "task-2", "expected_version": 1},
     ]
     monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=None))
     monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=("ledger", "owner", None)))
     monkeypatch.setattr(
         executor,
@@ -252,6 +253,7 @@ async def test_sequential_exact_create_resolves_reuse_to_created_receipt(monkeyp
         {"index": 1, "action": "create", "title": "吃降压药", "task_type": "medication", "due_at": None, "query": "再记下吃降压药", "reuse_task_id": "planned:0", "ref_index": 0, "expected_version": 1},
     ]
     monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=None))
     monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=("ledger", "owner", None)))
     seen = []
 
@@ -300,13 +302,15 @@ async def test_terminal_and_fresh_replay_never_executes_actions(
 ):
     from app.tools import caretask_batch_executor as executor
 
-    actions = [{"index": 0, "action": "complete", "task_id": "task", "expected_version": 1}]
     cached = {
         "status": ledger_status,
         "receipts": [{"index": 0, "action": "complete", "status": "completed"}],
     }
-    monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
-    monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=(None, None, cached)))
+    preflight = AsyncMock()
+    claim = AsyncMock()
+    monkeypatch.setattr(executor, "_preflight", preflight)
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=cached))
+    monkeypatch.setattr(executor, "_claim", claim)
     apply_action = AsyncMock()
     save = AsyncMock()
     monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
@@ -319,6 +323,60 @@ async def test_terminal_and_fresh_replay_never_executes_actions(
     assert result.data["receipts"] == cached["receipts"]
     apply_action.assert_not_awaited()
     save.assert_not_awaited()
+    preflight.assert_not_awaited()
+    claim.assert_not_awaited()
+
+
+def test_request_hash_is_stable_for_normalized_raw_query_and_not_plan_state():
+    from app.tools.caretask_batch_executor import _stable_request_hash
+
+    assert _stable_request_hash("每天晚上8点提醒我吃药  然后看看任务") == _stable_request_hash(
+        "每天晚上8点提醒我吃药 然后看看任务"
+    )
+    assert _stable_request_hash("每天晚上8点提醒我吃药") != _stable_request_hash(
+        "每天晚上9点提醒我吃药"
+    )
+
+
+@pytest.mark.asyncio
+async def test_different_query_same_key_conflicts_before_preflight(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    conflict = {"status": "failed", "reason": "idempotency_conflict", "receipts": []}
+    lookup = AsyncMock(return_value=conflict)
+    preflight = AsyncMock()
+    monkeypatch.setattr(executor, "_lookup_replay", lookup)
+    monkeypatch.setattr(executor, "_preflight", preflight)
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1", query="完成复诊 然后看看任务", idempotency_key="same-key"
+    )
+    assert result.status == "failed"
+    assert result.data["reason"] == "idempotency_conflict"
+    preflight.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_cached_replay_keeps_clarification_semantics(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    cached = {
+        "status": "completed",
+        "receipts": [{
+            "index": 0, "action": "clarify", "status": "needs_clarification",
+            "reason": "ambiguous_task_ref",
+        }],
+    }
+    preflight = AsyncMock()
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=cached))
+    monkeypatch.setattr(executor, "_preflight", preflight)
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1", query="取消吃药提醒 然后看看任务", idempotency_key="ambiguous"
+    )
+    assert result.status == "needs_clarification"
+    assert result.data["receipts"] == cached["receipts"]
+    preflight.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
@@ -354,6 +412,7 @@ async def test_two_planned_creates_make_generic_cancel_ambiguous_and_zero_mutati
     save = AsyncMock(return_value={"status": "completed", "receipts": []})
     apply_action = AsyncMock()
     monkeypatch.setattr(executor.svc, "snapshot_care_tasks", snapshot)
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=None))
     monkeypatch.setattr(executor, "_claim", claim)
     monkeypatch.setattr(executor, "_save", save)
     monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
