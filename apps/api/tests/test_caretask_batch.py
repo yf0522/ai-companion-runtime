@@ -140,6 +140,8 @@ def test_ledger_write_requires_owner_hash_and_active_state():
     record.status = "completed"
     with pytest.raises(RuntimeError, match="not_active"):
         _verify_ledger(record, owner="owner", request_hash="hash")
+    with pytest.raises(RuntimeError, match="batch_ledger_not_found"):
+        _verify_ledger(None, owner="owner", request_hash="hash")
 
 
 @pytest.mark.asyncio
@@ -257,6 +259,8 @@ async def test_sequential_exact_create_resolves_reuse_to_created_receipt(monkeyp
         action = kwargs["action"]
         seen.append(action)
         result = {"id": "real-task", "title": "吃降压药", "version": 1}
+        if action.get("reuse_task_id"):
+            result["_action"] = "caretask_reuse"
         kwargs["receipts"][action["index"]] = {
             **kwargs["receipts"][action["index"]], "status": "completed", "result": result,
         }
@@ -267,6 +271,7 @@ async def test_sequential_exact_create_resolves_reuse_to_created_receipt(monkeyp
         user_id="user-1", query="记下吃降压药 再记下吃降压药", idempotency_key="dup"
     )
     assert seen[1]["reuse_task_id"] == "real-task"
+    assert sum(not item.get("reuse_task_id") for item in seen) == 1
 
 
 @pytest.mark.asyncio
@@ -279,16 +284,38 @@ async def test_today_list_excludes_future_task_without_refresh_write(monkeypatch
         {"id": "future", "title": "明天复诊", "status": "pending", "due_at": "2026-07-13T12:00:00"},
     ])
     monkeypatch.setattr(executor.svc, "snapshot_care_tasks", snapshot)
-    # The pure scope predicate is covered here; snapshot remains the sole read API.
-    start, end, _ = executor.svc.care_window_bounds(now)
-    visible = [
-        item for item in await snapshot(user_id="user-1", now=now)
-        if executor.svc.in_care_window(
-            status=item["status"], due_at=datetime.fromisoformat(item["due_at"]),
-            window_start=start, window_end=end,
-        )
-    ]
+    visible = executor._filter_list_snapshot(
+        await snapshot(user_id="user-1", now=now), scope="today", now=now
+    )
     assert [item["id"] for item in visible] == ["today"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ledger_status", "tool_status"),
+    [("completed", "success"), ("failed", "failed"), ("in_progress", "in_progress")],
+)
+async def test_terminal_and_fresh_replay_never_executes_actions(
+    monkeypatch, ledger_status, tool_status
+):
+    from app.tools import caretask_batch_executor as executor
+
+    actions = [{"index": 0, "action": "complete", "task_id": "task", "expected_version": 1}]
+    cached = {
+        "status": ledger_status,
+        "receipts": [{"index": 0, "action": "complete", "status": "completed"}],
+    }
+    monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
+    monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=(None, None, cached)))
+    apply_action = AsyncMock()
+    monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1", query="完成任务 然后看看任务", idempotency_key="replay"
+    )
+    assert result.status == tool_status
+    assert result.data["receipts"] == cached["receipts"]
+    apply_action.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
