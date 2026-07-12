@@ -81,7 +81,7 @@ def _display(receipts: list[dict[str, Any]]) -> str:
     return "\n".join(f"{r['index'] + 1}. {labels.get(r['action'], r['action'])}：{states.get(r['status'], r['status'])}" for r in receipts)
 
 
-async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[str, Any]]) -> tuple[Any, dict[str, Any] | None]:
+async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[str, Any]]) -> tuple[Any, str | None, dict[str, Any] | None]:
     from sqlalchemy import select
     from sqlalchemy.exc import IntegrityError
     from app.db.models import IdempotencyRecord
@@ -93,13 +93,13 @@ async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[
         now = datetime.utcnow()
         if existing:
             if existing.request_hash != request_hash:
-                return None, {"status": "failed", "reason": "idempotency_conflict", "receipts": []}
+                return None, None, {"status": "failed", "reason": "idempotency_conflict", "receipts": []}
             payload = existing.response_json or {}
             if existing.status in {"completed", "failed", "cancelled", "interrupted"}:
-                return None, payload
+                return None, None, payload
             heartbeat = payload.get("heartbeat_at")
             if heartbeat and datetime.fromisoformat(heartbeat) + timedelta(seconds=_LEASE_SECONDS) > now:
-                return None, {**payload, "status": "in_progress"}
+                return None, None, {**payload, "status": "in_progress"}
             current = payload.get("receipts", receipts)
             next_index = next((i for i, r in enumerate(current) if r["status"] == "planned"), None)
             if next_index is not None:
@@ -111,8 +111,9 @@ async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[
             existing.response_json = payload
             existing.updated_at = now
             await db.commit()
-            return None, payload
-        record = IdempotencyRecord(user_id=db_user, key=key, operation="caretask_batch", resource_type="care_task_batch", request_hash=request_hash, status="claimed", response_json={"status": "claimed", "owner": uuid.uuid4().hex, "heartbeat_at": now.isoformat(), "receipts": receipts})
+            return None, None, payload
+        owner = uuid.uuid4().hex
+        record = IdempotencyRecord(user_id=db_user, key=key, operation="caretask_batch", resource_type="care_task_batch", request_hash=request_hash, status="claimed", response_json={"status": "claimed", "owner": owner, "heartbeat_at": now.isoformat(), "receipts": receipts})
         db.add(record)
         try:
             await db.commit()
@@ -120,15 +121,26 @@ async def _claim(user_id: str, key: str, request_hash: str, receipts: list[dict[
             await db.rollback()
             return await _claim(user_id, key, request_hash, receipts)
         await db.refresh(record)
-        return record.id, None
+        return record.id, owner, None
 
 
-async def _save(record_id: Any, status: str, receipts: list[dict[str, Any]]) -> dict[str, Any]:
+def _verify_ledger(record: Any, *, owner: str, request_hash: str) -> None:
+    payload = record.response_json or {}
+    if record.request_hash != request_hash:
+        raise RuntimeError("idempotency_conflict")
+    if payload.get("owner") != owner:
+        raise RuntimeError("batch_owner_mismatch")
+    if record.status not in {"claimed", "running"}:
+        raise RuntimeError("batch_ledger_not_active")
+
+
+async def _save(record_id: Any, status: str, receipts: list[dict[str, Any]], *, owner: str, request_hash: str) -> dict[str, Any]:
     from app.db.models import IdempotencyRecord
     from app.db.session import async_session
-    payload = {"status": status, "heartbeat_at": datetime.utcnow().isoformat(), "receipts": receipts}
+    payload = {"status": status, "owner": owner, "heartbeat_at": datetime.utcnow().isoformat(), "receipts": receipts}
     async with async_session() as db:
         record = await db.get(IdempotencyRecord, record_id, with_for_update=True)
+        _verify_ledger(record, owner=owner, request_hash=request_hash)
         record.status = status
         record.response_json = payload
         record.updated_at = datetime.utcnow()
@@ -143,6 +155,8 @@ async def _apply_action_transaction(
     action: dict[str, Any],
     receipts: list[dict[str, Any]],
     now: datetime,
+    owner: str,
+    request_hash: str,
 ) -> dict[str, Any]:
     """Commit one domain mutation and its receipt under the same transaction."""
     from app.db.models import CareTask, IdempotencyRecord, Reminder
@@ -150,8 +164,9 @@ async def _apply_action_transaction(
 
     async with async_session() as db:
         ledger = await db.get(IdempotencyRecord, record_id, with_for_update=True)
-        if ledger is None or ledger.status not in {"claimed", "running"}:
-            raise RuntimeError("batch_ledger_not_active")
+        if ledger is None:
+            raise RuntimeError("batch_ledger_not_found")
+        _verify_ledger(ledger, owner=owner, request_hash=request_hash)
         kind = action["action"]
         db_user = svc.normalize_user_id(user_id)
         if kind == "list":
@@ -224,6 +239,7 @@ async def _apply_action_transaction(
         }
         payload = {
             "status": "running",
+            "owner": owner,
             "heartbeat_at": datetime.utcnow().isoformat(),
             "receipts": receipts,
         }
@@ -249,20 +265,20 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
     normalized = json.dumps(actions, ensure_ascii=False, sort_keys=True, default=str)
     request_hash = hashlib.sha256(normalized.encode()).hexdigest()
     receipts = [{"index": a["index"], "action": a["action"], "status": "planned"} for a in actions]
-    record_id, replay = await _claim(user_id, idempotency_key or request_hash, request_hash, receipts)
+    record_id, owner, replay = await _claim(user_id, idempotency_key or request_hash, request_hash, receipts)
     if replay is not None:
         status = replay.get("status", "failed")
         return ToolResult(tool_name="caretask", status="success" if status == "completed" else status, display_text=_display(replay.get("receipts", [])), data={"action": "caretask_batch", **replay})
     if cancel_event and cancel_event.is_set():
         receipts = [{**r, "status": "unattempted", "reason": "cancelled"} for r in receipts]
-        payload = await _save(record_id, "cancelled", receipts)
+        payload = await _save(record_id, "cancelled", receipts, owner=owner, request_hash=request_hash)
         return ToolResult(tool_name="caretask", status="cancelled", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
     for index, action in enumerate(actions):
         try:
             if cancel_event and cancel_event.is_set():
                 for later in range(index, len(receipts)):
                     receipts[later] = {**receipts[later], "status": "unattempted", "reason": "cancelled"}
-                payload = await _save(record_id, "cancelled", receipts)
+                payload = await _save(record_id, "cancelled", receipts, owner=owner, request_hash=request_hash)
                 return ToolResult(tool_name="caretask", status="cancelled", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
             if "ref_index" in action:
                 created = receipts[action["ref_index"]].get("result") or {}
@@ -277,12 +293,14 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
                 action=action,
                 receipts=receipts,
                 now=now,
+                owner=owner,
+                request_hash=request_hash,
             )
         except Exception as exc:
             receipts[index] = {**receipts[index], "status": "failed", "reason": type(exc).__name__}
             for later in range(index + 1, len(receipts)):
                 receipts[later] = {**receipts[later], "status": "unattempted", "reason": "prior_action_failed"}
-            payload = await _save(record_id, "failed", receipts)
+            payload = await _save(record_id, "failed", receipts, owner=owner, request_hash=request_hash)
             return ToolResult(tool_name="caretask", status="failed", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
-    payload = await _save(record_id, "completed", receipts)
+    payload = await _save(record_id, "completed", receipts, owner=owner, request_hash=request_hash)
     return ToolResult(tool_name="caretask", status="success", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
