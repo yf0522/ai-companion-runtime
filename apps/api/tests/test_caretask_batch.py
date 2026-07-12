@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -113,6 +114,122 @@ def test_ledger_terminal_fresh_stale_and_conflict_replay_states():
     assert conflict["reason"] == "idempotency_conflict"
     assert transition is None
 
+
+def test_ledger_write_requires_owner_hash_and_active_state():
+    from app.tools.caretask_batch_executor import _verify_ledger
+
+    record = SimpleNamespace(
+        request_hash="hash",
+        status="running",
+        response_json={"owner": "owner"},
+    )
+    _verify_ledger(record, owner="owner", request_hash="hash")
+    with pytest.raises(RuntimeError, match="owner"):
+        _verify_ledger(record, owner="other", request_hash="hash")
+    with pytest.raises(RuntimeError, match="idempotency_conflict"):
+        _verify_ledger(record, owner="owner", request_hash="other")
+    record.status = "completed"
+    with pytest.raises(RuntimeError, match="not_active"):
+        _verify_ledger(record, owner="owner", request_hash="hash")
+
+
+@pytest.mark.asyncio
+async def test_transaction_failure_commits_neither_domain_nor_receipt(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    ledger = SimpleNamespace(
+        request_hash="hash",
+        status="running",
+        response_json={"owner": "owner"},
+    )
+    row = SimpleNamespace(
+        status="pending", reminder_id=None, version=1, due_at=None,
+        snooze_until=None, completed_at=None, updated_at=None,
+    )
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=ledger)
+    db.flush = AsyncMock(side_effect=RuntimeError("write_failed"))
+    db.commit = AsyncMock()
+
+    class SessionContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.db.session.async_session", lambda: SessionContext())
+    monkeypatch.setattr(executor.svc, "_get_versioned_task_for_update", AsyncMock(return_value=row))
+    receipts = [{"index": 0, "action": "complete", "status": "planned"}]
+    with pytest.raises(RuntimeError, match="write_failed"):
+        await executor._apply_action_transaction(
+            record_id="ledger", user_id="user-1",
+            action={"index": 0, "action": "complete", "task_id": "task", "expected_version": 1},
+            receipts=receipts, now=datetime(2026, 7, 12, 4, 0),
+            owner="owner", request_hash="hash",
+        )
+    db.commit.assert_not_awaited()
+    assert receipts[0]["status"] == "planned"
+
+
+@pytest.mark.asyncio
+async def test_preflight_preserves_canonical_create_reuse(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    monkeypatch.setattr(
+        executor.svc,
+        "snapshot_care_tasks",
+        AsyncMock(return_value=[{
+            "id": "task-1", "title": "吃降压药", "task_type": "medication",
+            "status": "pending", "version": 4,
+        }]),
+    )
+    actions, reason = await executor._preflight(
+        "user-1",
+        "每天晚上8点提醒我吃降压药 然后看看今天有哪些任务",
+        datetime(2026, 7, 12, 4, 0),
+    )
+    assert reason is None
+    assert actions[0]["reuse_task_id"] == "task-1"
+    assert actions[0]["expected_version"] == 4
+
+
+def test_action_specific_display_includes_titles():
+    from app.tools.caretask_batch_executor import _display
+
+    text = _display([
+        {"index": 0, "action": "list", "status": "completed", "result": {"titles": ["吃降压药"]}},
+        {"index": 1, "action": "complete", "status": "completed", "result": {"title": "复诊"}},
+    ])
+    assert "吃降压药" in text
+    assert "复诊" in text
+
+
+@pytest.mark.asyncio
+async def test_stale_version_marks_current_failed_and_later_unattempted(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    actions = [
+        {"index": 0, "action": "complete", "task_id": "task-1", "expected_version": 1},
+        {"index": 1, "action": "cancel", "task_id": "task-2", "expected_version": 1},
+    ]
+    monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
+    monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=("ledger", "owner", None)))
+    monkeypatch.setattr(
+        executor,
+        "_apply_action_transaction",
+        AsyncMock(side_effect=executor.svc.StaleCareTaskVersionError(expected_version=1, current_version=2)),
+    )
+    save = AsyncMock(side_effect=lambda _id, status, receipts, **kwargs: {
+        "status": status, "receipts": receipts
+    })
+    monkeypatch.setattr(executor, "_save", save)
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1", query="完成任务 然后取消任务", idempotency_key="batch-stale"
+    )
+    assert result.status == "failed"
+    assert [item["status"] for item in result.data["receipts"]] == ["failed", "unattempted"]
 
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
