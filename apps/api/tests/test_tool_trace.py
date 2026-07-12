@@ -2,10 +2,24 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from types import SimpleNamespace
+import uuid
 import pytest
 
 from app.tools.base import ToolBase, ToolResult
 from app.tools.dispatcher import ToolDispatcher
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
 
 
 class _FakeStream:
@@ -133,3 +147,41 @@ async def test_trace_persistence_failure_does_not_crash_dispatch(monkeypatch):
         e[0] == "result" and e[1] == "calculator" and e[2] == "1+1 = 2"
         for e in stream.events
     )
+
+
+@pytest.mark.asyncio
+async def test_trace_reconstructs_from_messages_and_tools_without_events(monkeypatch):
+    now = datetime(2026, 7, 12, 12, 0)
+    user_id, session_id = uuid.uuid4(), uuid.uuid4()
+    message = SimpleNamespace(
+        id=uuid.uuid4(), user_id=user_id, session_id=session_id, role="user",
+        content="请联系家人", message_index=0, created_at=now,
+    )
+    tool = SimpleNamespace(
+        id=uuid.uuid4(), tool_name="contact", status="success", latency_ms=5,
+        input_json={"action": "request_contact"},
+        output_json={"delivery_status": "queued"}, created_at=now,
+    )
+
+    class _DB:
+        def __init__(self):
+            self.results = iter([_Rows([]), _Rows([]), _Rows([tool]), _Rows([message])])
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _query):
+            return next(self.results)
+
+    monkeypatch.setattr("app.db.session.async_session", lambda: _DB())
+    from app.observability.trace_service import TraceService
+
+    trace = await TraceService().get_trace("trace_rebuilt")
+    assert trace is not None
+    assert trace["events"] == []
+    assert trace["messages"][0]["content"] == "请联系家人"
+    assert trace["tool_calls"][0]["output"]["delivery_status"] == "queued"
+    assert trace["session_id"] == str(session_id)
