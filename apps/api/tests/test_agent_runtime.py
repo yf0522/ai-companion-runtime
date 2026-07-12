@@ -117,7 +117,16 @@ def test_tool_receipt_copy_preserves_authoritative_semantic_status(data, expecte
     ("tool", "transport", "data", "expected"),
     [
         ("memory", "success", {"status": "refused"}, ("memory_refused", "refused")),
-        ("contact", "success", {"delivery_status": "queued"}, ("contact_queued", "queued")),
+        (
+            "contact", "success",
+            {"status": "persisted", "delivery_status": "queued"},
+            ("contact_queued", "queued"),
+        ),
+        (
+            "contact", "success",
+            {"status": "persisted", "delivery_status": "no_verified_contact"},
+            ("contact_no_verified_contact", "no_verified_contact"),
+        ),
         ("caretask", "failed", {}, ("caretask_failed", "failed")),
         (None, None, None, ("assistant_completed", None)),
     ],
