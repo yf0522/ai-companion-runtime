@@ -15,6 +15,7 @@ from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
 _BLOCKED_AUDIT_TIMEOUT_S = 0.25
+_FAMILY_NOTIFY_TIMEOUT_S = 0.25
 
 
 def _load_safety_messages() -> dict[str, str]:
@@ -138,11 +139,17 @@ async def _emit_risk_block(
     session_id: str | None = None,
     user_message: str | None = None,
 ) -> dict:
-    notify_status = (
-        await _dispatch_family_notify(user_id, risk, trace_id)
-        if user_id
-        else {"status": "failed", "error": "missing_user"}
-    )
+    if user_id:
+        try:
+            notify_status = await asyncio.wait_for(
+                _dispatch_family_notify(user_id, risk, trace_id),
+                timeout=_FAMILY_NOTIFY_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.error("Risk notification timed out or failed trace=%s: %s", trace_id, exc)
+            notify_status = {"status": "failed", "outbox_ids": [], "error": type(exc).__name__}
+    else:
+        notify_status = {"status": "failed", "error": "missing_user"}
     safety_msg = build_safety_response(
         load_safety_message(risk.level, risk.category),
         notify_status,
@@ -220,6 +227,7 @@ async def _persist_blocked_turn_evidence(
         user_id=user_id,
         session_id=session_id,
         input_json={**common, "content_redacted": True, "content_chars": len(user_message)},
+        required=True,
     )
     await trace.add_event(
         trace_id=trace_id,
@@ -236,6 +244,7 @@ async def _persist_blocked_turn_evidence(
             "notification_state": _bounded_notification_state(notify_status),
         },
         latency_ms=total_latency_ms,
+        required=True,
     )
 
 
