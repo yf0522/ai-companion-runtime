@@ -38,7 +38,7 @@ jobs:
         run: ruff check app tests
       - name: Migration heads import check
         run: |
-          test "$(alembic heads | awk '{print $1}')" = "a9c0d1e2f3b4"
+          test "$(alembic heads | awk '{print $1}')" = "b0c1d2e3f4a5"
       - name: Full backend tests
         run: pytest -q
       - name: Device contract tests
@@ -79,7 +79,7 @@ jobs:
           python scripts/evidence_manifest.py \
             --environment ci \
             --account-role ci \
-            --migration-heads a9c0d1e2f3b4 \
+            --migration-heads b0c1d2e3f4a5 \
             --trace-ids trace-ci \
             --receipt-ids receipt-ci \
             --output /tmp/evidence-manifest.json
