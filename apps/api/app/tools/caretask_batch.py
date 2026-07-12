@@ -72,7 +72,7 @@ def plan_caretask_batch(query: str, *, now: datetime | None = None) -> CareTaskB
     for clause in _clauses(query):
         action = _action_for_clause(clause)
         if action is None:
-            if re.search(r"提醒|任务|吃药|复诊|完成|取消|推迟|新增|创建", clause):
+            if re.search(r"提醒|任务|吃药|复诊|完成|取消|推迟|新增|创建|改成|剂量|\d+片|[一二两三四五六七八九十]+片", clause):
                 return CareTaskBatchPlan(tuple(actions), "invalid", "unsupported_or_unmatched_cue")
             continue
         minutes = None

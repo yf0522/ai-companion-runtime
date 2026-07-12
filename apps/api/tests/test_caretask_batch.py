@@ -52,6 +52,25 @@ def test_unqualified_clock_selects_next_occurrence():
     assert due == datetime(2026, 7, 13, 12, 0)
 
 
+def test_tomorrow_clock_is_tomorrow_even_before_today_clock():
+    due = parse_due_at("明天晚上8点提醒我吃药", now=datetime(2026, 7, 12, 4, 0))
+    assert due == datetime(2026, 7, 13, 12, 0)
+
+
+def test_midnight_boundary_uses_shanghai_calendar():
+    due = parse_due_at("明天早上8点提醒我吃药", now=datetime(2026, 7, 12, 15, 59))
+    assert due == datetime(2026, 7, 13, 0, 0)
+
+
+def test_invalid_minutes_and_unsupported_dose_mutation_fail_preflight():
+    invalid_minutes = plan_caretask_batch("看看任务 然后把吃药提醒延后2000分钟")
+    assert invalid_minutes.status == "invalid"
+    assert invalid_minutes.reason == "invalid_snooze_minutes"
+    unsupported = plan_caretask_batch("看看任务 然后把降压药改成两片")
+    assert unsupported.status == "invalid"
+    assert unsupported.reason == "unsupported_or_unmatched_cue"
+
+
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
     from app.tools import caretask_batch_executor as executor
