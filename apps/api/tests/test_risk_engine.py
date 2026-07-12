@@ -416,39 +416,6 @@ async def test_blocked_turn_raising_audit_cannot_suppress_emergency(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_blocked_turn_hanging_family_notify_cannot_suppress_emergency(monkeypatch):
-    import asyncio
-    from unittest.mock import AsyncMock
-
-    from app.engines.base import RiskResult
-    from app.runtime.risk_gate import run_risk_gate
-
-    async def hang(*_args, **_kwargs):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(
-        "app.runtime.risk_gate._analyze_risk",
-        AsyncMock(return_value=RiskResult(level="critical", category="health_emergency")),
-    )
-    monkeypatch.setattr("app.runtime.risk_gate._dispatch_family_notify", hang)
-    monkeypatch.setattr("app.runtime.risk_gate._FAMILY_NOTIFY_TIMEOUT_S", 0.001)
-    monkeypatch.setattr(
-        "app.runtime.risk_gate._persist_blocked_turn_evidence", AsyncMock(return_value=None)
-    )
-    stream = AsyncMock()
-
-    gate = await run_risk_gate(
-        user_id="user-1", session_id="session-1", message="胸口痛",
-        stream_mgr=stream,
-    )
-
-    assert gate.blocked is True
-    assert "暂时无法联系" in gate.metadata["response_text"]
-    stream.send_first_reply.assert_awaited_once()
-    stream.send_final.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_normal_message_is_low(engine):
     result = await engine.analyze(_input("今天天气真好"))
     assert result.level == "low"

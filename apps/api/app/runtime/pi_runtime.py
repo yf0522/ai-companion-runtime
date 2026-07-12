@@ -118,8 +118,9 @@ def _bounded_tool_receipt_copy(data: dict | None) -> dict:
     """Deterministic, bounded receipt evidence without raw query/model text."""
     source = data if isinstance(data, dict) else {}
     copied: dict[str, Any] = {}
-    if source.get("action") is not None:
-        copied["action"] = str(source["action"])[:80]
+    for key in ("action", "status", "delivery_status", "entity_id", "reason"):
+        if source.get(key) is not None:
+            copied[key] = str(source[key])[:200]
     receipts = source.get("receipts")
     if isinstance(receipts, list):
         allowed = ("index", "action", "status", "entity_id", "reason", "before", "after")

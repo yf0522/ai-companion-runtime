@@ -15,7 +15,6 @@ from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
 _BLOCKED_AUDIT_TIMEOUT_S = 0.25
-_FAMILY_NOTIFY_TIMEOUT_S = 0.25
 
 
 def _load_safety_messages() -> dict[str, str]:
@@ -140,14 +139,9 @@ async def _emit_risk_block(
     user_message: str | None = None,
 ) -> dict:
     if user_id:
-        try:
-            notify_status = await asyncio.wait_for(
-                _dispatch_family_notify(user_id, risk, trace_id),
-                timeout=_FAMILY_NOTIFY_TIMEOUT_S,
-            )
-        except Exception as exc:
-            logger.error("Risk notification timed out or failed trace=%s: %s", trace_id, exc)
-            notify_status = {"status": "failed", "outbox_ids": [], "error": type(exc).__name__}
+        # Required durable safety work: do not cancel the DB/outbox transaction
+        # with the best-effort observability timeout used below.
+        notify_status = await _dispatch_family_notify(user_id, risk, trace_id)
     else:
         notify_status = {"status": "failed", "error": "missing_user"}
     safety_msg = build_safety_response(

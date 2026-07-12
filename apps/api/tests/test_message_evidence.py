@@ -67,6 +67,7 @@ async def test_persist_turn_allocates_max_plus_one_without_message_count(monkeyp
     assert [row.message_index for row in session.added] == [5, 6]
     assert [row.role for row in session.added] == ["user", "assistant"]
     queries = [str(query) for query in session.queries]
+    assert session.queries[0]._for_update_arg is not None
     assert "FOR UPDATE" in queries[0]
 
 

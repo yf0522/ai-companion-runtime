@@ -87,6 +87,27 @@ def test_tool_receipt_audit_copy_is_deterministic_bounded_and_redacted():
     assert "raw_text" not in str(copied)
 
 
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            {"action": "contact_help_request", "delivery_status": "queued", "raw_text": "secret"},
+            {"action": "contact_help_request", "delivery_status": "queued"},
+        ),
+        (
+            {"action": "memory_note", "status": "refused", "text": "private"},
+            {"action": "memory_note", "status": "refused"},
+        ),
+        (
+            {"action": "memory_note", "status": "pending", "reason": "consent_required"},
+            {"action": "memory_note", "status": "pending", "reason": "consent_required"},
+        ),
+    ],
+)
+def test_tool_receipt_copy_preserves_authoritative_semantic_status(data, expected):
+    assert _bounded_tool_receipt_copy(data) == expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tool", "status", "data", "truth"),
