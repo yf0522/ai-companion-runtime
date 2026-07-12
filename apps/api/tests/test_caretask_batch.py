@@ -71,6 +71,49 @@ def test_invalid_minutes_and_unsupported_dose_mutation_fail_preflight():
     assert unsupported.reason == "unsupported_or_unmatched_cue"
 
 
+def test_ledger_terminal_fresh_stale_and_conflict_replay_states():
+    from app.tools.caretask_batch_executor import _replay_snapshot
+
+    now = datetime(2026, 7, 12, 4, 0)
+    receipts = [
+        {"index": 0, "action": "list", "status": "completed"},
+        {"index": 1, "action": "snooze", "status": "planned"},
+        {"index": 2, "action": "complete", "status": "planned"},
+    ]
+    terminal = {"status": "failed", "receipts": receipts}
+    replay, transition = _replay_snapshot(
+        status="failed", existing_hash="hash", payload=terminal,
+        request_hash="hash", receipts=receipts, now=now,
+    )
+    assert replay == terminal
+    assert transition is None
+
+    fresh, transition = _replay_snapshot(
+        status="running", existing_hash="hash",
+        payload={"heartbeat_at": now.isoformat(), "receipts": receipts},
+        request_hash="hash", receipts=receipts, now=now,
+    )
+    assert fresh["status"] == "in_progress"
+    assert transition is None
+
+    stale, transition = _replay_snapshot(
+        status="running", existing_hash="hash",
+        payload={"heartbeat_at": datetime(2026, 7, 12, 3, 58).isoformat(), "receipts": receipts},
+        request_hash="hash", receipts=receipts, now=now,
+    )
+    assert transition == "interrupted"
+    assert [item["status"] for item in stale["receipts"]] == [
+        "completed", "failed", "unattempted"
+    ]
+
+    conflict, transition = _replay_snapshot(
+        status="completed", existing_hash="old", payload=terminal,
+        request_hash="new", receipts=receipts, now=now,
+    )
+    assert conflict["reason"] == "idempotency_conflict"
+    assert transition is None
+
+
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
     from app.tools import caretask_batch_executor as executor
