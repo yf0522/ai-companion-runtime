@@ -109,6 +109,13 @@ def infer_initial_status(due_at: datetime | None, now: datetime | None = None) -
     return "pending"
 
 
+def infer_caretask_schedule_type(text: str | None) -> str:
+    """Infer the CareTask recurrence contract, including explicit weekly cues."""
+    if text and ("每周" in text or "每星期" in text):
+        return "weekly"
+    return infer_schedule_type_from_utterance(text)
+
+
 def can_transition(from_status: str, to_status: str) -> bool:
     if from_status not in CARE_TASK_STATUSES or to_status not in CARE_TASK_STATUSES:
         return False
@@ -578,7 +585,7 @@ async def create_care_task(
     ``caretask_create`` | ``caretask_reuse`` | ``caretask_clarify_create``.
     """
     title = (title or "").strip() or "吃药"
-    st = schedule_type or infer_schedule_type_from_utterance(query or title)
+    st = schedule_type or infer_caretask_schedule_type(query or title)
     if st not in SUPPORTED_SCHEDULE_TYPES:
         st = "once"
     existing = await find_active_by_fingerprint(
@@ -853,7 +860,7 @@ async def create_or_reuse_care_task_in_transaction(
     from app.db.models import CareTask, Reminder
 
     db_user = normalize_user_id(user_id)
-    schedule_type = infer_schedule_type_from_utterance(query)
+    schedule_type = infer_caretask_schedule_type(query)
     if schedule_type not in SUPPORTED_SCHEDULE_TYPES:
         schedule_type = "once"
     if reuse_task_id:

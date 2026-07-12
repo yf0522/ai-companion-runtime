@@ -184,6 +184,69 @@ async def test_transaction_failure_commits_neither_domain_nor_receipt(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_transaction_primitive_preserves_weekly_recurrence():
+    import uuid
+
+    from app.db.models import Reminder
+    from app.tools import caretask_service as service
+
+    added = []
+    db = AsyncMock()
+
+    def add(row):
+        if getattr(row, "id", None) is None:
+            row.id = uuid.uuid4()
+        added.append(row)
+
+    db.add = add
+    db.flush = AsyncMock()
+    result = await service.create_or_reuse_care_task_in_transaction(
+        db,
+        user_id="user-1",
+        title="吃降压药",
+        task_type="medication",
+        due_at=datetime(2026, 7, 13, 0, 0),
+        query="每周一早上8点提醒我吃降压药",
+        now=datetime(2026, 7, 12, 4, 0),
+    )
+
+    reminder = next(row for row in added if isinstance(row, Reminder))
+    assert reminder.schedule_type == "weekly"
+    assert result["schedule_type"] == "weekly"
+    assert not hasattr(db, "commit") or db.commit.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_transaction_transition_refreshes_due_state_before_completion(monkeypatch):
+    from app.tools import caretask_service as service
+
+    now = datetime(2026, 7, 12, 4, 0)
+    row = SimpleNamespace(
+        id="task-1", user_id="user-1", title="吃药", task_type="medication",
+        status="pending", due_at=datetime(2026, 7, 12, 3, 0),
+        snooze_until=None, reminder_id=None, notes=None, created_by="chat",
+        completed_at=None, version=1, created_at=None, updated_at=None,
+    )
+    monkeypatch.setattr(
+        service, "_get_versioned_task_for_update", AsyncMock(return_value=row)
+    )
+    db = AsyncMock()
+    result = await service.transition_care_task_in_transaction(
+        db,
+        user_id="user-1",
+        task_id="task-1",
+        expected_version=1,
+        transition="complete",
+        now=now,
+    )
+
+    assert result["status"] == "done"
+    assert row.completed_at == now
+    db.flush.assert_awaited_once()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_plan_audit_fields_survive_running_terminal_and_cached_replay(monkeypatch):
     from app.tools import caretask_batch_executor as executor
 
