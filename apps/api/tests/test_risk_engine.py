@@ -284,7 +284,9 @@ async def test_medium_risk_persistence_degradation_is_bounded_and_nonblocking(mo
     family_notify = AsyncMock()
     monkeypatch.setattr("app.runtime.risk_gate._dispatch_family_notify", family_notify)
 
-    gate = await run_risk_gate("u1", "s1", "我很孤单", AsyncMock())
+    gate = await run_risk_gate(
+        user_id="u1", session_id="s1", message="我很孤单", stream_mgr=AsyncMock()
+    )
 
     assert gate.blocked is False
     assert gate.metadata["decision_persistence"]["error_code"] == "decision_persistence_failed"
