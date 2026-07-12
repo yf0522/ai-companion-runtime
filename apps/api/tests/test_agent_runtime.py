@@ -68,6 +68,55 @@ def test_every_contact_delivery_outcome_is_authoritative(delivery_status):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "status", "data", "truth"),
+    [
+        ("memory", "success", {"status": "refused"}, "这项长期偏好不能保存。"),
+        ("contact", "success", {"delivery_status": "queued"}, "联系请求已排队，送达待确认。"),
+        ("caretask", "failed", {"action": "caretask_batch"}, "1. 吃药：失败\n2. 复诊：未执行"),
+    ],
+)
+async def test_terminal_tool_truth_suppresses_later_model_delta(
+    monkeypatch, tool, status, data, truth
+):
+    class FakeResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield json.dumps({"type": "text_delta", "delta": "模型先说成功。"})
+            yield json.dumps({
+                "type": "tool_result", "tool": tool, "status": status,
+                "text": truth, "data": data,
+            })
+            yield json.dumps({"type": "text_delta", "delta": "已经全部完成并送达。"})
+            yield json.dumps({"type": "done"})
+
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+
+    class FakeClient:
+        def stream(self, *_args, **_kwargs): return FakeResponse()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+
+    monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr("app.runtime.pi_runtime._persist_turn_best_effort", AsyncMock(return_value=None))
+    stream = MagicMock(dead=False)
+    stream.send_tool_result = AsyncMock()
+    stream.send_tool_status = AsyncMock()
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+    result = await PiExperimentalRuntime()._run_sidecar(
+        user_id="user-1", session_id="session-1", message="测试",
+        stream_mgr=stream, cancel_event=asyncio.Event(), trace_id="trace-terminal",
+        start=0.0,
+    )
+    assert result["response_text"] == truth
+    assert "已经全部完成" not in result["response_text"]
+    stream.send_first_reply.assert_awaited_once_with(truth, ANY)
+
+
+@pytest.mark.asyncio
 async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
     gate_called = {"ok": False}
 
