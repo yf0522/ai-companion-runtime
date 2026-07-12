@@ -48,6 +48,17 @@ def _authoritative_tool_text(event: dict[str, Any]) -> str | None:
     return None
 
 
+async def _persist_turn_best_effort(**kwargs: str) -> str | None:
+    try:
+        from app.observability.message_evidence import persist_turn_messages
+
+        persisted = await persist_turn_messages(**kwargs)
+        return persisted.assistant_message_id
+    except Exception as exc:
+        logger.error("Failed to persist Pi message evidence trace=%s: %s", kwargs.get("trace_id"), exc)
+        return None
+
+
 class PiExperimentalRuntime:
     """Experimental Pi agent path — risk gate first, then pi-agent-core sidecar."""
 
@@ -80,6 +91,7 @@ class PiExperimentalRuntime:
         if detect_compound_caretask(message):
             return await self._run_caretask_batch(
                 user_id=user_id,
+                session_id=session_id,
                 message=message,
                 stream_mgr=stream_mgr,
                 cancel_event=cancel_event,
@@ -88,7 +100,10 @@ class PiExperimentalRuntime:
             )
 
         if not settings.enable_pi_runtime:
-            return await self._emit_disabled_stub(stream_mgr, gate.trace_id, start)
+            return await self._emit_disabled_stub(
+                stream_mgr, gate.trace_id, start,
+                user_id=user_id, session_id=session_id, user_message=message,
+            )
 
         try:
             return await self._run_sidecar(
@@ -103,12 +118,16 @@ class PiExperimentalRuntime:
             )
         except Exception as exc:
             logger.warning("Pi sidecar failed: %s", exc, exc_info=True)
-            raise
+            return await self._emit_disabled_stub(
+                stream_mgr, gate.trace_id, start, detail="暂时无法连接对话服务，请稍后再试。",
+                user_id=user_id, session_id=session_id, user_message=message,
+            )
 
     async def _run_caretask_batch(
         self,
         *,
         user_id: str,
+        session_id: str,
         message: str,
         stream_mgr: StreamManager,
         cancel_event: asyncio.Event,
@@ -141,7 +160,11 @@ class PiExperimentalRuntime:
         ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(result.display_text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        persisted_id = await _persist_turn_best_effort(
+            session_id=session_id, user_id=user_id, trace_id=trace_id,
+            user_content=message, assistant_content=result.display_text,
+        )
+        message_id = persisted_id or f"m_{nanoid(size=12)}"
         tools_used = [{"tool": "caretask", "action": "caretask_batch", "status": result.status}]
         await stream_mgr.send_final(
             trace_id=trace_id,
@@ -396,7 +419,11 @@ class PiExperimentalRuntime:
         await stream_mgr.send_first_reply(response_text, ttft_ms)
 
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        persisted_id = await _persist_turn_best_effort(
+            session_id=session_id, user_id=user_id, trace_id=trace_id,
+            user_content=message, assistant_content=response_text,
+        )
+        message_id = persisted_id or f"m_{nanoid(size=12)}"
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -423,12 +450,22 @@ class PiExperimentalRuntime:
         trace_id: str,
         start: float,
         detail: str | None = None,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        user_message: str | None = None,
     ) -> dict:
         text = _PI_DISABLED_MSG if detail is None else f"{_PI_DISABLED_MSG}\n\n({detail})"
         ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        persisted_id = None
+        if user_id and session_id and user_message is not None:
+            persisted_id = await _persist_turn_best_effort(
+                session_id=session_id, user_id=user_id, trace_id=trace_id,
+                user_content=user_message, assistant_content=text,
+            )
+        message_id = persisted_id or f"m_{nanoid(size=12)}"
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,

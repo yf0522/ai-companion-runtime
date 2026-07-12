@@ -142,7 +142,7 @@ class TraceService:
     async def get_trace(self, trace_id: str) -> Optional[dict]:
         try:
             from app.db.session import async_session
-            from app.db.models import TraceEvent, ModelCall, ToolCall
+            from app.db.models import Message, TraceEvent, ModelCall, ToolCall
             from sqlalchemy import select
 
             async with async_session() as db:
@@ -162,25 +162,42 @@ class TraceService:
 
                 # Tool calls
                 tool_result = await db.execute(
-                    select(ToolCall).where(ToolCall.trace_id == trace_id)
+                    select(ToolCall)
+                    .where(ToolCall.trace_id == trace_id)
+                    .order_by(ToolCall.created_at, ToolCall.id)
                 )
                 tool_calls = tool_result.scalars().all()
 
-            if not events:
+                message_result = await db.execute(
+                    select(Message)
+                    .where(Message.trace_id == trace_id)
+                    .order_by(Message.message_index, Message.created_at, Message.id)
+                )
+                messages = message_result.scalars().all()
+
+            if not events and not messages and not tool_calls:
                 return None
 
-            first = events[0]
-            last = events[-1]
+            first = events[0] if events else None
+            last = events[-1] if events else None
+            first_message = messages[0] if messages else None
 
             total_tokens = sum((mc.prompt_tokens or 0) + (mc.output_tokens or 0) for mc in model_calls)
             total_cost = sum(mc.cost_cents or 0 for mc in model_calls)
 
             return {
                 "trace_id": trace_id,
-                "user_id": str(first.user_id) if first.user_id else None,
-                "session_id": str(first.session_id) if first.session_id else None,
-                "started_at": first.start_time.isoformat() if first.start_time else None,
-                "total_latency_ms": last.latency_ms,
+                "user_id": str(first.user_id) if first and first.user_id else (
+                    str(first_message.user_id) if first_message else None
+                ),
+                "session_id": str(first.session_id) if first and first.session_id else (
+                    str(first_message.session_id) if first_message else None
+                ),
+                "started_at": first.start_time.isoformat() if first and first.start_time else (
+                    first_message.created_at.isoformat()
+                    if first_message and first_message.created_at else None
+                ),
+                "total_latency_ms": last.latency_ms if last else None,
                 "events": [
                     {
                         "step_name": e.step_name,
@@ -216,6 +233,17 @@ class TraceService:
                         "output": tc.output_json,
                     }
                     for tc in tool_calls
+                ],
+                "messages": [
+                    {
+                        "id": str(message.id),
+                        "role": message.role,
+                        "content": message.content,
+                        "message_index": message.message_index,
+                        "created_at": message.created_at.isoformat()
+                        if message.created_at else None,
+                    }
+                    for message in messages
                 ],
                 "cost_summary": {
                     "total_tokens": total_tokens,
