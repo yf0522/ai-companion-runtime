@@ -13,8 +13,8 @@ rules:
       - "呼吸困难"
       - "晕倒"
     patterns:
-      - "(?:胸口|胸部|心口).{0,5}(?:疼|痛).{0,8}(?:呼吸.{0,4}(?:困难|急促)|喘不上气|透不过气)"
-      - "(?:呼吸.{0,4}(?:困难|急促)|喘不上气|透不过气).{0,8}(?:胸口|胸部|心口).{0,5}(?:疼|痛)"
+      - "(?:胸口|胸部|心口).{0,5}(?:疼|痛).{0,8}(?:呼吸困难|喘不上气|透不过气)"
+      - "(?:呼吸困难|喘不上气|透不过气).{0,8}(?:胸口|胸部|心口).{0,5}(?:疼|痛)"
     action: emergency_response
     notify: emergency_contact
     block_tools: true
@@ -82,7 +82,7 @@ rules:
     patterns:
       - "(?:孤单|孤独|没人陪|没人说话).{0,12}(?:什么都不想做|什么也不想做|提不起劲|没兴趣)"
       - "(?:什么都不想做|什么也不想做|提不起劲|没兴趣).{0,12}(?:孤单|孤独|没人陪|没人说话)"
-    action: companion_and_record
+    action: companion_and_notify
 
 # Words that negate risk keywords — if found before a keyword, suppress the match
 negation_words:

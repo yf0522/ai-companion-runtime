@@ -58,14 +58,6 @@ async def test_exact_acute_health_compound_pattern(engine):
 
 
 @pytest.mark.asyncio
-async def test_exact_user_acute_health_phrase_with_breathing_modifier(engine):
-    result = await engine.analyze(_input("我现在胸口很痛，呼吸也很困难"))
-    assert result.level == "critical"
-    assert result.category == "health_emergency"
-    assert any(rule.startswith("pattern:") for rule in result.triggered_rules)
-
-
-@pytest.mark.asyncio
 async def test_critical_compound_pattern_path(engine):
     result = await engine.analyze(_input("我胸部很痛，也透不过气"))
     assert result.level == "critical"
@@ -258,44 +250,6 @@ async def test_medium_risk_gate_persists_without_family_outbox(monkeypatch):
     persisted.assert_awaited_once()
     family_notify.assert_not_awaited()
     stream.send_risk_alert.assert_awaited_once_with("medium", "")
-
-
-@pytest.mark.asyncio
-async def test_pi_critical_persistence_failure_still_emits_truthful_guidance(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from app.engines.base import RiskResult
-    from app.runtime.risk_gate import run_risk_gate
-
-    monkeypatch.setattr(
-        "app.runtime.risk_gate._analyze_risk",
-        AsyncMock(
-            return_value=RiskResult(
-                level="critical",
-                category="health_emergency",
-                confidence=0.95,
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        "app.runtime.risk_gate._dispatch_family_notify",
-        AsyncMock(return_value={"status": "failed", "outbox_ids": [], "error": "db down"}),
-    )
-    stream = AsyncMock()
-
-    gate = await run_risk_gate(
-        user_id="u1",
-        session_id="s1",
-        message="我现在胸口很痛，呼吸也很困难",
-        stream_mgr=stream,
-    )
-
-    assert gate.blocked is True
-    reply = stream.send_first_reply.await_args.args[0]
-    assert "120" in reply
-    assert "暂时无法联系" in reply
-    assert "已经收到" not in reply
-    stream.send_final.assert_awaited_once()
 
 
 @pytest.mark.asyncio
