@@ -1,4 +1,8 @@
+import asyncio
 from datetime import datetime
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.tools.caretask_batch import detect_compound_caretask, plan_caretask_batch
 from app.tools.caretask_tool import parse_due_at
@@ -46,3 +50,49 @@ def test_explicit_passed_today_time_requires_clarification():
 def test_unqualified_clock_selects_next_occurrence():
     due = parse_due_at("晚上8点提醒我吃药", now=datetime(2026, 7, 12, 13, 0))
     assert due == datetime(2026, 7, 13, 12, 0)
+
+
+@pytest.mark.asyncio
+async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    preflight = AsyncMock()
+    claim = AsyncMock()
+    monkeypatch.setattr(executor, "_preflight", preflight)
+    monkeypatch.setattr(executor, "_claim", claim)
+    cancelled = asyncio.Event()
+    cancelled.set()
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1",
+        query="看看任务 然后完成吃药",
+        idempotency_key="batch-1",
+        cancel_event=cancelled,
+    )
+
+    assert result.status == "cancelled"
+    preflight.assert_not_awaited()
+    claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_two_planned_creates_make_generic_cancel_ambiguous_and_zero_mutation(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    snapshot = AsyncMock(return_value=[])
+    claim = AsyncMock()
+    apply_action = AsyncMock()
+    monkeypatch.setattr(executor.svc, "snapshot_care_tasks", snapshot)
+    monkeypatch.setattr(executor, "_claim", claim)
+    monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1",
+        query="每天早上8点提醒我吃降压药 每天晚上8点提醒我吃降糖药 把吃药提醒取消",
+        idempotency_key="batch-ambiguous",
+    )
+
+    assert result.status == "needs_clarification"
+    assert result.data["reason"] == "ambiguous_task_ref"
+    claim.assert_not_awaited()
+    apply_action.assert_not_awaited()

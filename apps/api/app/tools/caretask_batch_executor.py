@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -22,7 +23,7 @@ def _receipt(item: PlannedCareAction) -> dict[str, Any]:
 
 def _match_task(tasks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     hint = svc.extract_resolve_hint(None, query)
-    if not hint or svc.is_generic_med_hint(hint):
+    if re.search(r"(?:把)?(?:吃药|服药|用药)提醒(?:取消|删掉|删除)?", query) or not hint or svc.is_generic_med_hint(hint):
         return [task for task in tasks if task.get("task_type") == "medication"]
     normalized = svc.normalize_title(hint)
     return [task for task in tasks if normalized in svc.normalize_title(task["title"]) or svc.normalize_title(task["title"]) in normalized]
@@ -42,12 +43,23 @@ async def _preflight(user_id: str, query: str, now: datetime) -> tuple[list[dict
             if "提醒" in item.query and due is None:
                 return [], "reminder_time_required"
             action.update(title=_infer_title(item.query, _infer_task_type(item.query)), task_type=_infer_task_type(item.query), due_at=due)
+            simulated.append(
+                {
+                    "id": f"planned:{item.index}",
+                    "title": action["title"],
+                    "task_type": action["task_type"],
+                    "status": "pending",
+                    "version": 1,
+                }
+            )
         elif item.action != "list":
             matches = _match_task(simulated, item.query)
             if len(matches) != 1:
                 return [], "ambiguous_task_ref" if matches else "no_active_care_task"
             target = matches[0]
             action.update(task_id=target["id"], expected_version=target.get("version", 1))
+            if str(target["id"]).startswith("planned:"):
+                action["ref_index"] = int(str(target["id"]).split(":", 1)[1])
             if item.action == "snooze":
                 action["minutes"] = item.minutes or 30
                 target["status"] = "snoozed"
@@ -252,6 +264,13 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
                     receipts[later] = {**receipts[later], "status": "unattempted", "reason": "cancelled"}
                 payload = await _save(record_id, "cancelled", receipts)
                 return ToolResult(tool_name="caretask", status="cancelled", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
+            if "ref_index" in action:
+                created = receipts[action["ref_index"]].get("result") or {}
+                action = {
+                    **action,
+                    "task_id": created.get("id"),
+                    "expected_version": created.get("version", 1),
+                }
             await _apply_action_transaction(
                 record_id=record_id,
                 user_id=user_id,
