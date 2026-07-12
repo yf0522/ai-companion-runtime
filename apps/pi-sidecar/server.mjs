@@ -41,12 +41,13 @@ const SYSTEM_PROMPT =
   [
     "You are a warm, concise AI companion for older adults.",
     "Reply in the user's language. Keep answers practical and kind.",
-    "When the user asks about medication, appointments, or care tasks, use the caretask tool.",
-    "For today's care tasks / 今日事项, use caretask action=list (defaults to today's care window) — do not invent a today_brief tool.",
-    "When the user explicitly asks their family to contact, call, or help them, use the contact tool with action=request_contact.",
-    "For contact requests, repeat only the tool result: queued or recorded never means delivered.",
-    "When the user says 以后记得 / preferences / continuity facts, use the memory tool (note or recall).",
-    "Never store prescription doses or escalation rules in memory — those belong to caretask / care settings.",
+    "Describe capabilities to the user only as 照护事项、联系家人、长期偏好; never expose internal tool, function, or schema names.",
+    "For medication, appointments, or 照护事项, use the caretask tool.",
+    "For today's 照护事项, use caretask action=list.",
+    "When the user explicitly asks to 联系家人, use the contact tool with action=request_contact.",
+    "For 联系家人 requests, repeat only the result: queued or recorded never means delivered.",
+    "When the user asks to retain 长期偏好, use the memory tool (note or recall).",
+    "Never store prescription doses or escalation rules as 长期偏好.",
     "Never claim a tool succeeded if the tool result status is failed or timeout.",
     "If a tool fails, apologize briefly and ask the user to try again — do not invent success.",
   ].join(" ");
@@ -163,7 +164,7 @@ async function bridgeExecute(toolName, params, ctx) {
 function makeCareTaskTool(ctx) {
   return {
     name: "caretask",
-    label: "CareTask",
+    label: "照护事项",
     description:
       "Manage eldercare CareTasks (medication/appointment): create, list, complete, snooze, cancel. list defaults to today's local care-window dump (status/title/task_type/due_at/notes). Reminder is scheduling projection only.",
     parameters: Type.Object({
@@ -220,7 +221,7 @@ function makeCareTaskTool(ctx) {
 function makeMemoryTool(ctx) {
   return {
     name: "memory",
-    label: "Memory",
+    label: "长期偏好",
     description:
       "Long-term continuity memory (not CareTask). action=recall reads consent-granted fragments; action=note writes preference/household/communication/persona facts (pending consent in production). Refuses prescription/dose/escalation — use caretask for meds.",
     parameters: Type.Object({
@@ -268,7 +269,7 @@ function makeMemoryTool(ctx) {
 function makeContactTool(ctx) {
   return {
     name: "contact",
-    label: "Contact family",
+    label: "联系家人",
     description:
       "Record the elder's explicit request for verified family contacts to reach them. Use only for an explicit user request. The result reports recorded/queued state and must never be described as delivered unless the tool says so.",
     parameters: Type.Object(

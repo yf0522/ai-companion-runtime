@@ -16,9 +16,17 @@ from app.tools.caretask_service import (
     refresh_status,
     title_fingerprint,
 )
-from app.tools.caretask_tool import CareTaskTool, _infer_action_from_query
+from app.tools.caretask_tool import CareTaskTool, _infer_action_from_query, format_caretask_time
 from app.tools.honesty import enforce_no_verbal_promise, response_claims_tool_success
 from app.tools.base import ToolResult
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2026-07-12T16:30:00Z", "2026-07-12T16:30:00+00:00", datetime(2026, 7, 12, 16, 30)],
+)
+def test_caretask_time_is_displayed_in_asia_shanghai(value):
+    assert format_caretask_time(value) == "2026年7月13日 00:30"
 from app.engines.base import AnalyzerInput
 from app.engines.intent_engine import IntentEngine
 

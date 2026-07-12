@@ -56,6 +56,23 @@ def parse_due_at(text: str, *, now: datetime | None = None) -> datetime | None:
 _parse_due_at = parse_due_at
 
 
+def format_caretask_time(value: Any) -> str:
+    """Format stored UTC timestamps for elders while leaving payload ISO intact."""
+    if value in (None, ""):
+        return ""
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        local = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+        return f"{local.year}年{local.month}月{local.day}日 {local:%H:%M}"
+    except (TypeError, ValueError):
+        return ""
+
+
 def _promises_reminder(text: str) -> bool:
     return bool(re.search(r"提醒(?:我)?|闹钟|到点|叫我", text))
 
@@ -119,7 +136,8 @@ def _format_candidates(candidates: list[dict[str, Any]]) -> str:
     """Elder-facing candidate list — titles only, no status/id jargon."""
     lines = []
     for i, t in enumerate(candidates[:8], start=1):
-        due = f"（{t['due_at']}）" if t.get("due_at") else ""
+        rendered = format_caretask_time(t.get("due_at"))
+        due = f"（{rendered}）" if rendered else ""
         lines.append(f"（{i}）{t['title']}{due}")
     return "\n".join(lines)
 
@@ -340,7 +358,8 @@ class CareTaskTool(ToolBase):
                     "proposed": row.get("proposed"),
                 },
             )
-        due_txt = f"（{row['due_at']}）" if row.get("due_at") else ""
+        rendered_due = format_caretask_time(row.get("due_at"))
+        due_txt = f"（{rendered_due}）" if rendered_due else ""
         return ToolResult(
             tool_name=self.name,
             status="success",
@@ -395,7 +414,8 @@ class CareTaskTool(ToolBase):
         # Elder UI: titles; structured dump carries status/due for the model.
         lines = []
         for t in dump[:10]:
-            due = f"（{t['due_at']}）" if t.get("due_at") else ""
+            rendered_due = format_caretask_time(t.get("due_at"))
+            due = f"（{rendered_due}）" if rendered_due else ""
             lines.append(f"- {t['title']}{due}")
         return ToolResult(
             tool_name=self.name,

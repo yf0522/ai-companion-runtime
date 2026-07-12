@@ -15,7 +15,7 @@ from app.runtime.agent_runtime import (
     normalize_runtime_name,
 )
 from app.runtime.harness_runtime import HarnessRuntime
-from app.runtime.pi_runtime import PiExperimentalRuntime
+from app.runtime.pi_runtime import PiExperimentalRuntime, _authoritative_tool_text
 from app.tools.base import ToolResult
 
 
@@ -36,6 +36,35 @@ def test_get_agent_runtime_factory():
     assert isinstance(get_agent_runtime("harness"), HarnessRuntime)
     assert isinstance(get_agent_runtime("pi_experimental"), PiExperimentalRuntime)
     assert get_agent_runtime(None).name == RUNTIME_HARNESS
+
+
+@pytest.mark.parametrize("semantic_status", ["refused", "pending", "unauthorized", "failed", "timeout"])
+def test_memory_terminal_semantic_status_is_authoritative(semantic_status):
+    assert _authoritative_tool_text({
+        "type": "tool_result",
+        "tool": "memory",
+        "status": "success",
+        "text": "这项长期偏好还没有保存。",
+        "data": {"status": semantic_status},
+    }) == "这项长期偏好还没有保存。"
+
+
+@pytest.mark.parametrize("status", ["success", "failed", "timeout", "needs_clarification"])
+def test_every_caretask_terminal_result_is_authoritative(status):
+    assert _authoritative_tool_text({
+        "type": "tool_result", "tool": "caretask", "status": status, "text": "照护事项结果"
+    }) == "照护事项结果"
+
+
+@pytest.mark.parametrize("delivery_status", ["no_verified_contact", "recorded", "queued", "pending", "delivered"])
+def test_every_contact_delivery_outcome_is_authoritative(delivery_status):
+    assert _authoritative_tool_text({
+        "type": "tool_result",
+        "tool": "contact",
+        "status": "success",
+        "text": "联系家人结果",
+        "data": {"delivery_status": delivery_status},
+    }) == "联系家人结果"
 
 
 @pytest.mark.asyncio
