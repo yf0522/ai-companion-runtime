@@ -44,7 +44,9 @@ async def test_high_scam_transfer(engine):
 
 @pytest.mark.asyncio
 async def test_exact_scam_transfer_pressure_and_code(engine):
-    result = await engine.analyze(_input("对方催我马上转账，还让我把验证码告诉他"))
+    result = await engine.analyze(
+        _input("有人打电话催我马上转账，还让我告诉他验证码，我还没有操作")
+    )
     assert result.level == "high"
     assert result.category == "scam_alert"
     assert any(rule.startswith("pattern:") for rule in result.triggered_rules)
