@@ -226,6 +226,45 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pi_enabled_sidecar_failure_reports_runtime_unavailable(monkeypatch):
+    async def fake_gate(**_kwargs):
+        from app.engines.base import RiskResult
+        from app.runtime.risk_gate import RiskGateOutcome
+
+        return RiskGateOutcome(
+            blocked=False,
+            risk=RiskResult(level="low"),
+            trace_id="trace-sidecar-unavailable",
+            metadata={"trace_id": "trace-sidecar-unavailable"},
+        )
+
+    async def fail_sidecar(**_kwargs):
+        raise RuntimeError("provider secret must not affect user-facing truth")
+
+    monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", True)
+    monkeypatch.setattr("app.runtime.pi_runtime.PiExperimentalRuntime._run_sidecar", fail_sidecar)
+    stream = MagicMock(dead=False)
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    result = await PiExperimentalRuntime().run(
+        user_id="user-1",
+        session_id="session-1",
+        message="你好",
+        stream_mgr=stream,
+        cancel_event=asyncio.Event(),
+    )
+
+    assert result["error"] == "pi_runtime_unavailable"
+    reply = stream.send_first_reply.await_args.args[0]
+    assert "尚未在本环境启用" not in reply
+    assert "暂时不可用" in reply
+    assert "provider secret" not in reply
+    stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_pi_disabled_final_emits_despite_hanging_audit(monkeypatch):
     async def fake_gate(**_kwargs):
         from app.engines.base import RiskResult

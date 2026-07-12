@@ -21,6 +21,7 @@ _PI_DISABLED_MSG = (
     "请在服务端设置 ENABLE_PI_RUNTIME=1 并部署 Node sidecar 后再试。"
     "当前已回退到安全模式：风险检测仍生效，但不会调用 Pi 循环。"
 )
+_PI_UNAVAILABLE_MSG = "对话服务暂时不可用，请稍后再试。风险检测仍然有效。"
 _SIDECAR_TIMEOUT_S = 120.0
 _AUDIT_TIMEOUT_S = 0.25
 _MEMORY_TERMINAL_STATES = {"refused", "pending", "unauthorized", "failed", "timeout"}
@@ -218,7 +219,10 @@ class PiExperimentalRuntime:
         except Exception as exc:
             logger.warning("Pi sidecar failed: %s", exc, exc_info=True)
             return await self._emit_disabled_stub(
-                stream_mgr, gate.trace_id, start, detail="暂时无法连接对话服务，请稍后再试。",
+                stream_mgr, gate.trace_id, start,
+                text=_PI_UNAVAILABLE_MSG,
+                error="pi_runtime_unavailable",
+                audit_outcome="runtime_unavailable",
                 user_id=user_id, session_id=session_id, user_message=message,
             )
 
@@ -565,11 +569,14 @@ class PiExperimentalRuntime:
         start: float,
         detail: str | None = None,
         *,
+        text: str | None = None,
+        error: str = "pi_experimental_not_enabled",
+        audit_outcome: str = "disabled",
         user_id: str | None = None,
         session_id: str | None = None,
         user_message: str | None = None,
     ) -> dict:
-        text = _PI_DISABLED_MSG if detail is None else f"{_PI_DISABLED_MSG}\n\n({detail})"
+        text = text or (_PI_DISABLED_MSG if detail is None else f"{_PI_DISABLED_MSG}\n\n({detail})")
         ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start) * 1000)
@@ -586,14 +593,14 @@ class PiExperimentalRuntime:
             await _persist_pi_evidence_best_effort(
                 session_id=session_id, user_id=user_id, trace_id=trace_id,
                 user_content=user_message, assistant_content=text,
-                outcome="disabled_or_failure", latency_ms=total_latency_ms,
+                outcome=audit_outcome, latency_ms=total_latency_ms,
             )
         return {
             "trace_id": trace_id,
             "message_id": message_id,
             "agent_runtime": self.name,
             "pi_experimental": True,
-            "error": "pi_experimental_not_enabled",
+            "error": error,
         }
 
 
