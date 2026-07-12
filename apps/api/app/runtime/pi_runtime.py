@@ -133,6 +133,26 @@ def _bounded_tool_receipt_copy(data: dict | None) -> dict:
     return copied
 
 
+def _semantic_audit_outcome(
+    tool_name: str | None,
+    tool_status: str | None,
+    tool_data: dict | None,
+) -> tuple[str, str | None]:
+    """Return operator-facing outcome/status from authoritative domain truth."""
+    if not tool_name:
+        return "assistant_completed", None
+    data = tool_data if isinstance(tool_data, dict) else {}
+    semantic = data.get("status") or data.get("delivery_status") or tool_status or "unknown"
+
+    def normalized(value: object) -> str:
+        text = "".join(ch if ch.isalnum() else "_" for ch in str(value).lower())
+        return "_".join(part for part in text.split("_") if part)[:40] or "unknown"
+
+    tool = normalized(tool_name)
+    status = normalized(semantic)
+    return f"{tool}_{status}"[:80], status
+
+
 class PiExperimentalRuntime:
     """Experimental Pi agent path — risk gate first, then pi-agent-core sidecar."""
 
@@ -508,12 +528,17 @@ class PiExperimentalRuntime:
             memory_updated=False,
         )
         terminal_tool = tools_used[-1] if tools_used else {}
+        audit_outcome, audit_tool_status = _semantic_audit_outcome(
+            str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
+            str(terminal_tool.get("status")) if terminal_tool else None,
+            terminal_tool_data or terminal_tool,
+        )
         await _persist_pi_evidence_best_effort(
             session_id=session_id, user_id=user_id, trace_id=trace_id,
             user_content=message, assistant_content=response_text,
-            outcome="sidecar_success", latency_ms=total_latency_ms,
+            outcome=audit_outcome, latency_ms=total_latency_ms,
             tool_name=str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
-            tool_status=str(terminal_tool.get("status")) if terminal_tool else None,
+            tool_status=audit_tool_status,
             tool_data=terminal_tool_data or terminal_tool,
         )
         return {
