@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -230,6 +230,8 @@ async def test_transaction_transition_refreshes_due_state_before_completion(monk
     monkeypatch.setattr(
         service, "_get_versioned_task_for_update", AsyncMock(return_value=row)
     )
+    refresh = MagicMock(return_value="due")
+    monkeypatch.setattr(service, "refresh_status", refresh)
     db = AsyncMock()
     result = await service.transition_care_task_in_transaction(
         db,
@@ -242,6 +244,9 @@ async def test_transaction_transition_refreshes_due_state_before_completion(monk
 
     assert result["status"] == "done"
     assert row.completed_at == now
+    refresh.assert_called_once_with(
+        "pending", datetime(2026, 7, 12, 3, 0), None, now
+    )
     db.flush.assert_awaited_once()
     db.commit.assert_not_awaited()
 
