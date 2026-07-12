@@ -321,8 +321,16 @@ async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str)
             result["delivery_queued"] = True
         return result
     except Exception as exc:
-        logger.warning("Risk gate family notify failed: %s", exc)
-        return {"status": "failed", "outbox_ids": [], "error": str(exc)}
+        logger.warning(
+            "Risk gate family notify failed trace=%s error_class=%s code=family_notify_failed",
+            trace_id[:80], type(exc).__name__,
+        )
+        return {
+            "status": "failed",
+            "outbox_ids": [],
+            "error_class": type(exc).__name__,
+            "error_code": "family_notify_failed",
+        }
 
 
 async def persist_nonblocking_decision(user_id: str, risk: RiskResult, trace_id: str) -> dict:
