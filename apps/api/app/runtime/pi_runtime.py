@@ -142,13 +142,18 @@ def _semantic_audit_outcome(
     if not tool_name:
         return "assistant_completed", None
     data = tool_data if isinstance(tool_data, dict) else {}
-    semantic = data.get("status") or data.get("delivery_status") or tool_status or "unknown"
 
     def normalized(value: object) -> str:
         text = "".join(ch if ch.isalnum() else "_" for ch in str(value).lower())
         return "_".join(part for part in text.split("_") if part)[:40] or "unknown"
 
     tool = normalized(tool_name)
+    if tool == "contact":
+        semantic = data.get("delivery_status") or data.get("status") or tool_status or "unknown"
+    elif tool == "memory":
+        semantic = data.get("status") or tool_status or "unknown"
+    else:
+        semantic = data.get("status") or data.get("delivery_status") or tool_status or "unknown"
     status = normalized(semantic)
     return f"{tool}_{status}"[:80], status
 
