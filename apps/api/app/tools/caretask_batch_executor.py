@@ -124,7 +124,112 @@ async def _save(record_id: Any, status: str, receipts: list[dict[str, Any]]) -> 
     return payload
 
 
+async def _apply_action_transaction(
+    *,
+    record_id: Any,
+    user_id: str,
+    action: dict[str, Any],
+    receipts: list[dict[str, Any]],
+    now: datetime,
+) -> dict[str, Any]:
+    """Commit one domain mutation and its receipt under the same transaction."""
+    from app.db.models import CareTask, IdempotencyRecord, Reminder
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        ledger = await db.get(IdempotencyRecord, record_id, with_for_update=True)
+        if ledger is None or ledger.status not in {"claimed", "running"}:
+            raise RuntimeError("batch_ledger_not_active")
+        kind = action["action"]
+        db_user = svc.normalize_user_id(user_id)
+        if kind == "list":
+            result: Any = {"count": len(await svc.snapshot_care_tasks(user_id=user_id, now=now))}
+        elif kind == "create":
+            reminder_id = None
+            schedule_type = "daily" if re.search(r"每天|每日", action["query"]) else "once"
+            if action["due_at"] is not None:
+                reminder = Reminder(
+                    user_id=db_user,
+                    title=action["title"],
+                    description=f"caretask:{action['task_type']}",
+                    schedule_type=schedule_type,
+                    time_of_day=action["due_at"],
+                    next_fire_at=action["due_at"],
+                    is_active=True,
+                    created_by="chat",
+                )
+                db.add(reminder)
+                await db.flush()
+                reminder_id = reminder.id
+            row = CareTask(
+                user_id=db_user,
+                title=action["title"],
+                task_type=action["task_type"],
+                status=svc.infer_initial_status(action["due_at"], now),
+                due_at=action["due_at"],
+                reminder_id=reminder_id,
+                created_by="chat",
+            )
+            db.add(row)
+            await db.flush()
+            result = svc.task_to_dict(row, schedule_type=schedule_type)
+        else:
+            row = await svc._get_versioned_task_for_update(
+                db, db_user, action["task_id"], action["expected_version"]
+            )
+            reminder = await db.get(Reminder, row.reminder_id) if row.reminder_id else None
+            if kind == "snooze":
+                svc.assert_transition(row.status, "snoozed")
+                row.status = "snoozed"
+                row.snooze_until = now + timedelta(minutes=action["minutes"])
+                row.due_at = row.snooze_until
+                if reminder is not None:
+                    reminder.next_fire_at = row.snooze_until
+                    reminder.is_active = True
+            elif kind == "complete":
+                svc.assert_transition(row.status, "done")
+                row.status = "done"
+                row.completed_at = now
+                row.snooze_until = None
+                if reminder is not None:
+                    reminder.is_active = False
+            else:
+                svc.assert_transition(row.status, "cancelled")
+                row.status = "cancelled"
+                row.snooze_until = None
+                if reminder is not None:
+                    reminder.is_active = False
+            row.version = (row.version or 1) + 1
+            row.updated_at = now
+            await db.flush()
+            result = svc.task_to_dict(
+                row, schedule_type=reminder.schedule_type if reminder is not None else None
+            )
+        receipts[action["index"]] = {
+            **receipts[action["index"]],
+            "status": "completed",
+            "result": result,
+        }
+        payload = {
+            "status": "running",
+            "heartbeat_at": datetime.utcnow().isoformat(),
+            "receipts": receipts,
+        }
+        ledger.status = "running"
+        ledger.response_json = payload
+        ledger.updated_at = datetime.utcnow()
+        await db.commit()
+        return result
+
+
 async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: str, cancel_event: asyncio.Event | None = None) -> ToolResult:
+    if cancel_event and cancel_event.is_set():
+        return ToolResult(
+            tool_name="caretask",
+            status="cancelled",
+            display_text="已取消，本次没有更改照护事项。",
+            data={"action": "caretask_batch", "status": "cancelled", "receipts": []},
+        )
     now = datetime.utcnow()
     actions, reason = await _preflight(user_id, query, now)
     if reason:
@@ -147,18 +252,13 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
                     receipts[later] = {**receipts[later], "status": "unattempted", "reason": "cancelled"}
                 payload = await _save(record_id, "cancelled", receipts)
                 return ToolResult(tool_name="caretask", status="cancelled", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
-            if action["action"] == "list":
-                result = await svc.snapshot_care_tasks(user_id=user_id, now=now)
-            elif action["action"] == "create":
-                result = await svc.create_care_task(user_id=user_id, title=action["title"], task_type=action["task_type"], due_at=action["due_at"], created_by="chat", link_reminder=action["due_at"] is not None, query=action["query"])
-            elif action["action"] == "snooze":
-                result = await svc.snooze_care_task(user_id=user_id, task_id=action["task_id"], minutes=action["minutes"], expected_version=action["expected_version"])
-            elif action["action"] == "complete":
-                result = await svc.complete_care_task(user_id=user_id, task_id=action["task_id"], expected_version=action["expected_version"])
-            else:
-                result = await svc.cancel_care_task(user_id=user_id, task_id=action["task_id"], expected_version=action["expected_version"])
-            receipts[index] = {**receipts[index], "status": "completed", "result": result}
-            await _save(record_id, "running", receipts)
+            await _apply_action_transaction(
+                record_id=record_id,
+                user_id=user_id,
+                action=action,
+                receipts=receipts,
+                now=now,
+            )
         except Exception as exc:
             receipts[index] = {**receipts[index], "status": "failed", "reason": type(exc).__name__}
             for later in range(index + 1, len(receipts)):
