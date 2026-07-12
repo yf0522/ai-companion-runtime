@@ -57,9 +57,11 @@ async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
     from app.tools import caretask_batch_executor as executor
 
     preflight = AsyncMock()
-    claim = AsyncMock()
+    claim = AsyncMock(return_value=("ledger-1", "owner-1", None))
+    save = AsyncMock(return_value={"status": "completed", "receipts": []})
     monkeypatch.setattr(executor, "_preflight", preflight)
     monkeypatch.setattr(executor, "_claim", claim)
+    monkeypatch.setattr(executor, "_save", save)
     cancelled = asyncio.Event()
     cancelled.set()
 
@@ -80,10 +82,12 @@ async def test_two_planned_creates_make_generic_cancel_ambiguous_and_zero_mutati
     from app.tools import caretask_batch_executor as executor
 
     snapshot = AsyncMock(return_value=[])
-    claim = AsyncMock()
+    claim = AsyncMock(return_value=("ledger-1", "owner-1", None))
+    save = AsyncMock(return_value={"status": "completed", "receipts": []})
     apply_action = AsyncMock()
     monkeypatch.setattr(executor.svc, "snapshot_care_tasks", snapshot)
     monkeypatch.setattr(executor, "_claim", claim)
+    monkeypatch.setattr(executor, "_save", save)
     monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
 
     result = await executor.execute_caretask_batch(
@@ -94,5 +98,6 @@ async def test_two_planned_creates_make_generic_cancel_ambiguous_and_zero_mutati
 
     assert result.status == "needs_clarification"
     assert result.data["reason"] == "ambiguous_task_ref"
-    claim.assert_not_awaited()
+    claim.assert_awaited_once()
+    save.assert_awaited_once()
     apply_action.assert_not_awaited()

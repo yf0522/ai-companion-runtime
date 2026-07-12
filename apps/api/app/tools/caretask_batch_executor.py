@@ -261,7 +261,19 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
     now = datetime.utcnow()
     actions, reason = await _preflight(user_id, query, now)
     if reason:
-        return ToolResult(tool_name="caretask", status="needs_clarification", display_text="为了准确处理，请再说明具体事项或时间。", data={"action": "caretask_batch", "reason": reason, "receipts": []})
+        request_hash = hashlib.sha256(query.strip().encode()).hexdigest()
+        receipts = [{"index": 0, "action": "clarify", "status": "needs_clarification", "reason": reason}]
+        record_id, owner, replay = await _claim(
+            user_id, idempotency_key or request_hash, request_hash, receipts
+        )
+        payload = replay or await _save(
+            record_id,
+            "completed",
+            receipts,
+            owner=owner,
+            request_hash=request_hash,
+        )
+        return ToolResult(tool_name="caretask", status="needs_clarification", display_text="为了准确处理，请再说明具体事项或时间。", data={"action": "caretask_batch", "reason": reason, **payload})
     normalized = json.dumps(actions, ensure_ascii=False, sort_keys=True, default=str)
     request_hash = hashlib.sha256(normalized.encode()).hexdigest()
     receipts = [{"index": a["index"], "action": a["action"], "status": "planned"} for a in actions]
