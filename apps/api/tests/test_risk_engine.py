@@ -295,6 +295,45 @@ async def test_medium_risk_persistence_degradation_is_bounded_and_nonblocking(mo
 
 
 @pytest.mark.asyncio
+async def test_family_notify_failure_is_truthful_bounded_and_redacted(monkeypatch, caplog):
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import (
+        _dispatch_family_notify,
+        build_safety_response,
+        load_safety_message,
+    )
+
+    async def fail(**_kwargs):
+        raise RuntimeError("provider secret SQL user message")
+
+    monkeypatch.setattr(
+        "app.workers.notification_outbox_worker.create_safety_notification_pipeline",
+        fail,
+    )
+    trace_id = "trace-family-" + ("x" * 200)
+    risk = RiskResult(level="critical", category="health_emergency")
+
+    result = await _dispatch_family_notify("user-1", risk, trace_id)
+    response = build_safety_response(
+        load_safety_message(risk.level, risk.category), result
+    )
+
+    assert result == {
+        "status": "failed",
+        "outbox_ids": [],
+        "error_class": "RuntimeError",
+        "error_code": "family_notify_failed",
+    }
+    assert "provider secret" not in caplog.text
+    assert f"trace={trace_id[:80]}" in caplog.text
+    assert trace_id not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "code=family_notify_failed" in caplog.text
+    assert "暂时无法联系" in response
+    assert "已经通知" not in response
+
+
+@pytest.mark.asyncio
 async def test_pi_critical_persistence_failure_still_emits_truthful_guidance(monkeypatch):
     from unittest.mock import AsyncMock
 
