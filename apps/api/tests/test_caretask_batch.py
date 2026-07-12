@@ -184,6 +184,55 @@ async def test_transaction_failure_commits_neither_domain_nor_receipt(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_plan_audit_fields_survive_running_terminal_and_cached_replay(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    ledger = SimpleNamespace(
+        request_hash="request-hash",
+        status="claimed",
+        response_json={
+            "status": "claimed",
+            "owner": "owner",
+            "plan_hash": "original-plan-hash",
+            "frozen_at": "2026-07-12T04:00:00",
+            "receipts": [{"index": 0, "action": "list", "status": "planned"}],
+        },
+        updated_at=None,
+    )
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=ledger)
+    db.commit = AsyncMock()
+
+    class SessionContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.db.session.async_session", lambda: SessionContext())
+    monkeypatch.setattr(executor.svc, "snapshot_care_tasks", AsyncMock(return_value=[]))
+    receipts = [{"index": 0, "action": "list", "status": "planned"}]
+
+    await executor._apply_action_transaction(
+        record_id="ledger", user_id="user-1",
+        action={"index": 0, "action": "list", "scope": "all"},
+        receipts=receipts, now=datetime(2026, 7, 12, 4, 0),
+        owner="owner", request_hash="request-hash",
+    )
+    assert ledger.response_json["plan_hash"] == "original-plan-hash"
+    assert ledger.response_json["frozen_at"] == "2026-07-12T04:00:00"
+
+    terminal = await executor._save(
+        "ledger", "completed", receipts,
+        owner="owner", request_hash="request-hash",
+    )
+    replay = executor._result_from_replay(terminal)
+    assert replay.data["plan_hash"] == "original-plan-hash"
+    assert replay.data["frozen_at"] == "2026-07-12T04:00:00"
+
+
+@pytest.mark.asyncio
 async def test_preflight_preserves_canonical_create_reuse(monkeypatch):
     from app.tools import caretask_batch_executor as executor
 
