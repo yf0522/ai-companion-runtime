@@ -99,8 +99,8 @@ def test_tool_receipt_audit_copy_is_deterministic_bounded_and_redacted():
             {"action": "memory_note", "status": "refused"},
         ),
         (
-            {"action": "memory_note", "status": "pending", "reason": "consent_required"},
-            {"action": "memory_note", "status": "pending", "reason": "consent_required"},
+            {"action": "memory_note", "status": "pending", "task_id": "task-1", "reason": "consent_required"},
+            {"action": "memory_note", "status": "pending", "task_id": "task-1", "reason": "consent_required"},
         ),
     ],
 )
