@@ -43,6 +43,22 @@ async def test_high_scam_transfer(engine):
 
 
 @pytest.mark.asyncio
+async def test_exact_scam_transfer_pressure_and_code(engine):
+    result = await engine.analyze(_input("对方催我马上转账，还让我把验证码告诉他"))
+    assert result.level == "high"
+    assert result.category == "scam_alert"
+    assert any(rule.startswith("pattern:") for rule in result.triggered_rules)
+
+
+@pytest.mark.asyncio
+async def test_exact_acute_health_compound_pattern(engine):
+    result = await engine.analyze(_input("我胸口很疼，也呼吸困难"))
+    assert result.level == "critical"
+    assert result.category == "health_emergency"
+    assert any(rule.startswith("pattern:") for rule in result.triggered_rules)
+
+
+@pytest.mark.asyncio
 async def test_high_scam_police(engine):
     result = await engine.analyze(_input("公安局打电话说我涉案"))
     assert result.level == "high"
@@ -193,6 +209,40 @@ async def test_medium_lonely(engine):
     result = await engine.analyze(_input("一个人好无聊"))
     assert result.level == "medium"
     assert result.category == "emotional_low"
+
+
+@pytest.mark.asyncio
+async def test_exact_loneliness_anhedonia_pattern(engine):
+    result = await engine.analyze(_input("我最近总觉得很孤单，什么都不想做"))
+    assert result.level == "medium"
+    assert result.category == "emotional_low"
+    assert any(rule.startswith("medium_pattern:") for rule in result.triggered_rules)
+
+
+@pytest.mark.asyncio
+async def test_medium_risk_gate_persists_without_family_outbox(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.runtime.risk_gate import run_risk_gate
+
+    persisted = AsyncMock(return_value={"status": "persisted", "outbox_ids": []})
+    family_notify = AsyncMock()
+    monkeypatch.setattr("app.runtime.risk_gate._persist_nonblocking_decision", persisted)
+    monkeypatch.setattr("app.runtime.risk_gate._dispatch_family_notify", family_notify)
+    stream = AsyncMock()
+
+    gate = await run_risk_gate(
+        user_id="u1",
+        session_id="s1",
+        message="我最近总觉得很孤单，什么都不想做",
+        stream_mgr=stream,
+        timeout_ms=500,
+    )
+
+    assert gate.blocked is False
+    persisted.assert_awaited_once()
+    family_notify.assert_not_awaited()
+    stream.send_risk_alert.assert_awaited_once_with("medium", "")
 
 
 @pytest.mark.asyncio

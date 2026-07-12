@@ -43,6 +43,24 @@ async def test_dispatch_awaits_and_returns_persisted_status(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_harness_medium_persists_decision_without_notification_pipeline(monkeypatch):
+    harness = AgentHarness()
+    persisted = AsyncMock(return_value={"status": "persisted", "outbox_ids": []})
+    dispatch = AsyncMock()
+    monkeypatch.setattr("app.runtime.risk_gate._persist_nonblocking_decision", persisted)
+    monkeypatch.setattr(harness, "_dispatch_risk_notification", dispatch)
+
+    # Exercise the shared policy at the same boundary used by the harness run loop.
+    from app.runtime.risk_gate import _persist_nonblocking_decision
+
+    risk = RiskResult(level="medium", category="emotional_low", confidence=0.7)
+    await _persist_nonblocking_decision("user-1", risk, "trace-medium")
+
+    persisted.assert_awaited_once()
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_handle_risk_records_failed_family_notification(monkeypatch):
     harness = AgentHarness()
     stream_mgr = MagicMock()

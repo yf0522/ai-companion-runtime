@@ -107,6 +107,15 @@ class RiskEngine(BaseEngine):
                     confidence=0.95,
                     triggered_rules=[f"keyword:{kw}"],
                 )
+        for pattern in critical.get("patterns", []):
+            match = re.search(pattern, message)
+            if match and not self._is_negated(message, match.group()):
+                return RiskResult(
+                    level="critical",
+                    category=critical.get("category", "health_emergency"),
+                    confidence=0.95,
+                    triggered_rules=[f"pattern:{pattern}"],
+                )
 
         # High: sub-categories (scam / health)
         high = rules.get("high", {})
@@ -139,6 +148,15 @@ class RiskEngine(BaseEngine):
                     category=medium.get("category", "emotional_low"),
                     confidence=0.6,
                     triggered_rules=[f"medium_keyword:{kw}"],
+                )
+        for pattern in medium.get("patterns", []):
+            match = re.search(pattern, message)
+            if match and not self._is_negated(message, match.group()):
+                return RiskResult(
+                    level="medium",
+                    category=medium.get("category", "emotional_low"),
+                    confidence=0.7,
+                    triggered_rules=[f"medium_pattern:{pattern}"],
                 )
 
         # Default: low risk

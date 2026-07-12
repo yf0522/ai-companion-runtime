@@ -216,13 +216,9 @@ class AgentHarness:
         )
 
         if risk.level == "medium":
-            await self._dispatch_risk_notification(
-                user_id,
-                "medium",
-                risk.category,
-                self._build_family_notification_summary(risk),
-                trace_id,
-            )
+            from app.runtime.risk_gate import _persist_nonblocking_decision
+
+            await _persist_nonblocking_decision(user_id, risk, trace_id)
 
         if "contact" in intent.tool_needs:
             return await self._run_deterministic_contact(
