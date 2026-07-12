@@ -301,6 +301,86 @@ async def test_pi_critical_persistence_failure_still_emits_truthful_guidance(mon
 
 
 @pytest.mark.asyncio
+async def test_blocked_turn_persists_messages_and_redacted_trace_events(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import run_risk_gate
+
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._analyze_risk",
+        AsyncMock(return_value=RiskResult(
+            level="high", category="scam_alert", triggered_rules=["keyword:验证码 654321"]
+        )),
+    )
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._dispatch_family_notify",
+        AsyncMock(return_value={"outbox_ids": ["opaque-id"], "webhook_status": "queued"}),
+    )
+    persist = AsyncMock(return_value=SimpleNamespace(assistant_message_id="assistant-1"))
+    add_event = AsyncMock()
+    monkeypatch.setattr("app.observability.message_evidence.persist_turn_messages", persist)
+    monkeypatch.setattr("app.observability.trace_service.TraceService.add_event", add_event)
+    stream = AsyncMock()
+
+    gate = await run_risk_gate(
+        user_id="user-1", session_id="session-1", message="验证码 654321",
+        stream_mgr=stream,
+    )
+
+    assert gate.metadata["audit_persisted"] is True
+    stored = persist.await_args.kwargs
+    assert stored["user_content"] == "验证码 654321"
+    assert stored["assistant_content"] == gate.metadata["response_text"]
+    assert stored["trace_id"] == gate.trace_id
+    assert [call.kwargs["step_name"] for call in add_event.await_args_list] == [
+        "incoming_turn", "final_outcome"
+    ]
+    assert [call.kwargs["step_index"] for call in add_event.await_args_list] == [0, 99]
+    event_json = str([call.kwargs for call in add_event.await_args_list])
+    assert "654321" not in event_json
+    assert gate.metadata["response_text"] not in event_json
+    assert "triggered_rule_types" in event_json
+    stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_blocked_turn_hanging_audit_cannot_suppress_final(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import run_risk_gate
+
+    async def hang(**_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._analyze_risk",
+        AsyncMock(return_value=RiskResult(level="critical", category="health_emergency")),
+    )
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._dispatch_family_notify",
+        AsyncMock(return_value={"status": "failed", "outbox_ids": []}),
+    )
+    monkeypatch.setattr("app.runtime.risk_gate._persist_blocked_turn_evidence", hang)
+    monkeypatch.setattr("app.runtime.risk_gate._BLOCKED_AUDIT_TIMEOUT_S", 0.001)
+    stream = AsyncMock()
+
+    gate = await run_risk_gate(
+        user_id="user-1", session_id="session-1", message="胸口痛，呼吸困难",
+        stream_mgr=stream,
+    )
+
+    assert gate.blocked is True
+    assert gate.metadata["audit_persisted"] is False
+    assert gate.metadata["audit_error"] == "TimeoutError"
+    stream.send_first_reply.assert_awaited_once()
+    stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_normal_message_is_low(engine):
     result = await engine.analyze(_input("今天天气真好"))
     assert result.level == "low"

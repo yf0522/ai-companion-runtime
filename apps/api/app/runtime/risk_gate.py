@@ -14,6 +14,7 @@ from app.engines.base import AnalyzerInput, RiskResult
 from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
+_BLOCKED_AUDIT_TIMEOUT_S = 0.25
 
 
 def _load_safety_messages() -> dict[str, str]:
@@ -64,12 +65,25 @@ async def run_risk_gate(
     risk = await _analyze_risk(user_id, session_id, message, trace_id, timeout_ms)
 
     if risk.level in ("critical", "high"):
-        await _emit_risk_block(risk, stream_mgr, trace_id, start, user_id=user_id)
+        block_metadata = await _emit_risk_block(
+            risk,
+            stream_mgr,
+            trace_id,
+            start,
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+        )
         return RiskGateOutcome(
             blocked=True,
             risk=risk,
             trace_id=trace_id,
-            metadata={"trace_id": trace_id, "blocked_by_risk": True, "agent_runtime": "risk_gate"},
+            metadata={
+                "trace_id": trace_id,
+                "blocked_by_risk": True,
+                "agent_runtime": "risk_gate",
+                **block_metadata,
+            },
         )
 
     if risk.level == "medium":
@@ -121,7 +135,9 @@ async def _emit_risk_block(
     start: float,
     *,
     user_id: str | None = None,
-) -> None:
+    session_id: str | None = None,
+    user_message: str | None = None,
+) -> dict:
     notify_status = (
         await _dispatch_family_notify(user_id, risk, trace_id)
         if user_id
@@ -144,6 +160,98 @@ async def _emit_risk_block(
         tools_used=[],
         memory_updated=False,
     )
+    audit_metadata = {"response_text": safety_msg, "audit_persisted": False}
+    if user_id and session_id and user_message is not None:
+        try:
+            await asyncio.wait_for(
+                _persist_blocked_turn_evidence(
+                    user_id=user_id,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    user_message=user_message,
+                    assistant_message=safety_msg,
+                    risk=risk,
+                    notify_status=notify_status,
+                    total_latency_ms=total_latency_ms,
+                ),
+                timeout=_BLOCKED_AUDIT_TIMEOUT_S,
+            )
+            audit_metadata["audit_persisted"] = True
+        except Exception as exc:
+            # Emergency guidance and terminal stream events have already been
+            # emitted. Surface audit degradation without withholding safety.
+            logger.error("Blocked-turn audit persistence failed trace=%s: %s", trace_id, exc)
+            audit_metadata["audit_error"] = type(exc).__name__
+    return audit_metadata
+
+
+async def _persist_blocked_turn_evidence(
+    *,
+    user_id: str,
+    session_id: str,
+    trace_id: str,
+    user_message: str,
+    assistant_message: str,
+    risk: RiskResult,
+    notify_status: dict,
+    total_latency_ms: int,
+) -> None:
+    """Persist reconstructable blocked-turn evidence without raw trace text."""
+    from app.observability.message_evidence import persist_turn_messages
+    from app.observability.trace_service import TraceService
+
+    persisted = await persist_turn_messages(
+        session_id=session_id,
+        user_id=user_id,
+        trace_id=trace_id,
+        user_content=user_message,
+        assistant_content=assistant_message,
+    )
+    trace = TraceService()
+    common = {
+        "risk_level": risk.level,
+        "risk_category": risk.category or "unknown",
+        "triggered_rule_types": _redacted_rule_types(risk.triggered_rules),
+    }
+    await trace.add_event(
+        trace_id=trace_id,
+        step_name="incoming_turn",
+        step_index=0,
+        user_id=user_id,
+        session_id=session_id,
+        input_json={**common, "content_redacted": True, "content_chars": len(user_message)},
+    )
+    await trace.add_event(
+        trace_id=trace_id,
+        step_name="final_outcome",
+        step_index=99,
+        user_id=user_id,
+        session_id=session_id,
+        output_json={
+            **common,
+            "blocked_by_risk": True,
+            "content_redacted": True,
+            "content_chars": len(assistant_message),
+            "assistant_message_id": persisted.assistant_message_id,
+            "notification_state": _bounded_notification_state(notify_status),
+        },
+        latency_ms=total_latency_ms,
+    )
+
+
+def _bounded_notification_state(status: dict | None) -> str:
+    status = status or {}
+    webhook_status = str(status.get("webhook_status") or "")
+    if webhook_status in {"delivered", "read", "acknowledged", "no_contact"}:
+        return webhook_status
+    if status.get("outbox_ids"):
+        return "queued"
+    return "failed"
+
+
+def _redacted_rule_types(rules: list[str] | None) -> list[str]:
+    """Keep bounded rule classes while dropping matched user fragments."""
+    return [str(rule).split(":", 1)[0][:40] for rule in (rules or [])[:10]]
 
 
 def load_safety_message(level: str, category: str | None = None) -> str:
