@@ -547,7 +547,7 @@ class PiExperimentalRuntime:
         audit_outcome, audit_tool_status = _semantic_audit_outcome(
             str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
             str(terminal_tool.get("status")) if terminal_tool else None,
-            terminal_tool_data or terminal_tool,
+            terminal_tool_data,
         )
         await _persist_pi_evidence_best_effort(
             session_id=session_id, user_id=user_id, trace_id=trace_id,
@@ -555,7 +555,7 @@ class PiExperimentalRuntime:
             outcome=audit_outcome, latency_ms=total_latency_ms,
             tool_name=str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
             tool_status=audit_tool_status,
-            tool_data=terminal_tool_data or terminal_tool,
+            tool_data=terminal_tool_data,
         )
         return {
             "trace_id": trace_id,
