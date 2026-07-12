@@ -224,8 +224,8 @@ class PiExperimentalRuntime:
             )
         except Exception as exc:
             logger.warning(
-                "Pi sidecar failed error_class=%s code=pi_runtime_unavailable",
-                type(exc).__name__,
+                "Pi sidecar failed trace=%s error_class=%s code=pi_runtime_unavailable",
+                gate.trace_id, type(exc).__name__,
             )
             return await self._emit_disabled_stub(
                 stream_mgr, gate.trace_id, start,

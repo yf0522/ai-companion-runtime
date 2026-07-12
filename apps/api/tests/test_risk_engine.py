@@ -412,6 +412,8 @@ async def test_blocked_turn_raising_audit_cannot_suppress_emergency(monkeypatch,
     assert gate.metadata["audit_error"] == "RuntimeError"
     assert "postgres secret" not in caplog.text
     assert "RuntimeError" in caplog.text
+    assert "trace=trace_" in caplog.text
+    assert "code=blocked_audit_failed" in caplog.text
     assert "120" in gate.metadata["response_text"]
     stream.send_first_reply.assert_awaited_once()
     stream.send_final.assert_awaited_once()

@@ -263,6 +263,8 @@ async def test_pi_enabled_sidecar_failure_reports_runtime_unavailable(monkeypatc
     assert "provider secret" not in reply
     assert "provider secret" not in caplog.text
     assert "RuntimeError" in caplog.text
+    assert "trace=trace-sidecar-unavailable" in caplog.text
+    assert "code=pi_runtime_unavailable" in caplog.text
     stream.send_final.assert_awaited_once()
 
 
