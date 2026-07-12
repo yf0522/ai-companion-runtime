@@ -715,8 +715,8 @@ class AgentHarness:
             return result
         except Exception as exc:
             logger.error(
-                "Notification dispatch failed error_class=%s code=notification_dispatch_failed",
-                type(exc).__name__,
+                "Notification dispatch failed trace=%s error_class=%s code=notification_dispatch_failed",
+                trace_id[:80], type(exc).__name__,
             )
             return {
                 "status": "failed",

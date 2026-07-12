@@ -151,6 +151,27 @@ async def test_handle_risk_records_failed_family_notification(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_notification_dispatch_failure_log_is_bounded_and_redacted(monkeypatch, caplog):
+    async def fail(**_kwargs):
+        raise RuntimeError("db secret SQL user text")
+
+    monkeypatch.setattr(
+        "app.workers.notification_outbox_worker.create_safety_notification_pipeline",
+        fail,
+    )
+    trace_id = "trace-safe-" + ("x" * 200)
+    result = await AgentHarness()._dispatch_risk_notification(
+        "user-1", "high", "scam_alert", "bounded summary", trace_id,
+    )
+
+    assert result["error_class"] == "RuntimeError"
+    assert result["error_code"] == "notification_dispatch_failed"
+    assert "db secret" not in caplog.text
+    assert f"trace={trace_id[:80]}" in caplog.text
+    assert trace_id not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_handle_risk_persists_trace_before_final(monkeypatch):
     harness = AgentHarness()
     stream_mgr = MagicMock()

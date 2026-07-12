@@ -183,7 +183,7 @@ async def _emit_risk_block(
             # emitted. Surface audit degradation without withholding safety.
             logger.error(
                 "Blocked-turn audit persistence failed trace=%s error_class=%s code=blocked_audit_failed",
-                trace_id, type(exc).__name__,
+                trace_id[:80], type(exc).__name__,
             )
             audit_metadata["audit_error"] = type(exc).__name__
     return audit_metadata
