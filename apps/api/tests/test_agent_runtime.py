@@ -176,6 +176,38 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pi_disabled_final_emits_despite_hanging_audit(monkeypatch):
+    async def fake_gate(**_kwargs):
+        from app.engines.base import RiskResult
+        from app.runtime.risk_gate import RiskGateOutcome
+
+        return RiskGateOutcome(
+            blocked=False, risk=RiskResult(level="low"), trace_id="trace-hang",
+            metadata={"trace_id": "trace-hang"},
+        )
+
+    async def hang(**_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", False)
+    monkeypatch.setattr("app.runtime.pi_runtime._persist_turn_best_effort", hang)
+    monkeypatch.setattr("app.runtime.pi_runtime._AUDIT_TIMEOUT_S", 0.001)
+    stream = MagicMock(dead=False)
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    result = await PiExperimentalRuntime().run(
+        user_id="user-1", session_id="session-1", message="你好",
+        stream_mgr=stream, cancel_event=asyncio.Event(),
+    )
+
+    assert result["error"] == "pi_experimental_not_enabled"
+    stream.send_first_reply.assert_awaited_once()
+    stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_pi_runtime_compound_caretask_bypasses_sidecar(monkeypatch):
     async def fake_gate(**kwargs):
         from app.runtime.risk_gate import RiskGateOutcome
