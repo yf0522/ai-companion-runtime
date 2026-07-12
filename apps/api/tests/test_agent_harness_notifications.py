@@ -43,18 +43,49 @@ async def test_dispatch_awaits_and_returns_persisted_status(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_harness_medium_persists_decision_without_notification_pipeline(monkeypatch):
-    harness = AgentHarness()
-    persisted = AsyncMock(return_value={"status": "persisted", "outbox_ids": []})
-    dispatch = AsyncMock()
-    monkeypatch.setattr("app.runtime.risk_gate._persist_nonblocking_decision", persisted)
-    monkeypatch.setattr(harness, "_dispatch_risk_notification", dispatch)
+async def test_medium_decision_pipeline_commits_only_safety_decision(monkeypatch):
+    import uuid
 
-    risk = RiskResult(level="medium", category="emotional_low", confidence=0.7)
-    await harness._persist_nonblocking_risk_decision("user-1", risk, "trace-medium")
+    from app.db.models import SafetyDecision
+    from app.workers.notification_outbox_worker import persist_nonblocking_safety_decision
 
-    persisted.assert_awaited_once()
-    dispatch.assert_not_awaited()
+    class FakeSession:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, value):
+            self.added.append(value)
+
+        async def flush(self):
+            self.added[-1].id = uuid.uuid4()
+
+        async def commit(self):
+            self.commits += 1
+
+    session = FakeSession()
+    monkeypatch.setattr("app.db.session.async_session", lambda: session)
+
+    result = await persist_nonblocking_safety_decision(
+        user_id=str(uuid.uuid4()),
+        risk_level="medium",
+        risk_category="emotional_low",
+        trace_id="trace-medium",
+    )
+
+    assert len(session.added) == 1
+    assert isinstance(session.added[0], SafetyDecision)
+    assert session.added[0].action == "record_and_companion"
+    assert session.commits == 1
+    assert result["outbox_ids"] == []
+    assert result["case_opened"] is False
+    assert result["webhook_status"] == "not_requested"
 
 
 @pytest.mark.asyncio
