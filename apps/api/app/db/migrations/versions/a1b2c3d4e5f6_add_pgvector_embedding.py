@@ -26,7 +26,11 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     try:
-        conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
+        # PostgreSQL marks the current transaction failed after a statement
+        # error. Isolate optional extension discovery in a savepoint so the
+        # outer Alembic transaction remains usable when pgvector is absent.
+        with conn.begin_nested():
+            conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
     except Exception:
         # pgvector not installed — skip, keep Text column
         return
