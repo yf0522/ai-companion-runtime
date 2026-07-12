@@ -16,6 +16,7 @@ export const ROLE_NAV = {
   ],
   operator: [
     { href: "/ops/care", label: "照护队列", description: "未解决事项和人工处理" },
+    { href: "/ops/platform", label: "平台就绪", description: "运行依赖、证据时效和修复责任" },
     { href: "/ops/households/readiness", label: "家庭就绪", description: "家庭、联系人和设备状态" },
     { href: "/ops/traces", label: "追踪", description: "决策、延迟和投递证据" },
   ],

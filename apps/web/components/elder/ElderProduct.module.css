@@ -28,7 +28,7 @@
 .outcomeReceipt[data-tone="success"] .outcomeIcon { background: var(--care-success-soft); color: var(--care-success); }
 .outcomeReceipt[data-tone="pending"] .outcomeIcon { background: var(--care-warning-soft); color: var(--care-warning); }
 .outcomeReceipt[data-tone="error"] .outcomeIcon { background: var(--care-critical-soft); color: var(--care-critical); }
-.outcomeReceipt[data-tone="info"] .outcomeIcon svg { animation: elder-spin 1.2s linear infinite; }
+.outcomeReceipt[data-tone="loading"] .outcomeIcon svg { animation: elder-spin 1.2s linear infinite; }
 
 .outcomeReceipt strong,
 .outcomeReceipt small { display: block; }

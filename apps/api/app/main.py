@@ -19,6 +19,7 @@ from app.api.alerts import router as alerts_router
 from app.api.carecircle import router as carecircle_router
 from app.api.contacts import router as contacts_router
 from app.api.households import router as households_router
+from app.api.platform import router as platform_router
 from app.observability.logger import setup_logging
 from app.observability.trace_service import setup_otel
 
@@ -73,6 +74,7 @@ app.include_router(devices_router, prefix="/api")
 app.include_router(households_router, prefix="/api")
 app.include_router(carecircle_router, prefix="/api")
 app.include_router(contacts_router, prefix="/api")
+app.include_router(platform_router, prefix="/api")
 app.include_router(asr_router)
 app.include_router(tts_router)
 

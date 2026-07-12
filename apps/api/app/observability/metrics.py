@@ -119,6 +119,63 @@ EVIDENCE_MANIFEST_TOTAL = Counter(
     ["environment", "status"],
 )
 
+PLATFORM_READINESS_EVALUATIONS_TOTAL = Counter(
+    "companion_platform_readiness_evaluations_total",
+    "Platform readiness evaluations by aggregate state",
+    ["status"],
+)
+
+PLATFORM_READINESS_CHECKS_TOTAL = Counter(
+    "companion_platform_readiness_checks_total",
+    "Platform readiness check results by stable check and state",
+    ["check_id", "status"],
+)
+
+PLATFORM_READINESS_CHECK_DURATION_SECONDS = Histogram(
+    "companion_platform_readiness_check_duration_seconds",
+    "Platform readiness check duration by stable check and state",
+    ["check_id", "status"],
+    buckets=[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 1.5, 2.0, 2.5],
+)
+
+
+def record_platform_readiness(payload: dict) -> None:
+    """Record readiness evidence with fixed, low-cardinality labels only."""
+    canonical_states = {"ready", "degraded", "unsafe_to_serve"}
+    stable_check_ids = {
+        "public_api_ws_config",
+        "risk_policy",
+        "database",
+        "redis",
+        "migration_heads",
+        "notification_provider",
+        "device_identity",
+        "worker_heartbeat",
+    }
+    aggregate = payload.get("status")
+    aggregate_label = aggregate if aggregate in canonical_states else "unsafe_to_serve"
+    PLATFORM_READINESS_EVALUATIONS_TOTAL.labels(status=aggregate_label).inc()
+
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        return
+    for raw_check_id, raw_check in checks.items():
+        check_id = raw_check_id if raw_check_id in stable_check_ids else "unknown"
+        check = raw_check if isinstance(raw_check, dict) else {}
+        state = check.get("status")
+        state_label = state if state in canonical_states else "unsafe_to_serve"
+        duration_ms = check.get("duration_ms")
+        duration_seconds = (
+            max(0.0, float(duration_ms)) / 1000
+            if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool)
+            else 0.0
+        )
+        PLATFORM_READINESS_CHECKS_TOTAL.labels(check_id=check_id, status=state_label).inc()
+        PLATFORM_READINESS_CHECK_DURATION_SECONDS.labels(
+            check_id=check_id,
+            status=state_label,
+        ).observe(duration_seconds)
+
 # Cost metrics
 COST_CENTS_TOTAL = Counter(
     "companion_cost_cents_total",

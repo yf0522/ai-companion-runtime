@@ -35,10 +35,22 @@ test("elder memory controls are discoverable without changing the primary route"
   assert.equal(defaultRouteForRole("elder"), "/elder/companion");
 });
 
-test("operator navigation exposes case queue and household readiness", () => {
-  const hrefs = navForRole("operator").map((item) => item.href);
+test("operator navigation exposes case queue and distinct platform and household readiness", () => {
+  const navigation = navForRole("operator");
+  const hrefs = navigation.map((item) => item.href);
   assert.ok(hrefs.includes("/ops/care"));
+  assert.ok(hrefs.includes("/ops/platform"));
   assert.ok(hrefs.includes("/ops/households/readiness"));
+  assert.notEqual(
+    navigation.find((item) => item.href === "/ops/platform")?.description,
+    navigation.find((item) => item.href === "/ops/households/readiness")?.description,
+  );
+});
+
+test("platform readiness is never exposed in elder or family navigation", () => {
+  for (const role of ["elder", "family"]) {
+    assert.equal(navForRole(role).some((item) => item.href === "/ops/platform"), false);
+  }
 });
 
 test("all role navigation entries have visible labels", () => {

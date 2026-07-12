@@ -18,6 +18,22 @@ interface WsState {
 }
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
+const TOOL_TURN_FINAL_GRACE_MS = 2500;
+let toolTurnFinalTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearToolTurnFinalTimer() {
+  if (toolTurnFinalTimer) clearTimeout(toolTurnFinalTimer);
+  toolTurnFinalTimer = null;
+}
+
+function armToolTurnFinalFallback(status: string | undefined) {
+  if (!["success", "failed", "timeout", "needs_clarification"].includes(status || "")) return;
+  clearToolTurnFinalTimer();
+  toolTurnFinalTimer = setTimeout(() => {
+    useChatStore.getState().completeToolTurnFallback();
+    toolTurnFinalTimer = null;
+  }, TOOL_TURN_FINAL_GRACE_MS);
+}
 
 export const useWsStore = create<WsState>((set, get) => ({
   status: "disconnected",
@@ -43,6 +59,7 @@ export const useWsStore = create<WsState>((set, get) => ({
       set({ status: newStatus });
       // Reset streaming state on disconnect to unblock the send button
       if (newStatus === "disconnected" || newStatus === "reconnecting" || newStatus === "failed") {
+        clearToolTurnFinalTimer();
         useChatStore.getState().resetStreaming();
       }
     });
@@ -93,10 +110,12 @@ export const useWsStore = create<WsState>((set, get) => ({
         candidates: data.candidates || payload.candidates,
         clarifyVerb: payload.clarify_verb || data.clarify_verb,
       });
+      armToolTurnFinalFallback(data.status);
     });
 
     // Final
     client.on("final", (data) => {
+      clearToolTurnFinalTimer();
       useChatStore.getState().finalizeMessage({
         traceId: data.trace_id,
         messageId: data.message_id,
@@ -109,6 +128,7 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Error
     client.on("error", (data) => {
+      clearToolTurnFinalTimer();
       useChatStore.getState().setError(data.message);
     });
 
@@ -117,6 +137,7 @@ export const useWsStore = create<WsState>((set, get) => ({
   },
 
   disconnect: () => {
+    clearToolTurnFinalTimer();
     get().client?.disconnect();
     set({ client: null, status: "disconnected", sessionId: null });
   },
@@ -130,6 +151,7 @@ export const useWsStore = create<WsState>((set, get) => ({
   },
 
   stopGeneration: () => {
+    clearToolTurnFinalTimer();
     const { client } = get();
     const traceId = useChatStore.getState().currentTraceId;
     if (client && traceId) client.stopGeneration(traceId);

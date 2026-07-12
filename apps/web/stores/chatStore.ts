@@ -174,6 +174,7 @@ interface ChatState {
     toolsUsed: unknown[];
     memoryUpdated: boolean;
   }) => void;
+  completeToolTurnFallback: () => void;
   setError: (message: string) => void;
   resetStreaming: () => void;
   clearMessages: () => void;
@@ -379,7 +380,10 @@ export const useChatStore = create<ChatState>()(
     set((s) => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
-      if (last?.role === "assistant" && last.status === "streaming") {
+      if (
+        last?.role === "assistant" &&
+        (last.status === "streaming" || last.traceId === data.traceId)
+      ) {
         const fromFinal = (data.toolsUsed || [])
           .map(normalizeToolChip)
           .filter((c): c is ToolChip => c !== null);
@@ -405,6 +409,21 @@ export const useChatStore = create<ChatState>()(
           status: "complete",
         };
       }
+      return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
+    });
+  },
+
+  completeToolTurnFallback: () => {
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      const hasTerminalToolResult = last?.toolsUsed?.some((tool) =>
+        ["success", "failed", "timeout", "needs_clarification"].includes(tool.status),
+      );
+      if (last?.role !== "assistant" || last.status !== "streaming" || !hasTerminalToolResult) {
+        return {};
+      }
+      msgs[msgs.length - 1] = { ...last, status: "complete" };
       return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
     });
   },

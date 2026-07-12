@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     controlled_elder_enrollment: bool = False
     platform_worker_heartbeat_key: str = "platform:worker:heartbeat"
     platform_worker_heartbeat_max_age_seconds: int = 120
+    platform_readiness_check_timeout_seconds: float = 2.0
+    platform_readiness_cleanup_grace_seconds: float = 0.05
+    platform_readiness_dependency_timeout_seconds: float = 1.5
+    platform_readiness_stale_after_seconds: int = 60
+    platform_readiness_future_skew_seconds: int = 5
 
     # OpenTelemetry
     otel_exporter_otlp_endpoint: str = "http://jaeger:4317"

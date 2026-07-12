@@ -21,7 +21,7 @@ async def get_redis() -> redis.Redis:
             decode_responses=True,
             max_connections=20,
         )
-        logger.info(f"Redis connected: {settings.redis_url}")
+        logger.info("Redis client initialized")
     return _pool
 
 

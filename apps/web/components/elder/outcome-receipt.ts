@@ -1,6 +1,6 @@
 import type { ToolChip } from "@/stores/chatStore";
 
-export type OutcomeReceiptTone = "info" | "success" | "pending" | "error";
+export type OutcomeReceiptTone = "loading" | "info" | "success" | "pending" | "error";
 
 export interface OutcomeReceiptModel {
   title: string;
@@ -10,13 +10,15 @@ export interface OutcomeReceiptModel {
 
 export function assistantBodyAfterToolReceipts(
   content: string,
-  tools: Pick<ToolChip, "status" | "displayText">[],
+  tools: Pick<ToolChip, "status" | "action" | "displayText">[],
 ): string {
   const body = content.trim();
   if (!body) return content;
 
   const repeatedBySuccessfulTool = tools.some((tool) =>
-    tool.status === "success" && tool.displayText?.trim() === body,
+    tool.status === "success" &&
+    !tool.action?.toLowerCase().includes("list") &&
+    tool.displayText?.trim() === body,
   );
   return repeatedBySuccessfulTool ? "" : content;
 }
@@ -41,7 +43,7 @@ export function outcomeReceiptForTool(
   tool: Pick<ToolChip, "tool" | "status" | "action" | "displayText" | "data">,
 ): OutcomeReceiptModel {
   if (tool.status === "calling") {
-    return { title: "正在处理", detail: "完成后会在这里说明结果。", tone: "info" };
+    return { title: "正在处理", detail: "完成后会在这里说明结果。", tone: "loading" };
   }
   if (tool.status === "needs_clarification") {
     return { title: "需要你确认", detail: "请核对下面的内容后再继续。", tone: "pending" };
@@ -103,7 +105,7 @@ export function outcomeReceiptForTool(
     if (action.includes("list")) {
       return {
         title: "已查看照护事项",
-        detail: safeDetail(tool.displayText, "没有因此修改任何提醒。"),
+        detail: "只读取了当前任务，没有修改任何提醒。",
         tone: "info",
       };
     }

@@ -77,7 +77,12 @@ test("outcome receipts never expose raw internal tool names", () => {
 
   const list = outcomeReceiptForTool({ tool: "caretask", status: "success", action: "caretask_list" });
   assert.equal(list.title, "已查看照护事项");
+  assert.equal(list.tone, "info");
+  assert.equal(list.detail, "只读取了当前任务，没有修改任何提醒。");
   assert.doesNotMatch(`${list.title}${list.detail}`, /已建立|已更新/);
+
+  const calling = outcomeReceiptForTool({ tool: "caretask", status: "calling" });
+  assert.equal(calling.tone, "loading");
 
   const recall = outcomeReceiptForTool({
     tool: "memory",
@@ -88,7 +93,7 @@ test("outcome receipts never expose raw internal tool names", () => {
   assert.equal(recall.title, "没有找到可使用的长期记忆");
 });
 
-test("tool receipt detail is not repeated as an assistant body", () => {
+test("read-only task results remain visible as the assistant answer", () => {
   const tools = [{
     tool: "caretask",
     status: "success",
@@ -97,7 +102,7 @@ test("tool receipt detail is not repeated as an assistant body", () => {
   }];
   assert.equal(
     assistantBodyAfterToolReceipts("您当前的照护任务：\n- 晚上吃药", tools),
-    "",
+    "您当前的照护任务：\n- 晚上吃药",
   );
   assert.equal(
     assistantBodyAfterToolReceipts("我再补充一句说明。", tools),
@@ -185,4 +190,36 @@ test("device-local chat history is partitioned by authenticated user and clearab
   assert.doesNotMatch(persisted, /不应写入|fragments|trace-secret|trace_id|internal_payload|memory_recall_provider/);
   assert.match(persisted, /"tool":"memory"/);
   assert.match(persisted, /"consent_status":"granted"/);
+});
+
+test("terminal tool results stop an orphaned spinner and accept a late final", async () => {
+  const { useChatStore } = await import("../stores/chatStore.ts");
+  useChatStore.getState().activateUser("elder-tool-fallback");
+  useChatStore.getState().clearMessages();
+  useChatStore.getState().startAssistantMessage("trace-tool-fallback");
+  useChatStore.getState().setToolResult({
+    tool: "caretask",
+    status: "success",
+    action: "caretask_list",
+    text: "您当前的照护任务：\n- 吃降糖药",
+  });
+
+  useChatStore.getState().completeToolTurnFallback();
+  let state = useChatStore.getState();
+  assert.equal(state.isStreaming, false);
+  assert.equal(state.messages.at(-1)?.status, "complete");
+  assert.equal(state.messages.at(-1)?.content, "");
+
+  useChatStore.getState().finalizeMessage({
+    traceId: "trace-tool-fallback",
+    messageId: "assistant-tool-final",
+    ttftMs: 12,
+    totalLatencyMs: 34,
+    toolsUsed: [{ tool: "caretask", status: "success", action: "caretask_list" }],
+    memoryUpdated: false,
+  });
+  state = useChatStore.getState();
+  assert.equal(state.messages.at(-1)?.id, "assistant-tool-final");
+  assert.equal(state.messages.at(-1)?.totalLatencyMs, 34);
+  assert.equal(state.messages.at(-1)?.status, "complete");
 });
