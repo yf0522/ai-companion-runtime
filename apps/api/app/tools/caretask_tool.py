@@ -53,9 +53,6 @@ def parse_due_at(text: str, *, now: datetime | None = None) -> datetime | None:
         return None
 
 
-_parse_due_at = parse_due_at
-
-
 def format_caretask_time(value: Any) -> str:
     """Format stored UTC timestamps for elders while leaving payload ISO intact."""
     if value in (None, ""):
@@ -301,7 +298,7 @@ class CareTaskTool(ToolBase):
             title = _infer_title(query, task_type)
         # Model-provided timestamps are untrusted semantic arguments. A CareTask
         # is scheduled only when the user's own utterance contains a parseable time.
-        due_at = _parse_due_at(query) if query else None
+        due_at = parse_due_at(query) if query else None
         if query and _promises_reminder(query) and due_at is None:
             return ToolResult(
                 tool_name=self.name,

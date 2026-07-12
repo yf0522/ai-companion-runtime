@@ -199,7 +199,13 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
             blocked=False,
             risk=RiskResult(level="low"),
             trace_id="trace_test_pi",
-            metadata={"trace_id": "trace_test_pi"},
+            metadata={
+                "trace_id": "trace_test_pi",
+                "decision_persistence": {
+                    "status": "failed", "error_class": "RuntimeError",
+                    "error_code": "decision_persistence_failed", "outbox_ids": [],
+                },
+            },
         )
 
     monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
@@ -222,6 +228,7 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
     assert gate_called["ok"] is True
     assert result["agent_runtime"] == RUNTIME_PI_EXPERIMENTAL
     assert result.get("error") == "pi_experimental_not_enabled"
+    assert result["decision_persistence"]["error_code"] == "decision_persistence_failed"
     stream.send_first_reply.assert_awaited()
 
 

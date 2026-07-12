@@ -224,7 +224,22 @@ class AgentHarness:
         )
 
         if risk.level == "medium":
-            await self._persist_nonblocking_risk_decision(user_id, risk, trace_id)
+            from app.runtime.risk_gate import persist_nonblocking_decision
+
+            decision = await persist_nonblocking_decision(user_id, risk, trace_id)
+            await _trace_svc.add_event(
+                trace_id=trace_id,
+                step_name="risk_decision_persistence",
+                step_index=5,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                output_json={
+                    key: decision[key]
+                    for key in ("status", "error_class", "error_code")
+                    if key in decision
+                },
+                status="success" if decision.get("status") == "persisted" else "failed",
+            )
 
         if "contact" in intent.tool_needs:
             return await self._run_deterministic_contact(
@@ -725,16 +740,6 @@ class AgentHarness:
                 "error_class": type(exc).__name__,
                 "error_code": "notification_dispatch_failed",
             }
-
-    async def _persist_nonblocking_risk_decision(
-        self,
-        user_id: str,
-        risk: RiskResult,
-        trace_id: str,
-    ) -> dict:
-        from app.runtime.risk_gate import _persist_nonblocking_decision
-
-        return await _persist_nonblocking_decision(user_id, risk, trace_id)
 
     def _build_family_notification_summary(self, risk: RiskResult) -> str:
         if risk.category == "scam_alert":

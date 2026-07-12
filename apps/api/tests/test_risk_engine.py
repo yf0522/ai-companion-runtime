@@ -244,7 +244,7 @@ async def test_medium_risk_gate_persists_without_family_outbox(monkeypatch):
 
     persisted = AsyncMock(return_value={"status": "persisted", "outbox_ids": []})
     family_notify = AsyncMock()
-    monkeypatch.setattr("app.runtime.risk_gate._persist_nonblocking_decision", persisted)
+    monkeypatch.setattr("app.runtime.risk_gate.persist_nonblocking_decision", persisted)
     monkeypatch.setattr("app.runtime.risk_gate._dispatch_family_notify", family_notify)
     stream = AsyncMock()
 
@@ -257,9 +257,39 @@ async def test_medium_risk_gate_persists_without_family_outbox(monkeypatch):
     )
 
     assert gate.blocked is False
+    assert gate.metadata["decision_persistence"] == {"status": "persisted", "outbox_ids": []}
     persisted.assert_awaited_once()
     family_notify.assert_not_awaited()
     stream.send_risk_alert.assert_awaited_once_with("medium", "")
+
+
+@pytest.mark.asyncio
+async def test_medium_risk_persistence_degradation_is_bounded_and_nonblocking(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import run_risk_gate
+
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._analyze_risk",
+        AsyncMock(return_value=RiskResult(level="medium", category="emotional_low")),
+    )
+    monkeypatch.setattr(
+        "app.runtime.risk_gate.persist_nonblocking_decision",
+        AsyncMock(return_value={
+            "status": "failed", "outbox_ids": [],
+            "error_class": "RuntimeError", "error_code": "decision_persistence_failed",
+        }),
+    )
+    family_notify = AsyncMock()
+    monkeypatch.setattr("app.runtime.risk_gate._dispatch_family_notify", family_notify)
+
+    gate = await run_risk_gate("u1", "s1", "我很孤单", AsyncMock())
+
+    assert gate.blocked is False
+    assert gate.metadata["decision_persistence"]["error_code"] == "decision_persistence_failed"
+    assert "error" not in gate.metadata["decision_persistence"]
+    family_notify.assert_not_awaited()
 
 
 @pytest.mark.asyncio

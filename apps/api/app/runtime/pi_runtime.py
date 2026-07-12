@@ -194,8 +194,12 @@ class PiExperimentalRuntime:
 
         from app.tools.caretask_batch import detect_compound_caretask
 
+        async def with_gate(awaitable: Any) -> dict:
+            result = await awaitable
+            return {**result, **gate.metadata}
+
         if detect_compound_caretask(message):
-            return await self._run_caretask_batch(
+            return await with_gate(self._run_caretask_batch(
                 user_id=user_id,
                 session_id=session_id,
                 message=message,
@@ -203,16 +207,16 @@ class PiExperimentalRuntime:
                 cancel_event=cancel_event,
                 trace_id=gate.trace_id,
                 start=start,
-            )
+            ))
 
         if not settings.enable_pi_runtime:
-            return await self._emit_disabled_stub(
+            return await with_gate(self._emit_disabled_stub(
                 stream_mgr, gate.trace_id, start,
                 user_id=user_id, session_id=session_id, user_message=message,
-            )
+            ))
 
         try:
-            return await self._run_sidecar(
+            return await with_gate(self._run_sidecar(
                 user_id=user_id,
                 session_id=session_id,
                 message=message,
@@ -221,19 +225,19 @@ class PiExperimentalRuntime:
                 trace_id=gate.trace_id,
                 start=start,
                 risk_level=getattr(gate.risk, "level", None),
-            )
+            ))
         except Exception as exc:
             logger.warning(
                 "Pi sidecar failed trace=%s error_class=%s code=pi_runtime_unavailable",
                 gate.trace_id[:80], type(exc).__name__,
             )
-            return await self._emit_disabled_stub(
+            return await with_gate(self._emit_disabled_stub(
                 stream_mgr, gate.trace_id, start,
                 text=_PI_UNAVAILABLE_MSG,
                 error="pi_runtime_unavailable",
                 audit_outcome="runtime_unavailable",
                 user_id=user_id, session_id=session_id, user_message=message,
-            )
+            ))
 
     async def _run_caretask_batch(
         self,

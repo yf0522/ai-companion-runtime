@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.tools.base import ToolResult
-from app.tools.caretask_batch import PlannedCareAction, plan_caretask_batch
+from app.tools.caretask_batch import plan_caretask_batch
 from app.tools.caretask_tool import _infer_task_type, _infer_title, parse_due_at
 from app.tools import caretask_service as svc
 
@@ -59,10 +59,6 @@ def _replay_snapshot(
                 "reason": "execution_interrupted",
             }
     return {**payload, "status": "interrupted", "receipts": current}, "interrupted"
-
-
-def _receipt(item: PlannedCareAction) -> dict[str, Any]:
-    return {"index": item.index, "action": item.action, "status": "planned", "query": item.query}
 
 
 def _match_task(tasks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
