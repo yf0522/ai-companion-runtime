@@ -328,7 +328,7 @@ async def _persist_nonblocking_decision(user_id: str, risk: RiskResult, trace_id
             risk_level=risk.level,
             risk_category=risk.category or "unknown",
             trace_id=trace_id,
-            evidence_json={"triggered_rules": list(risk.triggered_rules or [])},
+            evidence_json={"triggered_rule_types": _redacted_rule_types(risk.triggered_rules)},
             confidence=risk.confidence,
         )
     except Exception as exc:
