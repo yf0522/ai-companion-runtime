@@ -314,7 +314,7 @@ async def test_caretask_create_reuses_active_duplicate(monkeypatch):
     monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
     uid = "4b2e9f4d-7e7d-4e9a-bc3e-3f3b9e1a5ddf"
     first = await tool.execute(
-        {"action": "create", "query": "提醒我吃降压药", "user_id": uid}
+        {"action": "create", "query": "晚上8点提醒我吃降压药", "user_id": uid}
     )
     second = await tool.execute(
         {"action": "create", "query": "帮我记一下吃降压药", "user_id": uid}
@@ -443,7 +443,7 @@ async def test_caretask_create_clarifies_near_duplicate_different_title(monkeypa
     result = await tool.execute(
         {
             "action": "create",
-            "query": "提醒我吃降糖药",
+            "query": "晚上8点提醒我吃降糖药",
             "user_id": str(uuid.uuid4()),
         }
     )

@@ -51,6 +51,18 @@ class PiExperimentalRuntime:
         if cancel_event.is_set():
             return {"trace_id": gate.trace_id, "cancelled": True, "agent_runtime": self.name}
 
+        from app.tools.caretask_batch import detect_compound_caretask
+
+        if detect_compound_caretask(message):
+            return await self._run_caretask_batch(
+                user_id=user_id,
+                message=message,
+                stream_mgr=stream_mgr,
+                cancel_event=cancel_event,
+                trace_id=gate.trace_id,
+                start=start,
+            )
+
         if not settings.enable_pi_runtime:
             return await self._emit_disabled_stub(stream_mgr, gate.trace_id, start)
 
@@ -68,6 +80,61 @@ class PiExperimentalRuntime:
         except Exception as exc:
             logger.warning("Pi sidecar failed: %s", exc, exc_info=True)
             raise
+
+    async def _run_caretask_batch(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        stream_mgr: StreamManager,
+        cancel_event: asyncio.Event,
+        trace_id: str,
+        start: float,
+    ) -> dict:
+        """Execute compound CareTask turns without invoking Node or a model."""
+        from app.tools.caretask_tool import CareTaskTool
+
+        await stream_mgr.send_tool_status("caretask", "calling")
+        result = await CareTaskTool().execute(
+            {
+                "action": "batch",
+                "query": message,
+                "user_id": user_id,
+                "trace_id": trace_id,
+                "idempotency_key": trace_id,
+                "cancel_event": cancel_event,
+            }
+        )
+        data = result.data or {}
+        await stream_mgr.send_tool_result(
+            "caretask",
+            result.display_text,
+            status=result.status,
+            action="caretask_batch",
+            candidates=data.get("candidates"),
+            data=data,
+        )
+        ttft_ms = int((time.monotonic() - start) * 1000)
+        await stream_mgr.send_first_reply(result.display_text, ttft_ms)
+        total_latency_ms = int((time.monotonic() - start) * 1000)
+        message_id = f"m_{nanoid(size=12)}"
+        tools_used = [{"tool": "caretask", "action": "caretask_batch", "status": result.status}]
+        await stream_mgr.send_final(
+            trace_id=trace_id,
+            message_id=message_id,
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            tools_used=tools_used,
+            memory_updated=False,
+        )
+        return {
+            "trace_id": trace_id,
+            "message_id": message_id,
+            "agent_runtime": self.name,
+            "pi_experimental": True,
+            "response_text": result.display_text,
+            "tools_used": tools_used,
+        }
 
     async def _run_sidecar(
         self,

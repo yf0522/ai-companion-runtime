@@ -139,6 +139,33 @@ def refresh_status(status: str, due_at: datetime | None, snooze_until: datetime 
     return "pending"
 
 
+async def snapshot_care_tasks(*, user_id: str, now: datetime) -> list[dict[str, Any]]:
+    """Read active tasks once without refresh writes or commits."""
+    from sqlalchemy import select
+
+    from app.db.models import CareTask
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        rows = (
+            await db.execute(
+                select(CareTask)
+                .where(
+                    CareTask.user_id == normalize_user_id(user_id),
+                    CareTask.status.in_(list(ACTIVE_STATUSES)),
+                )
+                .order_by(CareTask.created_at.asc(), CareTask.id.asc())
+            )
+        ).scalars().all()
+        result = []
+        for row in rows:
+            item = task_to_dict(row)
+            item["status"] = refresh_status(row.status, row.due_at, row.snooze_until, now)
+            item["version"] = row.version or 1
+            result.append(item)
+        return result
+
+
 def task_to_dict(row: Any, *, schedule_type: str | None = None) -> dict[str, Any]:
     """Stable canonical CareTask representation for API and tool consumers."""
     status = str(row.status)
