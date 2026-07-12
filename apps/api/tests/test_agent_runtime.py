@@ -19,6 +19,7 @@ from app.runtime.pi_runtime import (
     PiExperimentalRuntime,
     _authoritative_tool_text,
     _bounded_tool_receipt_copy,
+    _semantic_audit_outcome,
 )
 from app.tools.base import ToolResult
 
@@ -110,6 +111,21 @@ def test_tool_receipt_audit_copy_is_deterministic_bounded_and_redacted():
 )
 def test_tool_receipt_copy_preserves_authoritative_semantic_status(data, expected):
     assert _bounded_tool_receipt_copy(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("tool", "transport", "data", "expected"),
+    [
+        ("memory", "success", {"status": "refused"}, ("memory_refused", "refused")),
+        ("contact", "success", {"delivery_status": "queued"}, ("contact_queued", "queued")),
+        ("caretask", "failed", {}, ("caretask_failed", "failed")),
+        (None, None, None, ("assistant_completed", None)),
+    ],
+)
+def test_semantic_audit_outcome_uses_authoritative_domain_state(
+    tool, transport, data, expected
+):
+    assert _semantic_audit_outcome(tool, transport, data) == expected
 
 
 @pytest.mark.asyncio
