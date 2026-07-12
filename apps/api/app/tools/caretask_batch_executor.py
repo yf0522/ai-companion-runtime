@@ -21,7 +21,7 @@ def _receipt(item: PlannedCareAction) -> dict[str, Any]:
 
 
 def _match_task(tasks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-    hint = svc.extract_task_hint(query)
+    hint = svc.extract_resolve_hint(None, query)
     if not hint or svc.is_generic_med_hint(hint):
         return [task for task in tasks if task.get("task_type") == "medication"]
     normalized = svc.normalize_title(hint)
@@ -128,25 +128,25 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
     now = datetime.utcnow()
     actions, reason = await _preflight(user_id, query, now)
     if reason:
-        return ToolResult("caretask", "needs_clarification", "为了准确处理，请再说明具体事项或时间。", {"action": "caretask_batch", "reason": reason, "receipts": []})
+        return ToolResult(tool_name="caretask", status="needs_clarification", display_text="为了准确处理，请再说明具体事项或时间。", data={"action": "caretask_batch", "reason": reason, "receipts": []})
     normalized = json.dumps(actions, ensure_ascii=False, sort_keys=True, default=str)
     request_hash = hashlib.sha256(normalized.encode()).hexdigest()
     receipts = [{"index": a["index"], "action": a["action"], "status": "planned"} for a in actions]
     record_id, replay = await _claim(user_id, idempotency_key or request_hash, request_hash, receipts)
     if replay is not None:
         status = replay.get("status", "failed")
-        return ToolResult("caretask", "success" if status == "completed" else status, _display(replay.get("receipts", [])), {"action": "caretask_batch", **replay})
+        return ToolResult(tool_name="caretask", status="success" if status == "completed" else status, display_text=_display(replay.get("receipts", [])), data={"action": "caretask_batch", **replay})
     if cancel_event and cancel_event.is_set():
         receipts = [{**r, "status": "unattempted", "reason": "cancelled"} for r in receipts]
         payload = await _save(record_id, "cancelled", receipts)
-        return ToolResult("caretask", "cancelled", _display(receipts), {"action": "caretask_batch", **payload})
+        return ToolResult(tool_name="caretask", status="cancelled", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
     for index, action in enumerate(actions):
         try:
             if cancel_event and cancel_event.is_set():
                 for later in range(index, len(receipts)):
                     receipts[later] = {**receipts[later], "status": "unattempted", "reason": "cancelled"}
                 payload = await _save(record_id, "cancelled", receipts)
-                return ToolResult("caretask", "cancelled", _display(receipts), {"action": "caretask_batch", **payload})
+                return ToolResult(tool_name="caretask", status="cancelled", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
             if action["action"] == "list":
                 result = await svc.snapshot_care_tasks(user_id=user_id, now=now)
             elif action["action"] == "create":
@@ -164,6 +164,6 @@ async def execute_caretask_batch(*, user_id: str, query: str, idempotency_key: s
             for later in range(index + 1, len(receipts)):
                 receipts[later] = {**receipts[later], "status": "unattempted", "reason": "prior_action_failed"}
             payload = await _save(record_id, "failed", receipts)
-            return ToolResult("caretask", "failed", _display(receipts), {"action": "caretask_batch", **payload})
+            return ToolResult(tool_name="caretask", status="failed", display_text=_display(receipts), data={"action": "caretask_batch", **payload})
     payload = await _save(record_id, "completed", receipts)
-    return ToolResult("caretask", "success", _display(receipts), {"action": "caretask_batch", **payload})
+    return ToolResult(tool_name="caretask", status="success", display_text=_display(receipts), data={"action": "caretask_batch", **payload})

@@ -16,6 +16,7 @@ from app.runtime.agent_runtime import (
 )
 from app.runtime.harness_runtime import HarnessRuntime
 from app.runtime.pi_runtime import PiExperimentalRuntime
+from app.tools.base import ToolResult
 
 
 def test_normalize_runtime_defaults_to_harness():
@@ -74,6 +75,51 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
     assert result["agent_runtime"] == RUNTIME_PI_EXPERIMENTAL
     assert result.get("error") == "pi_experimental_not_enabled"
     stream.send_first_reply.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pi_runtime_compound_caretask_bypasses_sidecar(monkeypatch):
+    async def fake_gate(**kwargs):
+        from app.runtime.risk_gate import RiskGateOutcome
+        from app.engines.base import RiskResult
+
+        return RiskGateOutcome(
+            blocked=False,
+            risk=RiskResult(level="low"),
+            trace_id="trace_batch",
+            metadata={"trace_id": "trace_batch"},
+        )
+
+    execute = AsyncMock(return_value=ToolResult(
+        tool_name="caretask",
+        status="success",
+        display_text="1. 查看：已完成\n2. 推迟：已完成",
+        data={"action": "caretask_batch", "receipts": []},
+    ))
+    sidecar = AsyncMock()
+    monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
+    monkeypatch.setattr("app.runtime.pi_runtime.PiExperimentalRuntime._run_sidecar", sidecar)
+    monkeypatch.setattr("app.tools.caretask_tool.CareTaskTool.execute", execute)
+
+    stream = MagicMock(dead=False)
+    stream.send_tool_status = AsyncMock()
+    stream.send_tool_result = AsyncMock()
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+    result = await PiExperimentalRuntime().run(
+        user_id="user-1",
+        session_id="session-1",
+        message="看看今天的任务，然后把降压药推迟30分钟",
+        stream_mgr=stream,
+        cancel_event=asyncio.Event(),
+    )
+
+    sidecar.assert_not_awaited()
+    stream.send_tool_status.assert_awaited_once_with("caretask", "calling")
+    stream.send_tool_result.assert_awaited_once()
+    stream.send_first_reply.assert_awaited_once()
+    stream.send_final.assert_awaited_once()
+    assert result["tools_used"] == [{"tool": "caretask", "action": "caretask_batch", "status": "success"}]
 
 
 @pytest.mark.asyncio
