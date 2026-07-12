@@ -308,7 +308,9 @@ async def test_terminal_and_fresh_replay_never_executes_actions(
     monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
     monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=(None, None, cached)))
     apply_action = AsyncMock()
+    save = AsyncMock()
     monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
+    monkeypatch.setattr(executor, "_save", save)
 
     result = await executor.execute_caretask_batch(
         user_id="user-1", query="完成任务 然后看看任务", idempotency_key="replay"
@@ -316,6 +318,7 @@ async def test_terminal_and_fresh_replay_never_executes_actions(
     assert result.status == tool_status
     assert result.data["receipts"] == cached["receipts"]
     apply_action.assert_not_awaited()
+    save.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
