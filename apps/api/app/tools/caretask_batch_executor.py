@@ -36,6 +36,10 @@ def _replay_snapshot(
         return {**payload, "status": "in_progress"}, None
     current = [dict(receipt) for receipt in payload.get("receipts", receipts)]
     next_index = next((i for i, receipt in enumerate(current) if receipt["status"] == "planned"), None)
+    if next_index is None and current and all(
+        receipt.get("status") == "completed" for receipt in current
+    ):
+        return {**payload, "status": "completed", "receipts": current}, "completed"
     if next_index is not None:
         current[next_index] = {
             **current[next_index],
@@ -72,6 +76,8 @@ async def _preflight(user_id: str, query: str, now: datetime) -> tuple[list[dict
     simulated = [dict(task) for task in tasks]
     for item in plan.actions:
         action = {"index": item.index, "action": item.action, "query": item.query}
+        if item.action == "list":
+            action["scope"] = "today" if re.search(r"今天|今日", item.query) else "all"
         if item.action == "create":
             due = parse_due_at(item.query, now=now)
             if "提醒" in item.query and due is None:
@@ -241,6 +247,23 @@ async def _apply_action_transaction(
         db_user = svc.normalize_user_id(user_id)
         if kind == "list":
             listed = await svc.snapshot_care_tasks(user_id=user_id, now=now)
+            if action.get("scope") == "today":
+                window_start, window_end, _ = svc.care_window_bounds(now)
+                listed = [
+                    item
+                    for item in listed
+                    if svc.in_care_window(
+                        status=item["status"],
+                        due_at=(
+                            datetime.fromisoformat(str(item["due_at"]).replace("Z", "+00:00"))
+                            .replace(tzinfo=None)
+                            if item.get("due_at")
+                            else None
+                        ),
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                ]
             result: Any = {"count": len(listed), "titles": [item["title"] for item in listed]}
         elif kind == "create":
             reminder_id = None

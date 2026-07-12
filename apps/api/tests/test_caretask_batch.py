@@ -114,6 +114,15 @@ def test_ledger_terminal_fresh_stale_and_conflict_replay_states():
     assert conflict["reason"] == "idempotency_conflict"
     assert transition is None
 
+    all_done = [{"index": 0, "action": "complete", "status": "completed"}]
+    recovered, transition = _replay_snapshot(
+        status="running", existing_hash="hash",
+        payload={"heartbeat_at": datetime(2026, 7, 12, 3, 58).isoformat(), "receipts": all_done},
+        request_hash="hash", receipts=all_done, now=now,
+    )
+    assert recovered["status"] == "completed"
+    assert transition == "completed"
+
 
 def test_ledger_write_requires_owner_hash_and_active_state():
     from app.tools.caretask_batch_executor import _verify_ledger
@@ -230,6 +239,56 @@ async def test_stale_version_marks_current_failed_and_later_unattempted(monkeypa
     )
     assert result.status == "failed"
     assert [item["status"] for item in result.data["receipts"]] == ["failed", "unattempted"]
+
+
+@pytest.mark.asyncio
+async def test_sequential_exact_create_resolves_reuse_to_created_receipt(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    actions = [
+        {"index": 0, "action": "create", "title": "吃降压药", "task_type": "medication", "due_at": None, "query": "记下吃降压药"},
+        {"index": 1, "action": "create", "title": "吃降压药", "task_type": "medication", "due_at": None, "query": "再记下吃降压药", "reuse_task_id": "planned:0", "ref_index": 0, "expected_version": 1},
+    ]
+    monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
+    monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=("ledger", "owner", None)))
+    seen = []
+
+    async def apply(**kwargs):
+        action = kwargs["action"]
+        seen.append(action)
+        result = {"id": "real-task", "title": "吃降压药", "version": 1}
+        kwargs["receipts"][action["index"]] = {
+            **kwargs["receipts"][action["index"]], "status": "completed", "result": result,
+        }
+
+    monkeypatch.setattr(executor, "_apply_action_transaction", apply)
+    monkeypatch.setattr(executor, "_save", AsyncMock(return_value={"status": "completed", "receipts": []}))
+    await executor.execute_caretask_batch(
+        user_id="user-1", query="记下吃降压药 再记下吃降压药", idempotency_key="dup"
+    )
+    assert seen[1]["reuse_task_id"] == "real-task"
+
+
+@pytest.mark.asyncio
+async def test_today_list_excludes_future_task_without_refresh_write(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    now = datetime(2026, 7, 12, 4, 0)
+    snapshot = AsyncMock(return_value=[
+        {"id": "today", "title": "今天吃药", "status": "pending", "due_at": "2026-07-12T12:00:00"},
+        {"id": "future", "title": "明天复诊", "status": "pending", "due_at": "2026-07-13T12:00:00"},
+    ])
+    monkeypatch.setattr(executor.svc, "snapshot_care_tasks", snapshot)
+    # The pure scope predicate is covered here; snapshot remains the sole read API.
+    start, end, _ = executor.svc.care_window_bounds(now)
+    visible = [
+        item for item in await snapshot(user_id="user-1", now=now)
+        if executor.svc.in_care_window(
+            status=item["status"], due_at=datetime.fromisoformat(item["due_at"]),
+            window_start=start, window_end=end,
+        )
+    ]
+    assert [item["id"] for item in visible] == ["today"]
 
 @pytest.mark.asyncio
 async def test_pre_cancelled_batch_never_preflights_or_claims(monkeypatch):
