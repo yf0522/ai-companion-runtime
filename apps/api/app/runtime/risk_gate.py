@@ -181,7 +181,10 @@ async def _emit_risk_block(
         except Exception as exc:
             # Emergency guidance and terminal stream events have already been
             # emitted. Surface audit degradation without withholding safety.
-            logger.error("Blocked-turn audit persistence failed trace=%s: %s", trace_id, exc)
+            logger.error(
+                "Blocked-turn audit persistence failed trace=%s error_class=%s code=blocked_audit_failed",
+                trace_id, type(exc).__name__,
+            )
             audit_metadata["audit_error"] = type(exc).__name__
     return audit_metadata
 
@@ -329,8 +332,14 @@ async def _persist_nonblocking_decision(user_id: str, risk: RiskResult, trace_id
             confidence=risk.confidence,
         )
     except Exception as exc:
-        logger.warning("Non-blocking safety decision persistence failed: %s", exc)
-        return {"status": "failed", "outbox_ids": [], "error": str(exc)}
+        logger.warning(
+            "Non-blocking safety decision persistence failed error_class=%s code=decision_persistence_failed",
+            type(exc).__name__,
+        )
+        return {
+            "status": "failed", "outbox_ids": [],
+            "error_class": type(exc).__name__, "error_code": "decision_persistence_failed",
+        }
 
 
 def _family_summary(risk: RiskResult) -> str:

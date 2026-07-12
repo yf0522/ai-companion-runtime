@@ -383,14 +383,14 @@ async def test_blocked_turn_hanging_audit_cannot_suppress_final(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_blocked_turn_raising_audit_cannot_suppress_emergency(monkeypatch):
+async def test_blocked_turn_raising_audit_cannot_suppress_emergency(monkeypatch, caplog):
     from unittest.mock import AsyncMock
 
     from app.engines.base import RiskResult
     from app.runtime.risk_gate import run_risk_gate
 
     async def fail(**_kwargs):
-        raise RuntimeError("postgres unavailable")
+        raise RuntimeError("postgres secret SQL user text")
 
     monkeypatch.setattr(
         "app.runtime.risk_gate._analyze_risk",
@@ -410,6 +410,8 @@ async def test_blocked_turn_raising_audit_cannot_suppress_emergency(monkeypatch)
 
     assert gate.metadata["audit_persisted"] is False
     assert gate.metadata["audit_error"] == "RuntimeError"
+    assert "postgres secret" not in caplog.text
+    assert "RuntimeError" in caplog.text
     assert "120" in gate.metadata["response_text"]
     stream.send_first_reply.assert_awaited_once()
     stream.send_final.assert_awaited_once()

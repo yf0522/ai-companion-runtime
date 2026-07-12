@@ -57,7 +57,10 @@ async def _persist_turn_best_effort(**kwargs: str) -> str | None:
         persisted = await persist_turn_messages(**kwargs)
         return persisted.assistant_message_id
     except Exception as exc:
-        logger.error("Failed to persist Pi message evidence trace=%s: %s", kwargs.get("trace_id"), exc)
+        logger.error(
+            "Failed to persist Pi message evidence trace=%s error_class=%s code=message_evidence_failed",
+            kwargs.get("trace_id"), type(exc).__name__,
+        )
         return None
 
 
@@ -112,7 +115,10 @@ async def _persist_pi_evidence_best_effort(
     try:
         await asyncio.wait_for(persist(), timeout=_AUDIT_TIMEOUT_S)
     except Exception as exc:
-        logger.error("Pi audit persistence failed trace=%s: %s", trace_id, exc)
+        logger.error(
+            "Pi audit persistence failed trace=%s error_class=%s code=audit_persistence_failed",
+            trace_id, type(exc).__name__,
+        )
 
 
 def _bounded_tool_receipt_copy(data: dict | None) -> dict:
@@ -217,7 +223,10 @@ class PiExperimentalRuntime:
                 risk_level=getattr(gate.risk, "level", None),
             )
         except Exception as exc:
-            logger.warning("Pi sidecar failed: %s", exc, exc_info=True)
+            logger.warning(
+                "Pi sidecar failed error_class=%s code=pi_runtime_unavailable",
+                type(exc).__name__,
+            )
             return await self._emit_disabled_stub(
                 stream_mgr, gate.trace_id, start,
                 text=_PI_UNAVAILABLE_MSG,

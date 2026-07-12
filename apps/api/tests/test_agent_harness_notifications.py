@@ -101,10 +101,11 @@ async def test_handle_risk_records_failed_family_notification(monkeypatch):
         "_dispatch_risk_notification",
         AsyncMock(
             return_value={
-                "status": "failed",
-                "records": 0,
-                "webhook_status": None,
-                "error": "db down",
+                    "status": "failed",
+                    "records": 0,
+                    "webhook_status": None,
+                    "error_class": "RuntimeError",
+                    "error_code": "notification_dispatch_failed",
             }
         ),
     )
@@ -138,7 +139,9 @@ async def test_handle_risk_records_failed_family_notification(monkeypatch):
     assert len(recorded) == 2
     assert recorded[0]["step_name"] == "family_notification"
     assert recorded[0]["status"] == "failed"
-    assert recorded[0]["output_json"]["error"] == "db down"
+    assert recorded[0]["output_json"]["error_class"] == "RuntimeError"
+    assert recorded[0]["output_json"]["error_code"] == "notification_dispatch_failed"
+    assert "error" not in recorded[0]["output_json"]
     assert recorded[1]["step_name"] == "risk_response_final"
     assert recorded[1]["required"] is True
     assert recorded[1]["output_json"]["notification_status"] == "failed"

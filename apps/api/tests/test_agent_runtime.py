@@ -226,7 +226,7 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pi_enabled_sidecar_failure_reports_runtime_unavailable(monkeypatch):
+async def test_pi_enabled_sidecar_failure_reports_runtime_unavailable(monkeypatch, caplog):
     async def fake_gate(**_kwargs):
         from app.engines.base import RiskResult
         from app.runtime.risk_gate import RiskGateOutcome
@@ -238,7 +238,7 @@ async def test_pi_enabled_sidecar_failure_reports_runtime_unavailable(monkeypatc
             metadata={"trace_id": "trace-sidecar-unavailable"},
         )
 
-    async def fail_sidecar(**_kwargs):
+    async def fail_sidecar(*_args, **_kwargs):
         raise RuntimeError("provider secret must not affect user-facing truth")
 
     monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
@@ -261,6 +261,8 @@ async def test_pi_enabled_sidecar_failure_reports_runtime_unavailable(monkeypatc
     assert "尚未在本环境启用" not in reply
     assert "暂时不可用" in reply
     assert "provider secret" not in reply
+    assert "provider secret" not in caplog.text
+    assert "RuntimeError" in caplog.text
     stream.send_final.assert_awaited_once()
 
 

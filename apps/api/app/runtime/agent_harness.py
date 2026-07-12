@@ -637,7 +637,14 @@ class AgentHarness:
             step_name="family_notification",
             step_index=4,
             user_id=_stable_uuid(user_id),
-            output_json=notify_status,
+            output_json={
+                key: notify_status[key]
+                for key in (
+                    "status", "records", "webhook_status", "delivery_status",
+                    "error_class", "error_code",
+                )
+                if key in notify_status
+            },
             status=(
                 "success"
                 if notify_status.get("status") in {"persisted", "queued"}
@@ -699,12 +706,16 @@ class AgentHarness:
                 result["delivery_queued"] = True
             return result
         except Exception as exc:
-            logger.error("Notification dispatch failed: %s", exc)
+            logger.error(
+                "Notification dispatch failed error_class=%s code=notification_dispatch_failed",
+                type(exc).__name__,
+            )
             return {
                 "status": "failed",
                 "records": 0,
                 "webhook_status": None,
-                "error": str(exc),
+                "error_class": type(exc).__name__,
+                "error_code": "notification_dispatch_failed",
             }
 
     async def _persist_nonblocking_risk_decision(
