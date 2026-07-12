@@ -22,6 +22,30 @@ _PI_DISABLED_MSG = (
     "当前已回退到安全模式：风险检测仍生效，但不会调用 Pi 循环。"
 )
 _SIDECAR_TIMEOUT_S = 120.0
+_MEMORY_TERMINAL_STATES = {"refused", "pending", "unauthorized", "failed", "timeout"}
+
+
+def _authoritative_tool_text(event: dict[str, Any]) -> str | None:
+    """Return elder-facing text when durable tool truth must own the turn."""
+    if event.get("type") != "tool_result":
+        return None
+    tool = str(event.get("tool") or "").lower()
+    status = str(event.get("status") or "").lower()
+    text = str(event.get("text") or "").strip()
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    if not text:
+        return None
+    if tool == "caretask":
+        return text
+    if tool == "contact":
+        # Contact copy is produced from delivery_status/outbox evidence by the
+        # server tool; model prose must never upgrade queued/recorded to sent.
+        return text
+    if tool == "memory":
+        semantic_status = str(data.get("status") or status).lower()
+        if semantic_status in _MEMORY_TERMINAL_STATES:
+            return text
+    return None
 
 
 class PiExperimentalRuntime:
@@ -241,6 +265,8 @@ class PiExperimentalRuntime:
 
                     event_type = event.get("type")
                     if event_type == "text_delta":
+                        if authoritative_tool_response_text is not None:
+                            continue
                         delta = str(event.get("delta", ""))
                         if not delta:
                             continue
@@ -279,11 +305,9 @@ class PiExperimentalRuntime:
                                 candidates=candidates if isinstance(candidates, list) else None,
                                 data=event_data if isinstance(event_data, dict) else None,
                             )
-                            if (
-                                (tool == "caretask" and status == "success")
-                                or tool == "contact"
-                            ):
-                                authoritative_tool_response_text = text
+                            terminal_text = _authoritative_tool_text(event)
+                            if terminal_text is not None:
+                                authoritative_tool_response_text = terminal_text
                         clarify_verb = None
                         if isinstance(event_data, dict):
                             clarify_verb = event_data.get("clarify_verb")
