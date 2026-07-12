@@ -15,7 +15,11 @@ from app.runtime.agent_runtime import (
     normalize_runtime_name,
 )
 from app.runtime.harness_runtime import HarnessRuntime
-from app.runtime.pi_runtime import PiExperimentalRuntime, _authoritative_tool_text
+from app.runtime.pi_runtime import (
+    PiExperimentalRuntime,
+    _authoritative_tool_text,
+    _bounded_tool_receipt_copy,
+)
 from app.tools.base import ToolResult
 
 
@@ -65,6 +69,22 @@ def test_every_contact_delivery_outcome_is_authoritative(delivery_status):
         "text": "联系家人结果",
         "data": {"delivery_status": delivery_status},
     }) == "联系家人结果"
+
+
+def test_tool_receipt_audit_copy_is_deterministic_bounded_and_redacted():
+    copied = _bounded_tool_receipt_copy({
+        "action": "caretask_batch",
+        "query": "raw private message",
+        "receipts": [
+            {"index": i, "action": "create", "status": "completed", "raw_text": "secret"}
+            for i in range(25)
+        ],
+    })
+    assert copied["action"] == "caretask_batch"
+    assert len(copied["receipts"]) == 20
+    assert copied["receipts_truncated"] is True
+    assert "query" not in copied
+    assert "raw_text" not in str(copied)
 
 
 @pytest.mark.asyncio
