@@ -517,6 +517,47 @@ async def test_pi_runtime_discards_model_preamble_after_successful_caretask(monk
 
 
 @pytest.mark.asyncio
+async def test_pi_audit_uses_final_terminal_tool_for_repeated_tool_stream(monkeypatch):
+    events = [
+        {"type": "tool_result", "tool": "contact", "status": "success", "text": "已记录", "data": {"delivery_status": "queued"}},
+        {"type": "tool_result", "tool": "memory", "status": "success", "text": "尚未保存", "data": {"status": "pending"}},
+        {"type": "tool_result", "tool": "contact", "status": "failed", "text": "联系失败", "data": {"delivery_status": "failed"}},
+        {"type": "done"},
+    ]
+
+    class FakeResponse:
+        status_code = 200
+        async def aiter_lines(self):
+            for event in events:
+                yield json.dumps(event)
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+
+    class FakeClient:
+        def stream(self, *_args, **_kwargs): return FakeResponse()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+
+    audit = AsyncMock()
+    monkeypatch.setattr("app.runtime.pi_runtime.httpx.AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr("app.runtime.pi_runtime._persist_pi_evidence_best_effort", audit)
+    stream = MagicMock(dead=False)
+    stream.send_tool_result = AsyncMock()
+    stream.send_tool_status = AsyncMock()
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+
+    await PiExperimentalRuntime()._run_sidecar(
+        user_id="user-1", session_id="session-1", message="help", stream_mgr=stream,
+        cancel_event=asyncio.Event(), trace_id="trace-aba", start=0.0,
+    )
+
+    assert audit.await_args.kwargs["tool_name"] == "contact"
+    assert audit.await_args.kwargs["tool_status"] == "failed"
+    assert audit.await_args.kwargs["tool_data"] == {"delivery_status": "failed"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("contact_status", "contact_text", "delivery_status"),
     [

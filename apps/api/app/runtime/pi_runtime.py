@@ -320,7 +320,7 @@ class PiExperimentalRuntime:
         sidecar_error: str | None = None
         seen_done = False
         tools_used: list[dict] = []
-        terminal_tool_data: dict | None = None
+        terminal_tool: dict[str, Any] = {}
         honesty_tool_results: list = []
         authoritative_tool_response_text: str | None = None
         sidecar_start = time.monotonic()
@@ -425,8 +425,11 @@ class PiExperimentalRuntime:
                         action = event.get("action")
                         candidates = event.get("candidates")
                         event_data = event.get("data")
-                        if isinstance(event_data, dict):
-                            terminal_tool_data = event_data
+                        terminal_tool = {
+                            "tool": tool,
+                            "status": status,
+                            "data": event_data if isinstance(event_data, dict) else {},
+                        }
                         if text:
                             await stream_mgr.send_tool_result(
                                 tool,
@@ -536,7 +539,11 @@ class PiExperimentalRuntime:
             tools_used=tools_used,
             memory_updated=False,
         )
-        terminal_tool = tools_used[-1] if tools_used else {}
+        if not terminal_tool and tools_used:
+            terminal_tool = {**tools_used[-1], "data": tools_used[-1]}
+        terminal_tool_data = terminal_tool.get("data")
+        if not isinstance(terminal_tool_data, dict):
+            terminal_tool_data = {}
         audit_outcome, audit_tool_status = _semantic_audit_outcome(
             str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
             str(terminal_tool.get("status")) if terminal_tool else None,
