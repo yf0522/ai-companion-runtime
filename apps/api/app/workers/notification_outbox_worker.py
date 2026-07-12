@@ -798,6 +798,44 @@ async def create_safety_notification_pipeline(
         }
 
 
+async def persist_nonblocking_safety_decision(
+    *,
+    user_id: str,
+    risk_level: str,
+    risk_category: str,
+    trace_id: str | None,
+    evidence_json: dict[str, Any] | None = None,
+    confidence: float | None = None,
+) -> dict[str, Any]:
+    """Persist a non-blocking safety decision without notification side effects."""
+    from app.db.models import SafetyDecision
+    from app.db.session import async_session
+
+    async with async_session() as db:
+        decision = SafetyDecision(
+            user_id=uuid.UUID(user_id),
+            trace_id=trace_id,
+            policy_version="risk-rules:v1",
+            risk_level=risk_level,
+            risk_category=risk_category,
+            action="companion_support",
+            evidence_ref=f"trace:{trace_id}" if trace_id else None,
+            evidence_json=evidence_json or {},
+            confidence=confidence,
+            calibration="rule",
+        )
+        db.add(decision)
+        await db.flush()
+        await db.commit()
+        return {
+            "status": "persisted",
+            "safety_decision_id": str(decision.id),
+            "outbox_ids": [],
+            "case_opened": False,
+            "webhook_status": "not_requested",
+        }
+
+
 @app.task(name="app.workers.notification_outbox_worker.deliver_notification_outbox")
 def deliver_notification_outbox() -> dict[str, int]:
     return asyncio.run(deliver_due_outbox())

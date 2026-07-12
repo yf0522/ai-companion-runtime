@@ -73,6 +73,7 @@ async def run_risk_gate(
         )
 
     if risk.level == "medium":
+        await _persist_nonblocking_decision(user_id, risk, trace_id)
         await stream_mgr.send_risk_alert(risk.level, "")
 
     return RiskGateOutcome(
@@ -201,6 +202,23 @@ async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str)
         return result
     except Exception as exc:
         logger.warning("Risk gate family notify failed: %s", exc)
+        return {"status": "failed", "outbox_ids": [], "error": str(exc)}
+
+
+async def _persist_nonblocking_decision(user_id: str, risk: RiskResult, trace_id: str) -> dict:
+    try:
+        from app.workers.notification_outbox_worker import persist_nonblocking_safety_decision
+
+        return await persist_nonblocking_safety_decision(
+            user_id=_stable_uuid(user_id),
+            risk_level=risk.level,
+            risk_category=risk.category or "unknown",
+            trace_id=trace_id,
+            evidence_json={"triggered_rules": list(risk.triggered_rules or [])},
+            confidence=risk.confidence,
+        )
+    except Exception as exc:
+        logger.warning("Non-blocking safety decision persistence failed: %s", exc)
         return {"status": "failed", "outbox_ids": [], "error": str(exc)}
 
 
