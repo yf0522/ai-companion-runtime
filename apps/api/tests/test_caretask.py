@@ -19,6 +19,8 @@ from app.tools.caretask_service import (
 from app.tools.caretask_tool import CareTaskTool, _infer_action_from_query, format_caretask_time
 from app.tools.honesty import enforce_no_verbal_promise, response_claims_tool_success
 from app.tools.base import ToolResult
+from app.engines.base import AnalyzerInput
+from app.engines.intent_engine import IntentEngine
 
 
 @pytest.mark.parametrize(
@@ -27,8 +29,6 @@ from app.tools.base import ToolResult
 )
 def test_caretask_time_is_displayed_in_asia_shanghai(value):
     assert format_caretask_time(value) == "2026年7月13日 00:30"
-from app.engines.base import AnalyzerInput
-from app.engines.intent_engine import IntentEngine
 
 
 def test_state_machine_transitions():
