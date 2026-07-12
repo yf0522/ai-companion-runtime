@@ -338,6 +338,7 @@ async def test_blocked_turn_persists_messages_and_redacted_trace_events(monkeypa
         "incoming_turn", "final_outcome"
     ]
     assert [call.kwargs["step_index"] for call in add_event.await_args_list] == [0, 99]
+    assert all(call.kwargs["required"] is True for call in add_event.await_args_list)
     event_json = str([call.kwargs for call in add_event.await_args_list])
     assert "654321" not in event_json
     assert gate.metadata["response_text"] not in event_json
@@ -376,6 +377,40 @@ async def test_blocked_turn_hanging_audit_cannot_suppress_final(monkeypatch):
     assert gate.blocked is True
     assert gate.metadata["audit_persisted"] is False
     assert gate.metadata["audit_error"] == "TimeoutError"
+    assert "120" in gate.metadata["response_text"]
+    stream.send_first_reply.assert_awaited_once()
+    stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_blocked_turn_raising_audit_cannot_suppress_emergency(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import run_risk_gate
+
+    async def fail(**_kwargs):
+        raise RuntimeError("postgres unavailable")
+
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._analyze_risk",
+        AsyncMock(return_value=RiskResult(level="critical", category="health_emergency")),
+    )
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._dispatch_family_notify",
+        AsyncMock(return_value={"status": "failed", "outbox_ids": []}),
+    )
+    monkeypatch.setattr("app.runtime.risk_gate._persist_blocked_turn_evidence", fail)
+    stream = AsyncMock()
+
+    gate = await run_risk_gate(
+        user_id="user-1", session_id="session-1", message="胸口痛",
+        stream_mgr=stream,
+    )
+
+    assert gate.metadata["audit_persisted"] is False
+    assert gate.metadata["audit_error"] == "RuntimeError"
+    assert "120" in gate.metadata["response_text"]
     stream.send_first_reply.assert_awaited_once()
     stream.send_final.assert_awaited_once()
 
