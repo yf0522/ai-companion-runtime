@@ -55,6 +55,13 @@ async def test_exact_acute_health_compound_pattern(engine):
     result = await engine.analyze(_input("我胸口很疼，也呼吸困难"))
     assert result.level == "critical"
     assert result.category == "health_emergency"
+
+
+@pytest.mark.asyncio
+async def test_critical_compound_pattern_path(engine):
+    result = await engine.analyze(_input("我胸部很痛，也透不过气"))
+    assert result.level == "critical"
+    assert result.category == "health_emergency"
     assert any(rule.startswith("pattern:") for rule in result.triggered_rules)
 
 
