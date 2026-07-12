@@ -95,6 +95,10 @@ def test_tool_receipt_audit_copy_is_deterministic_bounded_and_redacted():
             {"action": "contact_help_request", "delivery_status": "queued"},
         ),
         (
+            {"action": "caretask_complete", "status": "success", "task_id": "task-42", "query": "private"},
+            {"action": "caretask_complete", "status": "success", "task_id": "task-42"},
+        ),
+        (
             {"action": "memory_note", "status": "refused", "text": "private"},
             {"action": "memory_note", "status": "refused"},
         ),
