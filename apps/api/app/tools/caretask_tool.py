@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.tools.base import ToolBase, ToolResult
 from app.tools import caretask_service as svc
@@ -26,21 +27,33 @@ _ACTION_ALIASES = {
 }
 
 
-def _parse_due_at(text: str) -> datetime | None:
-    """Reuse ReminderTool time parsing when available."""
+def parse_due_at(text: str, *, now: datetime | None = None) -> datetime | None:
+    """Parse an Asia/Shanghai wall clock into the naive-UTC storage contract."""
     try:
         from app.tools.reminder_tool import parse_time_from_text
 
         t = parse_time_from_text(text)
         if t is None:
             return None
-        now = datetime.utcnow()
-        due = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-        if due <= now:
-            due = due + timedelta(days=1)
-        return due
+        now_utc = now or datetime.utcnow()
+        shanghai = ZoneInfo("Asia/Shanghai")
+        local_now = now_utc.replace(tzinfo=timezone.utc).astimezone(shanghai)
+        local_due = local_now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        explicit_today = "今天" in text
+        if local_due <= local_now:
+            if explicit_today:
+                return None
+            local_due += timedelta(days=1)
+        return local_due.astimezone(timezone.utc).replace(tzinfo=None)
     except Exception:
         return None
+
+
+_parse_due_at = parse_due_at
+
+
+def _promises_reminder(text: str) -> bool:
+    return bool(re.search(r"提醒(?:我)?|闹钟|到点|叫我", text))
 
 
 def _infer_task_type(text: str) -> str:
@@ -154,7 +167,7 @@ class CareTaskTool(ToolBase):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "list", "complete", "snooze", "cancel", "missed"],
+                "enum": ["create", "list", "complete", "snooze", "cancel", "missed", "batch"],
                 "description": "CareTask operation",
             },
             "title": {"type": "string", "description": "Task title (create)"},
@@ -228,6 +241,8 @@ class CareTaskTool(ToolBase):
                 return await self._cancel(params, user_id, query)
             if action == "missed":
                 return await self._missed(params, user_id)
+            if action == "batch":
+                return await self._batch(params, user_id, query)
             return ToolResult(
                 tool_name=self.name,
                 status="failed",
@@ -265,6 +280,13 @@ class CareTaskTool(ToolBase):
         # Model-provided timestamps are untrusted semantic arguments. A CareTask
         # is scheduled only when the user's own utterance contains a parseable time.
         due_at = _parse_due_at(query) if query else None
+        if query and _promises_reminder(query) and due_at is None:
+            return ToolResult(
+                tool_name=self.name,
+                status="needs_clarification",
+                display_text="您希望我在什么具体时间提醒您？",
+                data={"action": "caretask_create", "reason": "reminder_time_required"},
+            )
 
         schedule_type = params.get("schedule_type")
         row = await svc.create_care_task(
@@ -525,6 +547,16 @@ class CareTaskTool(ToolBase):
             status="success",
             display_text=f"已标记错过：{row['title']}",
             data={"action": "caretask_missed", "task": row},
+        )
+
+    async def _batch(self, params: dict, user_id: str, query: str) -> ToolResult:
+        from app.tools.caretask_batch_executor import execute_caretask_batch
+
+        return await execute_caretask_batch(
+            user_id=str(user_id),
+            query=query,
+            idempotency_key=str(params.get("idempotency_key") or params.get("trace_id") or ""),
+            cancel_event=params.get("cancel_event"),
         )
 
 
