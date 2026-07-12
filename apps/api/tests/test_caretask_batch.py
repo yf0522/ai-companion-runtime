@@ -17,6 +17,18 @@ def test_two_creates_and_cancel_are_all_discovered():
     assert [item.action for item in plan.actions] == ["create", "create", "cancel"]
 
 
+def test_exact_space_separated_list_snooze_complete_transcript():
+    query = "请列出今天的照护任务 把吃降糖药的提醒延后30分钟 降糖药我已经吃过了"
+    plan = plan_caretask_batch(query, now=datetime(2026, 7, 12, 4, 0))
+    assert [item.action for item in plan.actions] == ["list", "snooze", "complete"]
+
+
+def test_exact_space_separated_create_create_cancel_transcript():
+    query = "每天早上8点提醒我吃降压药 每天晚上8点提醒我吃降糖药 把吃药提醒取消"
+    plan = plan_caretask_batch(query, now=datetime(2026, 7, 12, 4, 0))
+    assert [item.action for item in plan.actions] == ["create", "create", "cancel"]
+
+
 def test_single_action_stays_on_legacy_path():
     assert not detect_compound_caretask("提醒我晚上8点吃药")
     assert not detect_compound_caretask("今天完成了哪些任务")

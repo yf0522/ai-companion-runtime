@@ -46,7 +46,20 @@ def _action_for_clause(clause: str) -> ActionName | None:
 
 def _clauses(query: str) -> list[str]:
     cleaned = re.sub(r"^(?:请|麻烦|先)", "", query.strip())
-    return [part.strip() for part in _CLAUSE_SPLIT.split(cleaned) if part.strip()]
+    clauses: list[str] = []
+    for part in _CLAUSE_SPLIT.split(cleaned):
+        part = part.strip()
+        if not part:
+            continue
+        # Production transcripts often contain only spaces between complete
+        # imperative clauses. Split those only when every piece independently
+        # carries an executable cue; ordinary spaces inside one clause remain.
+        words = [piece.strip() for piece in re.split(r"\s+", part) if piece.strip()]
+        if len(words) >= 2 and sum(_action_for_clause(piece) is not None for piece in words) >= 2:
+            clauses.extend(words)
+        else:
+            clauses.append(part)
+    return clauses
 
 
 def detect_compound_caretask(query: str) -> bool:
