@@ -796,29 +796,10 @@ def test_reuse_display_text_has_no_tech_jargon():
 
 
 @pytest.mark.asyncio
-async def test_caretask_ignores_model_due_at_without_user_time(monkeypatch):
+async def test_caretask_vague_reminder_requires_time_without_mutation(monkeypatch):
     tool = CareTaskTool()
-    captured = {}
-
-    async def fake_create(**kwargs):
-        captured.update(kwargs)
-        return {
-            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "title": kwargs["title"],
-            "task_type": kwargs["task_type"],
-            "status": "pending",
-            "due_at": None,
-            "reminder_id": None,
-            "snooze_until": None,
-            "notes": None,
-            "created_by": "chat",
-            "completed_at": None,
-            "created_at": None,
-            "user_id": kwargs["user_id"],
-            "_action": "caretask_create",
-        }
-
-    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
+    create = AsyncMock()
+    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", create)
     result = await tool.execute(
         {
             "action": "create",
@@ -828,9 +809,31 @@ async def test_caretask_ignores_model_due_at_without_user_time(monkeypatch):
             "user_id": str(uuid.uuid4()),
         }
     )
+    assert result.status == "needs_clarification"
+    assert result.data["reason"] == "reminder_time_required"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_caretask_undated_general_note_remains_allowed(monkeypatch):
+    tool = CareTaskTool()
+    create = AsyncMock(return_value={
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "title": "带医保卡",
+        "task_type": "other",
+        "status": "pending",
+        "due_at": None,
+        "reminder_id": None,
+        "_action": "caretask_create",
+    })
+    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", create)
+    result = await tool.execute({
+        "action": "create", "query": "帮我记一下带医保卡", "task_type": "other",
+        "user_id": str(uuid.uuid4()),
+    })
     assert result.status == "success"
-    assert captured["due_at"] is None
-    assert captured["link_reminder"] is False
+    assert create.await_args.kwargs["due_at"] is None
+    assert create.await_args.kwargs["link_reminder"] is False
 
 
 @pytest.mark.asyncio
