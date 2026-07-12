@@ -44,7 +44,7 @@ def _production_settings(**overrides):
         "public_base_url": "https://api.example.test",
         "public_api_url": "https://api.example.test",
         "public_ws_url": "wss://api.example.test",
-        "expected_migration_heads": "a9c0d1e2f3b4",
+        "expected_migration_heads": "b0c1d2e3f4a5",
         "backup_bucket": "pilot-backups",
         "backup_kms_key_id": "kms-key",
         "evidence_manifest_required": True,
