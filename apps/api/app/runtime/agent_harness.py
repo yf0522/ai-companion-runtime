@@ -78,7 +78,15 @@ async def _record_analysis_events(
             step_index=3,
             user_id=user_id,
             session_id=session_id,
-            output_json=risk.model_dump(),
+            output_json={
+                "level": risk.level,
+                "category": risk.category,
+                "confidence": risk.confidence,
+                "triggered_rule_types": sorted({
+                    str(rule).partition(":")[0][:40]
+                    for rule in (risk.triggered_rules or [])
+                }),
+            },
             status="success",
             latency_ms=latency_ms,
         ),
