@@ -211,7 +211,6 @@ test("uses original user text instead of model-injected schedule text", () => {
     {
       action: "create",
       query: "提醒我吃降糖药",
-      due_at: "2023-11-20T08:00:00",
     },
   );
 });
