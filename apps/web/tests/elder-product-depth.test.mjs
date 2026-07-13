@@ -248,6 +248,7 @@ test("device-local chat history is partitioned by authenticated user and clearab
   useChatStore.getState().activateUser("elder-private");
   useChatStore.getState().startAssistantMessage("trace-secret");
   useChatStore.getState().setToolResult({
+    traceId: "trace-secret",
     tool: "memory_recall_provider",
     status: "success",
     action: "memory_recall",
@@ -281,6 +282,7 @@ test("terminal tool results stop an orphaned spinner and accept a late final", a
   useChatStore.getState().clearMessages();
   useChatStore.getState().startAssistantMessage("trace-tool-fallback");
   useChatStore.getState().setToolResult({
+    traceId: "trace-tool-fallback",
     tool: "caretask",
     status: "success",
     action: "caretask_list",

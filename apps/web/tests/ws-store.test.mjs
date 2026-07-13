@@ -23,8 +23,8 @@ function begin(user, trace = `trace-${user}`) {
 test("store preserves every explicit execution status instead of normalizing to calling", () => {
   const statuses = ["calling", "in_progress", "cancelled", "interrupted"];
   for (const status of statuses) {
-    begin(`normalize-${status}`);
-    useChatStore.getState().setToolStatus("caretask", status);
+    const traceId = begin(`normalize-${status}`);
+    useChatStore.getState().setToolStatus(traceId, "caretask", status);
     assert.equal(useChatStore.getState().messages.at(-1)?.toolsUsed?.[0]?.status, status);
   }
 });
@@ -41,8 +41,8 @@ test("missing-final fallback stops every terminal state but not active or in-pro
     interrupted: true,
   };
   for (const [status, shouldStop] of Object.entries(states)) {
-    begin(`fallback-${status}`);
-    useChatStore.getState().setToolStatus("caretask", status);
+    const traceId = begin(`fallback-${status}`);
+    useChatStore.getState().setToolStatus(traceId, "caretask", status);
     useChatStore.getState().completeToolTurnFallback();
     const state = useChatStore.getState();
     assert.equal(state.isStreaming, !shouldStop, status);
@@ -52,8 +52,9 @@ test("missing-final fallback stops every terminal state but not active or in-pro
 
 test("cancelled and interrupted results stop streaming even when no final timer is armed", () => {
   for (const status of ["cancelled", "interrupted"]) {
-    begin(`result-${status}`);
+    const traceId = begin(`result-${status}`);
     useChatStore.getState().setToolResult({
+      traceId,
       tool: "caretask",
       status,
       action: "caretask_batch",
@@ -69,6 +70,7 @@ test("late finals enrich terminal results without reviving or replacing their ou
   for (const status of ["cancelled", "interrupted"]) {
     const traceId = begin(`late-${status}`);
     useChatStore.getState().setToolResult({
+      traceId,
       tool: "caretask",
       status,
       action: "caretask_batch",
@@ -96,6 +98,7 @@ test("late finals enrich terminal results without reviving or replacing their ou
 test("a late successful final advances in-progress without losing receipt evidence", () => {
   const traceId = begin("late-in-progress");
   useChatStore.getState().setToolResult({
+    traceId,
     tool: "caretask",
     status: "in_progress",
     action: "caretask_batch",
@@ -156,6 +159,7 @@ test("an old trace final cannot finalize or overwrite the newer streaming trace"
 test("terminal receipt evidence survives device-local history persistence", () => {
   const traceId = begin("persist-receipts");
   useChatStore.getState().setToolResult({
+    traceId,
     tool: "caretask",
     status: "interrupted",
     action: "caretask_batch",
@@ -185,8 +189,9 @@ test("terminal receipt evidence survives device-local history persistence", () =
 });
 
 test("device-local receipt persistence bounds arrays and elder-facing titles", () => {
-  begin("persist-bounded-receipts");
+  const traceId = begin("persist-bounded-receipts");
   useChatStore.getState().setToolResult({
+    traceId,
     tool: "caretask",
     status: "interrupted",
     action: "caretask_batch",
