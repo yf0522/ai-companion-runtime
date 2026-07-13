@@ -95,7 +95,9 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Tool status
     client.on("tool_status", (data) => {
-      useChatStore.getState().setToolStatus(data.trace_id, data.tool, data.status);
+      useChatStore.getState().setToolStatus(
+        data.trace_id, data.tool, data.status, data.invocation_id,
+      );
     });
 
     // Tool result — may carry clarify candidates for CareTask UI
@@ -103,6 +105,7 @@ export const useWsStore = create<WsState>((set, get) => ({
       const payload = data.data || {};
       useChatStore.getState().setToolResult({
         traceId: data.trace_id,
+        invocationId: data.invocation_id,
         tool: data.tool,
         status: data.status,
         text: data.text,

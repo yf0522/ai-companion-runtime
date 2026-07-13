@@ -9,3 +9,10 @@ test("tool bridge sends trusted top-level query and idempotency envelope", () =>
   assert.doesNotMatch(source, /display_text:\s*`tool bridge unreachable/);
   assert.doesNotMatch(source, /data:\s*\{[^}]*url/s);
 });
+
+test("request close aborts provider agent and tool bridge work", () => {
+  const source = readFileSync(new URL("../server.mjs", import.meta.url), "utf8");
+  assert.match(source, /req\?\.once\?\.\("close", abort\)/);
+  assert.match(source, /controller\.signal\.addEventListener\("abort", \(\) => agent\.abort\(\)/);
+  assert.match(source, /signal:\s*ctx\.signal/);
+});

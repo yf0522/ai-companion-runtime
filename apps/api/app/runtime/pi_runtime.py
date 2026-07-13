@@ -359,12 +359,15 @@ class PiExperimentalRuntime:
             status: str,
             action: str | None = None,
             *,
+            invocation_id: str | None = None,
             candidates: list | None = None,
             clarify_verb: str | None = None,
         ) -> None:
             if not tool:
                 return
             entry: dict = {"tool": tool, "status": status}
+            if invocation_id:
+                entry["invocation_id"] = invocation_id
             if action:
                 entry["action"] = action
             if candidates and status == "needs_clarification":
@@ -372,7 +375,7 @@ class PiExperimentalRuntime:
             if clarify_verb:
                 entry["clarify_verb"] = clarify_verb
             for i, existing in enumerate(tools_used):
-                if existing.get("tool") == tool:
+                if existing.get("tool") == tool and existing.get("invocation_id") == invocation_id:
                     # Preserve clarify payload if a later done/status event omits it.
                     if "candidates" not in entry and existing.get("candidates"):
                         entry["candidates"] = existing["candidates"]
@@ -435,8 +438,9 @@ class PiExperimentalRuntime:
                     elif event_type == "tool_status":
                         tool = str(event.get("tool", "caretask"))
                         status = str(event.get("status", "calling"))
-                        await stream_mgr.send_tool_status(tool, status)
-                        _upsert_tool(tool, status)
+                        invocation_id = str(event.get("invocation_id") or "") or None
+                        await stream_mgr.send_tool_status(tool, status, invocation_id=invocation_id)
+                        _upsert_tool(tool, status, invocation_id=invocation_id)
                         if status in {"failed", "timeout", "needs_clarification"}:
                             _record_honesty_result(
                                 tool,
@@ -452,6 +456,7 @@ class PiExperimentalRuntime:
                         text = str(event.get("text", ""))
                         status = str(event.get("status", "success"))
                         action = event.get("action")
+                        invocation_id = str(event.get("invocation_id") or "") or None
                         candidates = event.get("candidates")
                         event_data = event.get("data")
                         terminal_tool = {
@@ -467,6 +472,7 @@ class PiExperimentalRuntime:
                                 action=str(action) if action else None,
                                 candidates=candidates if isinstance(candidates, list) else None,
                                 data=event_data if isinstance(event_data, dict) else None,
+                                invocation_id=invocation_id,
                             )
                             terminal_text = _authoritative_tool_text(event)
                             if terminal_text is not None:
@@ -478,6 +484,7 @@ class PiExperimentalRuntime:
                             tool,
                             status,
                             str(action) if action else None,
+                            invocation_id=invocation_id,
                             candidates=candidates if isinstance(candidates, list) else None,
                             clarify_verb=str(clarify_verb) if clarify_verb else None,
                         )
@@ -521,6 +528,7 @@ class PiExperimentalRuntime:
                                     str(item.get("tool") or ""),
                                     str(item.get("status") or "success"),
                                     str(item["action"]) if item.get("action") else None,
+                                    invocation_id=str(item.get("invocation_id") or "") or None,
                                 )
                             elif item:
                                 _upsert_tool(str(item), "success")

@@ -384,6 +384,7 @@ async function streamAgentChat({ req, res, body }) {
       writeNdjson(res, {
         type: "tool_status",
         tool: toolCall.name,
+        invocation_id: toolCall.id,
         status: "calling",
       });
       return undefined;
@@ -397,6 +398,7 @@ async function streamAgentChat({ req, res, body }) {
       const clarifyVerb = details?.data?.clarify_verb || null;
       toolsUsed.push({
         tool: toolCall.name,
+        invocation_id: toolCall.id,
         status,
         ...(action ? { action } : {}),
         ...(candidates ? { candidates } : {}),
@@ -405,6 +407,7 @@ async function streamAgentChat({ req, res, body }) {
       writeNdjson(res, {
         type: "tool_status",
         tool: toolCall.name,
+        invocation_id: toolCall.id,
         status,
       });
       if (details.display_text) {
@@ -412,6 +415,7 @@ async function streamAgentChat({ req, res, body }) {
         writeNdjson(res, {
           type: "tool_result",
           tool: toolCall.name,
+          invocation_id: toolCall.id,
           text: details.display_text,
           status,
           ...(action ? { action } : {}),

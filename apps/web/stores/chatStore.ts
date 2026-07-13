@@ -30,6 +30,7 @@ export interface CareTaskCandidate {
 
 export interface ToolChip {
   tool: string;
+  invocationId?: string;
   status: ToolChipStatus;
   action?: string;
   displayText?: string;
@@ -93,6 +94,9 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
       ? statusRaw
       : "calling") as ToolChipStatus;
     const action = obj.action ? String(obj.action) : undefined;
+    const invocationId = obj.invocationId
+      ? String(obj.invocationId)
+      : obj.invocation_id ? String(obj.invocation_id) : undefined;
     const displayText = obj.displayText
       ? String(obj.displayText)
       : obj.text
@@ -108,6 +112,7 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
         ? String(obj.clarifyVerb)
         : undefined;
     const chip: ToolChip = { tool, status };
+    if (invocationId) chip.invocationId = invocationId;
     if (action) chip.action = action;
     if (displayText) chip.displayText = displayText;
     if (data) chip.data = data;
@@ -127,7 +132,9 @@ function upsertToolChip(
   const chip = normalizeToolChip({ tool, status, ...extra });
   if (!chip) return chips;
   const next = [...chips];
-  const idx = next.findIndex((c) => c.tool === tool);
+  const idx = next.findIndex((c) =>
+    c.tool === tool && c.invocationId === chip.invocationId
+  );
   if (idx >= 0) {
     const currentStatus = next[idx].status;
     const status = TERMINAL_TOOL_STATUSES.includes(currentStatus) ||
@@ -170,9 +177,10 @@ interface ChatState {
   startAssistantMessage: (traceId: string) => void;
   appendDelta: (traceId: string, text: string) => void;
   setFirstReply: (traceId: string, text: string, ttftMs: number) => void;
-  setToolStatus: (traceId: string, tool: string, status: string) => void;
+  setToolStatus: (traceId: string, tool: string, status: string, invocationId?: string) => void;
   setToolResult: (data: {
     traceId: string;
+    invocationId?: string;
     tool: string;
     status?: string;
     text?: string;
@@ -362,13 +370,13 @@ export const useChatStore = create<ChatState>()(
     });
   },
 
-  setToolStatus: (traceId, tool, status) => {
+  setToolStatus: (traceId, tool, status, invocationId) => {
     set((s) => {
       if (s.currentTraceId !== traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant") {
-        const toolsUsed = upsertToolChip(last.toolsUsed || [], tool, status);
+        const toolsUsed = upsertToolChip(last.toolsUsed || [], tool, status, { invocationId });
         msgs[msgs.length - 1] = {
           ...last,
           toolsUsed,
@@ -388,6 +396,7 @@ export const useChatStore = create<ChatState>()(
       const status = data.status || "success";
       const candidates = normalizeCandidates(data.candidates);
       const toolsUsed = upsertToolChip(last.toolsUsed || [], data.tool, status, {
+        invocationId: data.invocationId,
         action: data.action,
         displayText: data.text,
         data: data.data,

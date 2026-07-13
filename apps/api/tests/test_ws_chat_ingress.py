@@ -176,6 +176,9 @@ async def test_gateway_stop_is_trace_bound_and_cancels_only_matching_active_task
     assert conn.cancel_event.is_set() is True
     assert upstream_cleaned.is_set() is True
     assert task.cancelled() is True
+    conn.websocket.send_json.assert_awaited_once_with(
+        {"type": "cancelled", "trace_id": "trace-new"}
+    )
 
 
 def test_concurrent_user_turn_is_rejected_with_busy_code(monkeypatch):
