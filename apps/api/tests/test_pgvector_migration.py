@@ -120,18 +120,48 @@ def test_production_workflow_covers_populated_legacy_upgrade_and_fresh_bootstrap
 def test_additive_head_requires_extension_vector_dimension_and_hnsw_index(monkeypatch):
     migration = importlib.import_module(ENFORCEMENT_MIGRATION)
     execute = MagicMock()
+    bind = MagicMock()
+    bind.execute.return_value.scalar_one_or_none.side_effect = ["vector(1536)", None]
+    context = MagicMock()
     monkeypatch.setattr(migration.op, "execute", execute)
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+    monkeypatch.setattr(migration.op, "get_context", lambda: context)
 
     migration.upgrade()
 
     statements = [call.args[0] for call in execute.call_args_list]
     assert migration.down_revision == "b0c1d2e3f4a5"
-    assert len(statements) == 4
+    assert len(statements) == 3
     assert "CREATE EXTENSION IF NOT EXISTS vector" in statements[0]
-    assert "ALTER COLUMN embedding TYPE vector(1536)" in statements[1]
-    assert "valid 1536-dimensional pgvector literal" in statements[1]
-    assert statements[2] == "DROP INDEX IF EXISTS idx_memory_embeddings_vector"
-    assert "USING hnsw (embedding vector_cosine_ops)" in statements[3]
+    assert "DROP INDEX CONCURRENTLY IF EXISTS" in statements[1]
+    assert "CREATE INDEX CONCURRENTLY" in statements[2]
+    context.autocommit_block.assert_called_once()
+
+
+def test_additive_head_skips_correct_vector_index(monkeypatch):
+    migration = importlib.import_module(ENFORCEMENT_MIGRATION)
+    execute = MagicMock()
+    bind = MagicMock()
+    bind.execute.return_value.scalar_one_or_none.side_effect = [
+        "vector(1536)",
+        "CREATE INDEX idx_memory_embeddings_vector ON public.memory_embeddings USING hnsw (embedding vector_cosine_ops)",
+    ]
+    monkeypatch.setattr(migration.op, "execute", execute)
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+
+    migration.upgrade()
+
+    assert execute.call_count == 1
+
+
+def test_additive_head_fails_closed_for_incompatible_embedding_column(monkeypatch):
+    migration = importlib.import_module(ENFORCEMENT_MIGRATION)
+    bind = MagicMock()
+    bind.execute.return_value.scalar_one_or_none.return_value = "text"
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+
+    with pytest.raises(RuntimeError, match="maintenance migration"):
+        migration.upgrade()
 
 
 def test_additive_head_fails_closed_when_extension_cannot_be_ensured(monkeypatch):
