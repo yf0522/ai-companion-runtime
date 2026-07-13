@@ -4,10 +4,10 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 import httpx
-from nanoid import generate as nanoid
 
 from app.config.settings import settings
 from app.runtime.agent_runtime import RUNTIME_PI_EXPERIMENTAL
@@ -21,7 +21,160 @@ _PI_DISABLED_MSG = (
     "请在服务端设置 ENABLE_PI_RUNTIME=1 并部署 Node sidecar 后再试。"
     "当前已回退到安全模式：风险检测仍生效，但不会调用 Pi 循环。"
 )
+_PI_UNAVAILABLE_MSG = "对话服务暂时不可用，请稍后再试。风险检测仍然有效。"
 _SIDECAR_TIMEOUT_S = 120.0
+_AUDIT_TIMEOUT_S = 0.25
+_MEMORY_TERMINAL_STATES = {"refused", "pending", "unauthorized", "failed", "timeout"}
+
+
+def _authoritative_tool_text(event: dict[str, Any]) -> str | None:
+    """Return elder-facing text when durable tool truth must own the turn."""
+    if event.get("type") != "tool_result":
+        return None
+    tool = str(event.get("tool") or "").lower()
+    status = str(event.get("status") or "").lower()
+    text = str(event.get("text") or "").strip()
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    if not text:
+        return None
+    if tool == "caretask":
+        return text
+    if tool == "contact":
+        # Contact copy is produced from delivery_status/outbox evidence by the
+        # server tool; model prose must never upgrade queued/recorded to sent.
+        return text
+    if tool == "memory":
+        semantic_status = str(data.get("status") or status).lower()
+        if semantic_status in _MEMORY_TERMINAL_STATES:
+            return text
+    return None
+
+
+async def _persist_turn_best_effort(**kwargs: str) -> str | None:
+    try:
+        from app.observability.message_evidence import persist_turn_messages
+
+        persisted = await persist_turn_messages(**kwargs)
+        return persisted.assistant_message_id
+    except Exception as exc:
+        logger.error(
+            "Failed to persist Pi message evidence trace=%s error_class=%s code=message_evidence_failed",
+            kwargs.get("trace_id"), type(exc).__name__,
+        )
+        return None
+
+
+async def _persist_pi_evidence_best_effort(
+    *,
+    session_id: str,
+    user_id: str,
+    trace_id: str,
+    user_content: str,
+    assistant_content: str,
+    outcome: str,
+    latency_ms: int,
+    tool_name: str | None = None,
+    tool_status: str | None = None,
+    tool_data: dict | None = None,
+    assistant_message_id: str,
+) -> str:
+    """Bound Pi audit latency and keep TraceEvent payloads content-free."""
+    async def persist() -> None:
+        from app.observability.trace_service import TraceService
+
+        persisted_id = await _persist_turn_best_effort(
+            session_id=session_id, user_id=user_id, trace_id=trace_id,
+            user_content=user_content, assistant_content=assistant_content,
+            assistant_message_id=assistant_message_id,
+        )
+        if persisted_id != assistant_message_id:
+            raise RuntimeError("message evidence was not persisted")
+        trace = TraceService()
+        await trace.add_event(
+            trace_id=trace_id, step_name="incoming_turn", step_index=0,
+            user_id=user_id, session_id=session_id,
+            input_json={"content_redacted": True, "content_chars": len(user_content)},
+        )
+        await trace.add_event(
+            trace_id=trace_id, step_name="final_outcome", step_index=99,
+            user_id=user_id, session_id=session_id,
+            output_json={
+                "content_redacted": True,
+                "content_chars": len(assistant_content),
+                "outcome": outcome[:40],
+            },
+            latency_ms=latency_ms,
+        )
+        if tool_name:
+            bounded = _bounded_tool_receipt_copy(tool_data)
+            await trace.record_tool_call(
+                trace_id=trace_id,
+                tool_name=tool_name[:40],
+                input_json={"content_redacted": True},
+                output_json=bounded,
+                status=(tool_status or "unknown")[:40],
+                latency_ms=latency_ms,
+            )
+
+    try:
+        await asyncio.wait_for(persist(), timeout=_AUDIT_TIMEOUT_S)
+        return "persisted"
+    except asyncio.TimeoutError:
+        logger.error(
+            "Pi audit persistence failed trace=%s error_class=TimeoutError code=audit_persistence_timeout",
+            trace_id,
+        )
+        return "timed_out"
+    except Exception as exc:
+        logger.error(
+            "Pi audit persistence failed trace=%s error_class=%s code=audit_persistence_failed",
+            trace_id, type(exc).__name__,
+        )
+        return "failed"
+
+
+def _bounded_tool_receipt_copy(data: dict | None) -> dict:
+    """Deterministic, bounded receipt evidence without raw query/model text."""
+    source = data if isinstance(data, dict) else {}
+    copied: dict[str, Any] = {}
+    for key in ("action", "status", "delivery_status", "entity_id", "task_id", "reason"):
+        if source.get(key) is not None:
+            copied[key] = str(source[key])[:200]
+    receipts = source.get("receipts")
+    if isinstance(receipts, list):
+        allowed = ("index", "action", "status", "entity_id", "reason", "before", "after")
+        copied["receipts"] = [
+            {key: str(item[key])[:200] for key in allowed if key in item}
+            for item in receipts[:20]
+            if isinstance(item, dict)
+        ]
+        copied["receipts_truncated"] = len(receipts) > 20
+    return copied
+
+
+def _semantic_audit_outcome(
+    tool_name: str | None,
+    tool_status: str | None,
+    tool_data: dict | None,
+) -> tuple[str, str | None]:
+    """Return operator-facing outcome/status from authoritative domain truth."""
+    if not tool_name:
+        return "assistant_completed", None
+    data = tool_data if isinstance(tool_data, dict) else {}
+
+    def normalized(value: object) -> str:
+        text = "".join(ch if ch.isalnum() else "_" for ch in str(value).lower())
+        return "_".join(part for part in text.split("_") if part)[:40] or "unknown"
+
+    tool = normalized(tool_name)
+    if tool == "contact":
+        semantic = data.get("delivery_status") or data.get("status") or tool_status or "unknown"
+    elif tool == "memory":
+        semantic = data.get("status") or tool_status or "unknown"
+    else:
+        semantic = data.get("status") or data.get("delivery_status") or tool_status or "unknown"
+    status = normalized(semantic)
+    return f"{tool}_{status}"[:80], status
 
 
 class PiExperimentalRuntime:
@@ -51,11 +204,31 @@ class PiExperimentalRuntime:
         if cancel_event.is_set():
             return {"trace_id": gate.trace_id, "cancelled": True, "agent_runtime": self.name}
 
+        from app.tools.caretask_batch import detect_compound_caretask
+
+        async def with_gate(awaitable: Any) -> dict:
+            result = await awaitable
+            return {**result, **gate.metadata}
+
+        if detect_compound_caretask(message):
+            return await with_gate(self._run_caretask_batch(
+                user_id=user_id,
+                session_id=session_id,
+                message=message,
+                stream_mgr=stream_mgr,
+                cancel_event=cancel_event,
+                trace_id=gate.trace_id,
+                start=start,
+            ))
+
         if not settings.enable_pi_runtime:
-            return await self._emit_disabled_stub(stream_mgr, gate.trace_id, start)
+            return await with_gate(self._emit_disabled_stub(
+                stream_mgr, gate.trace_id, start,
+                user_id=user_id, session_id=session_id, user_message=message,
+            ))
 
         try:
-            return await self._run_sidecar(
+            return await with_gate(self._run_sidecar(
                 user_id=user_id,
                 session_id=session_id,
                 message=message,
@@ -64,10 +237,85 @@ class PiExperimentalRuntime:
                 trace_id=gate.trace_id,
                 start=start,
                 risk_level=getattr(gate.risk, "level", None),
-            )
+            ))
         except Exception as exc:
-            logger.warning("Pi sidecar failed: %s", exc, exc_info=True)
-            raise
+            logger.warning(
+                "Pi sidecar failed trace=%s error_class=%s code=pi_runtime_unavailable",
+                gate.trace_id[:80], type(exc).__name__,
+            )
+            return await with_gate(self._emit_disabled_stub(
+                stream_mgr, gate.trace_id, start,
+                text=_PI_UNAVAILABLE_MSG,
+                error="pi_runtime_unavailable",
+                audit_outcome="runtime_unavailable",
+                user_id=user_id, session_id=session_id, user_message=message,
+            ))
+
+    async def _run_caretask_batch(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        message: str,
+        stream_mgr: StreamManager,
+        cancel_event: asyncio.Event,
+        trace_id: str,
+        start: float,
+    ) -> dict:
+        """Execute compound CareTask turns without invoking Node or a model."""
+        from app.tools.caretask_tool import CareTaskTool
+
+        await stream_mgr.send_tool_status("caretask", "calling")
+        result = await CareTaskTool().execute(
+            {
+                "action": "batch",
+                "query": message,
+                "user_id": user_id,
+                "trace_id": trace_id,
+                "idempotency_key": trace_id,
+                "cancel_event": cancel_event,
+            }
+        )
+        if cancel_event.is_set():
+            return {"trace_id": trace_id, "cancelled": True}
+        data = result.data or {}
+        await stream_mgr.send_tool_result(
+            "caretask",
+            result.display_text,
+            status=result.status,
+            action="caretask_batch",
+            candidates=data.get("candidates"),
+            data=data,
+        )
+        ttft_ms = int((time.monotonic() - start) * 1000)
+        await stream_mgr.send_first_reply(result.display_text, ttft_ms)
+        total_latency_ms = int((time.monotonic() - start) * 1000)
+        message_id = str(uuid.uuid4())
+        tools_used = [{"tool": "caretask", "action": "caretask_batch", "status": result.status}]
+        await stream_mgr.send_final(
+            trace_id=trace_id,
+            message_id=message_id,
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            tools_used=tools_used,
+            memory_updated=False,
+        )
+        audit_persistence = await _persist_pi_evidence_best_effort(
+            session_id=session_id, user_id=user_id, trace_id=trace_id,
+            user_content=message, assistant_content=result.display_text,
+            outcome="caretask_batch", latency_ms=total_latency_ms,
+            tool_name="caretask", tool_status=result.status, tool_data=data,
+            assistant_message_id=message_id,
+        )
+        return {
+            "trace_id": trace_id,
+            "message_id": message_id,
+            "agent_runtime": self.name,
+            "pi_experimental": True,
+            "response_text": result.display_text,
+            "tools_used": tools_used,
+            "audit_persistence": audit_persistence,
+        }
 
     async def _run_sidecar(
         self,
@@ -101,6 +349,7 @@ class PiExperimentalRuntime:
         sidecar_error: str | None = None
         seen_done = False
         tools_used: list[dict] = []
+        terminal_tool: dict[str, Any] = {}
         honesty_tool_results: list = []
         authoritative_tool_response_text: str | None = None
         sidecar_start = time.monotonic()
@@ -110,12 +359,15 @@ class PiExperimentalRuntime:
             status: str,
             action: str | None = None,
             *,
+            invocation_id: str | None = None,
             candidates: list | None = None,
             clarify_verb: str | None = None,
         ) -> None:
             if not tool:
                 return
             entry: dict = {"tool": tool, "status": status}
+            if invocation_id:
+                entry["invocation_id"] = invocation_id
             if action:
                 entry["action"] = action
             if candidates and status == "needs_clarification":
@@ -123,7 +375,7 @@ class PiExperimentalRuntime:
             if clarify_verb:
                 entry["clarify_verb"] = clarify_verb
             for i, existing in enumerate(tools_used):
-                if existing.get("tool") == tool:
+                if existing.get("tool") == tool and existing.get("invocation_id") == invocation_id:
                     # Preserve clarify payload if a later done/status event omits it.
                     if "candidates" not in entry and existing.get("candidates"):
                         entry["candidates"] = existing["candidates"]
@@ -174,6 +426,8 @@ class PiExperimentalRuntime:
 
                     event_type = event.get("type")
                     if event_type == "text_delta":
+                        if authoritative_tool_response_text is not None:
+                            continue
                         delta = str(event.get("delta", ""))
                         if not delta:
                             continue
@@ -184,8 +438,9 @@ class PiExperimentalRuntime:
                     elif event_type == "tool_status":
                         tool = str(event.get("tool", "caretask"))
                         status = str(event.get("status", "calling"))
-                        await stream_mgr.send_tool_status(tool, status)
-                        _upsert_tool(tool, status)
+                        invocation_id = str(event.get("invocation_id") or "") or None
+                        await stream_mgr.send_tool_status(tool, status, invocation_id=invocation_id)
+                        _upsert_tool(tool, status, invocation_id=invocation_id)
                         if status in {"failed", "timeout", "needs_clarification"}:
                             _record_honesty_result(
                                 tool,
@@ -201,8 +456,14 @@ class PiExperimentalRuntime:
                         text = str(event.get("text", ""))
                         status = str(event.get("status", "success"))
                         action = event.get("action")
+                        invocation_id = str(event.get("invocation_id") or "") or None
                         candidates = event.get("candidates")
                         event_data = event.get("data")
+                        terminal_tool = {
+                            "tool": tool,
+                            "status": status,
+                            "data": event_data if isinstance(event_data, dict) else {},
+                        }
                         if text:
                             await stream_mgr.send_tool_result(
                                 tool,
@@ -211,12 +472,11 @@ class PiExperimentalRuntime:
                                 action=str(action) if action else None,
                                 candidates=candidates if isinstance(candidates, list) else None,
                                 data=event_data if isinstance(event_data, dict) else None,
+                                invocation_id=invocation_id,
                             )
-                            if (
-                                (tool == "caretask" and status == "success")
-                                or tool == "contact"
-                            ):
-                                authoritative_tool_response_text = text
+                            terminal_text = _authoritative_tool_text(event)
+                            if terminal_text is not None:
+                                authoritative_tool_response_text = terminal_text
                         clarify_verb = None
                         if isinstance(event_data, dict):
                             clarify_verb = event_data.get("clarify_verb")
@@ -224,6 +484,7 @@ class PiExperimentalRuntime:
                             tool,
                             status,
                             str(action) if action else None,
+                            invocation_id=invocation_id,
                             candidates=candidates if isinstance(candidates, list) else None,
                             clarify_verb=str(clarify_verb) if clarify_verb else None,
                         )
@@ -267,11 +528,21 @@ class PiExperimentalRuntime:
                                     str(item.get("tool") or ""),
                                     str(item.get("status") or "success"),
                                     str(item["action"]) if item.get("action") else None,
+                                    invocation_id=str(item.get("invocation_id") or "") or None,
                                 )
                             elif item:
                                 _upsert_tool(str(item), "success")
                         seen_done = True
                         break
+
+        if cancel_event.is_set():
+            return {
+                "trace_id": trace_id,
+                "agent_runtime": self.name,
+                "pi_experimental": True,
+                "cancelled": True,
+                "tools_used": tools_used,
+            }
 
         if sidecar_error:
             raise RuntimeError(sidecar_error)
@@ -305,7 +576,7 @@ class PiExperimentalRuntime:
         await stream_mgr.send_first_reply(response_text, ttft_ms)
 
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -313,6 +584,25 @@ class PiExperimentalRuntime:
             total_latency_ms=total_latency_ms,
             tools_used=tools_used,
             memory_updated=False,
+        )
+        if not terminal_tool and tools_used:
+            terminal_tool = {**tools_used[-1], "data": tools_used[-1]}
+        terminal_tool_data = terminal_tool.get("data")
+        if not isinstance(terminal_tool_data, dict):
+            terminal_tool_data = {}
+        audit_outcome, audit_tool_status = _semantic_audit_outcome(
+            str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
+            str(terminal_tool.get("status")) if terminal_tool else None,
+            terminal_tool_data,
+        )
+        audit_persistence = await _persist_pi_evidence_best_effort(
+            session_id=session_id, user_id=user_id, trace_id=trace_id,
+            user_content=message, assistant_content=response_text,
+            outcome=audit_outcome, latency_ms=total_latency_ms,
+            tool_name=str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
+            tool_status=audit_tool_status,
+            tool_data=terminal_tool_data,
+            assistant_message_id=message_id,
         )
         return {
             "trace_id": trace_id,
@@ -322,6 +612,7 @@ class PiExperimentalRuntime:
             "response_text": response_text,
             "tools_used": tools_used,
             "sidecar_error": sidecar_error,
+            "audit_persistence": audit_persistence,
             # Tradeoff note: pi-agent-core tool loop may increase TTFT vs harness fast-reply.
             "ttft_tradeoff": "pi_agent_core_tool_loop_may_delay_first_token_vs_harness_fast_reply",
         }
@@ -332,12 +623,19 @@ class PiExperimentalRuntime:
         trace_id: str,
         start: float,
         detail: str | None = None,
+        *,
+        text: str | None = None,
+        error: str = "pi_experimental_not_enabled",
+        audit_outcome: str = "disabled",
+        user_id: str | None = None,
+        session_id: str | None = None,
+        user_message: str | None = None,
     ) -> dict:
-        text = _PI_DISABLED_MSG if detail is None else f"{_PI_DISABLED_MSG}\n\n({detail})"
+        text = text or (_PI_DISABLED_MSG if detail is None else f"{_PI_DISABLED_MSG}\n\n({detail})")
         ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -346,12 +644,22 @@ class PiExperimentalRuntime:
             tools_used=[],
             memory_updated=False,
         )
+        if user_id and session_id and user_message is not None:
+            audit_persistence = await _persist_pi_evidence_best_effort(
+                session_id=session_id, user_id=user_id, trace_id=trace_id,
+                user_content=user_message, assistant_content=text,
+                outcome=audit_outcome, latency_ms=total_latency_ms,
+                assistant_message_id=message_id,
+            )
+        else:
+            audit_persistence = "not_attempted"
         return {
             "trace_id": trace_id,
             "message_id": message_id,
             "agent_runtime": self.name,
             "pi_experimental": True,
-            "error": "pi_experimental_not_enabled",
+            "error": error,
+            "audit_persistence": audit_persistence,
         }
 
 

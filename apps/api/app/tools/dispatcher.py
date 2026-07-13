@@ -4,11 +4,11 @@ import asyncio
 import logging
 import time
 
+from app.observability.trace_service import sanitize_tool_evidence
 from app.tools.base import ToolBase, ToolResult
 from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
-
 
 class ToolDispatcher:
     def __init__(self, max_tool_calls: int = 3, tool_timeout_ms: int = 3000):
@@ -79,8 +79,12 @@ class ToolDispatcher:
                 status=status,
                 latency_ms=latency_ms,
             )
-        except Exception as e:
-            logger.error(f"Failed to persist tool call for {tool_name}: {e}")
+        except Exception as exc:
+            logger.error(
+                "Tool call evidence persistence failed tool=%s error_class=%s code=tool_trace_failed",
+                tool_name,
+                type(exc).__name__,
+            )
 
     async def _call_tool(
         self,
@@ -100,11 +104,13 @@ class ToolDispatcher:
             "session_id": session_id,
             "trace_id": trace_id,
         }
-        input_json = {
-            "query": message,
-            "user_id": user_id,
-            "session_id": session_id,
-        }
+        if name == "caretask":
+            from app.tools.caretask_batch import detect_compound_caretask
+
+            params["idempotency_key"] = trace_id
+            if detect_compound_caretask(message):
+                params["action"] = "batch"
+        input_json = sanitize_tool_evidence({"query": message})
 
         try:
             result = await asyncio.wait_for(
@@ -156,11 +162,11 @@ class ToolDispatcher:
                 trace_id=trace_id,
                 tool_name=name,
                 input_json=input_json,
-                output_json={
+                output_json=sanitize_tool_evidence({
                     "status": result.status,
                     "display_text": result.display_text,
                     "data": result.data,
-                },
+                }),
                 status=result.status,
                 latency_ms=latency,
             )
@@ -173,7 +179,7 @@ class ToolDispatcher:
                 trace_id=trace_id,
                 tool_name=name,
                 input_json=input_json,
-                output_json={"status": "timeout", "display_text": "", "data": None},
+                output_json={"status": "timeout", "error_code": "tool_timeout"},
                 status="timeout",
                 latency_ms=latency,
             )
@@ -183,7 +189,11 @@ class ToolDispatcher:
 
         except Exception as e:
             latency = int((time.monotonic() - start) * 1000)
-            logger.error(f"Tool {name} error: {e}")
+            logger.error(
+                "Tool %s failed error_class=%s code=tool_execution_failed",
+                name,
+                type(e).__name__,
+            )
             await stream_mgr.send_tool_status(name, "failed")
             await self._record_tool_call(
                 trace_id=trace_id,
@@ -191,9 +201,8 @@ class ToolDispatcher:
                 input_json=input_json,
                 output_json={
                     "status": "failed",
-                    "display_text": "",
-                    "data": None,
-                    "error": str(e),
+                    "error_code": "tool_execution_failed",
+                    "error_class": type(e).__name__,
                 },
                 status="failed",
                 latency_ms=latency,

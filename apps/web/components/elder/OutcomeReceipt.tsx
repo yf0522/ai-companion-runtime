@@ -1,10 +1,11 @@
-import { Check, CircleAlert, Clock3, LoaderCircle } from "lucide-react";
+import { Check, CircleAlert, Clock3, Info, LoaderCircle } from "lucide-react";
 import type { ToolChip } from "@/stores/chatStore";
 import { outcomeReceiptForTool } from "./outcome-receipt";
 import styles from "./ElderProduct.module.css";
 
 const icons = {
-  info: LoaderCircle,
+  loading: LoaderCircle,
+  info: Info,
   success: Check,
   pending: Clock3,
   error: CircleAlert,

@@ -33,7 +33,7 @@ Update after intentional harness changes:
 ```bash
 cd <repo-root>
 python -m pip install -e "apps/api[dev]"
-python scripts/latency_bench.py --iterations 5 --update-baseline docs/evidence/latency-baseline.json
+python scripts/latency_bench.py --iterations 100 --update-baseline docs/evidence/latency-baseline.json
 cd apps/api && pytest -q tests/test_latency_bench.py
 git add docs/evidence/latency-baseline.json
 ```

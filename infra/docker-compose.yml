@@ -16,7 +16,12 @@ services:
     restart: unless-stopped
 
   web:
-    build: ../apps/web
+    build:
+      context: ../apps/web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
+        NEXT_PUBLIC_AGENT_RUNTIME: ${NEXT_PUBLIC_AGENT_RUNTIME:-harness}
     ports:
       - "3000:3000"
     depends_on:

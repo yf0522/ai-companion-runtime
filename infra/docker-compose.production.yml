@@ -1,8 +1,8 @@
 services:
   api:
-    env_file:
+    env_file: !override
       - ../.env.production
-    ports: []
+    ports: !override []
     read_only: true
     tmpfs:
       - /tmp
@@ -10,9 +10,18 @@ services:
       - no-new-privileges:true
 
   web:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL is required}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?NEXT_PUBLIC_WS_URL is required}
+        NEXT_PUBLIC_AGENT_RUNTIME: ${NEXT_PUBLIC_AGENT_RUNTIME:?NEXT_PUBLIC_AGENT_RUNTIME is required}
     env_file:
       - ../.env.production
-    ports: []
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL is required}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?NEXT_PUBLIC_WS_URL is required}
+      NEXT_PUBLIC_AGENT_RUNTIME: ${NEXT_PUBLIC_AGENT_RUNTIME:?NEXT_PUBLIC_AGENT_RUNTIME is required}
+    ports: !override []
     read_only: true
     tmpfs:
       - /tmp
@@ -20,7 +29,7 @@ services:
       - no-new-privileges:true
 
   celery-worker:
-    env_file:
+    env_file: !override
       - ../.env.production
     read_only: true
     tmpfs:
@@ -29,7 +38,7 @@ services:
       - no-new-privileges:true
 
   celery-beat:
-    env_file:
+    env_file: !override
       - ../.env.production
     read_only: true
     tmpfs:
@@ -38,19 +47,19 @@ services:
       - no-new-privileges:true
 
   postgres:
-    ports: []
+    ports: !override []
 
   redis:
-    ports: []
+    ports: !override []
 
   minio:
-    ports: []
+    ports: !override []
 
   jaeger:
-    ports: []
+    ports: !override []
 
   prometheus:
-    ports: []
+    ports: !override []
 
   grafana:
-    ports: []
+    ports: !override []

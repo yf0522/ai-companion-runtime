@@ -10,6 +10,7 @@ import {
   normalizeMemoryParams,
 } from "./caretask-params.mjs";
 import { assistantErrorMessage } from "./pi-events.mjs";
+import { capabilityResponseFor } from "./capability-response.mjs";
 import {
   authoritativeToolResultText,
   authoritativeToolShouldTerminate,
@@ -41,12 +42,13 @@ const SYSTEM_PROMPT =
   [
     "You are a warm, concise AI companion for older adults.",
     "Reply in the user's language. Keep answers practical and kind.",
-    "When the user asks about medication, appointments, or care tasks, use the caretask tool.",
-    "For today's care tasks / 今日事项, use caretask action=list (defaults to today's care window) — do not invent a today_brief tool.",
-    "When the user explicitly asks their family to contact, call, or help them, use the contact tool with action=request_contact.",
-    "For contact requests, repeat only the tool result: queued or recorded never means delivered.",
-    "When the user says 以后记得 / preferences / continuity facts, use the memory tool (note or recall).",
-    "Never store prescription doses or escalation rules in memory — those belong to caretask / care settings.",
+    "Describe capabilities to the user only as 照护事项、联系家人、长期偏好; never expose internal tool, function, or schema names.",
+    "For medication, appointments, or 照护事项, use the caretask tool.",
+    "For today's 照护事项, use caretask action=list.",
+    "When the user explicitly asks to 联系家人, use the contact tool with action=request_contact.",
+    "For 联系家人 requests, repeat only the result: queued or recorded never means delivered.",
+    "When the user asks to retain 长期偏好, use the memory tool (note or recall).",
+    "Never store prescription doses or escalation rules as 长期偏好.",
     "Never claim a tool succeeded if the tool result status is failed or timeout.",
     "If a tool fails, apologize briefly and ask the user to try again — do not invent success.",
   ].join(" ");
@@ -81,6 +83,41 @@ function writeNdjson(res, payload) {
   res.write(`${JSON.stringify(payload)}\n`);
 }
 
+export function bindClientAbort(req, res, controller) {
+  function cleanup() {
+    req.off("aborted", abort);
+    res.off("close", abort);
+    res.off("finish", cleanup);
+  }
+  function abort() {
+    if (!res.writableEnded && !controller.signal.aborted) {
+      controller.abort(new Error("client_closed"));
+    }
+    cleanup();
+  }
+  req.once("aborted", abort);
+  res.once("close", abort);
+  res.once("finish", cleanup);
+  return cleanup;
+}
+
+function writeCapabilityResponse(res, text, stream) {
+  if (stream === false) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ type: "text", text, tools_used: [] }));
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Pi-Bridge": "capability-guard",
+  });
+  writeNdjson(res, { type: "text_delta", delta: text });
+  writeNdjson(res, { type: "done", reason: "capability_guard", tools_used: [] });
+  res.end();
+}
+
 function normalizeMessages(body) {
   const raw = Array.isArray(body.messages) ? body.messages : [];
   const messages = [];
@@ -98,19 +135,10 @@ function normalizeMessages(body) {
 }
 
 function bridgeErrorText(data, status) {
-  const detail = data?.detail ?? data?.error;
-  if (typeof detail === "string" && detail.trim()) return detail.trim();
-  if (detail != null) {
-    try {
-      return JSON.stringify(detail);
-    } catch {
-      /* ignore */
-    }
-  }
-  if (status === 404) {
-    return `tool bridge 404 at ${TOOL_BRIDGE_URL}/tools/execute — set TOOL_BRIDGE_URL to the companion API /api base`;
-  }
-  return `bridge HTTP ${status}`;
+  void data;
+  return status === 401 || status === 403
+    ? "当前服务认证失败，请稍后再试。"
+    : "这项操作暂时无法完成，请稍后再试。";
 }
 
 async function bridgeExecute(toolName, params, ctx) {
@@ -130,31 +158,34 @@ async function bridgeExecute(toolName, params, ctx) {
         user_id: ctx.userId,
         session_id: ctx.sessionId,
         trace_id: ctx.traceId,
+        query: ctx.userText,
+        idempotency_key: ctx.traceId,
         risk_blocked: Boolean(ctx.riskBlocked),
         risk_level: ctx.riskLevel || null,
       }),
+      signal: ctx.signal,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[pi-sidecar] tool bridge fetch failed url=${url} err=${message}`);
+    const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
+    console.error(`[pi-sidecar] tool bridge failed error_class=${errorClass} code=bridge_unreachable`);
     return {
       tool_name: toolName,
       status: "failed",
-      display_text: `tool bridge unreachable (${TOOL_BRIDGE_URL}): ${message}`,
-      data: { reason: "bridge_unreachable", url },
+      display_text: "这项操作暂时无法完成，请稍后再试。",
+      data: { reason: "bridge_unreachable", error_code: "bridge_unreachable" },
     };
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const display_text = bridgeErrorText(data, res.status);
     console.error(
-      `[pi-sidecar] tool bridge HTTP ${res.status} url=${url} detail=${display_text}`,
+      `[pi-sidecar] tool bridge failed status=${res.status} code=bridge_http_error`,
     );
     return {
       tool_name: toolName,
       status: "failed",
       display_text,
-      data: { reason: "bridge_http_error", http_status: res.status, url },
+      data: { reason: "bridge_http_error", http_status: res.status },
     };
   }
   return data;
@@ -163,7 +194,7 @@ async function bridgeExecute(toolName, params, ctx) {
 function makeCareTaskTool(ctx) {
   return {
     name: "caretask",
-    label: "CareTask",
+    label: "照护事项",
     description:
       "Manage eldercare CareTasks (medication/appointment): create, list, complete, snooze, cancel. list defaults to today's local care-window dump (status/title/task_type/due_at/notes). Reminder is scheduling projection only.",
     parameters: Type.Object({
@@ -220,7 +251,7 @@ function makeCareTaskTool(ctx) {
 function makeMemoryTool(ctx) {
   return {
     name: "memory",
-    label: "Memory",
+    label: "长期偏好",
     description:
       "Long-term continuity memory (not CareTask). action=recall reads consent-granted fragments; action=note writes preference/household/communication/persona facts (pending consent in production). Refuses prescription/dose/escalation — use caretask for meds.",
     parameters: Type.Object({
@@ -268,7 +299,7 @@ function makeMemoryTool(ctx) {
 function makeContactTool(ctx) {
   return {
     name: "contact",
-    label: "Contact family",
+    label: "联系家人",
     description:
       "Record the elder's explicit request for verified family contacts to reach them. Use only for an explicit user request. The result reports recorded/queued state and must never be described as delivered unless the tool says so.",
     parameters: Type.Object(
@@ -318,7 +349,8 @@ function makeContactTool(ctx) {
   };
 }
 
-async function streamAgentChat({ res, body }) {
+async function streamAgentChat({ req, res, output = res, body }) {
+  const controller = new AbortController();
   const model = resolveModel(body.provider, body.model);
   const userMessages = normalizeMessages(body);
   const lastUser = userMessages[userMessages.length - 1];
@@ -329,6 +361,7 @@ async function streamAgentChat({ res, body }) {
     riskBlocked: Boolean(body.risk_blocked),
     riskLevel: body.risk_level || null,
     userText: lastUser.content,
+    signal: controller.signal,
   };
 
   const tools = ENABLE_TOOLS
@@ -337,7 +370,7 @@ async function streamAgentChat({ res, body }) {
   const toolsUsed = [];
   let agentError = null;
 
-  res.writeHead(200, {
+  output.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
@@ -364,9 +397,10 @@ async function streamAgentChat({ res, body }) {
       if (!ENABLE_TOOLS) {
         return { block: true, reason: "tools_disabled" };
       }
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "tool_status",
         tool: toolCall.name,
+        invocation_id: toolCall.id,
         status: "calling",
       });
       return undefined;
@@ -380,21 +414,24 @@ async function streamAgentChat({ res, body }) {
       const clarifyVerb = details?.data?.clarify_verb || null;
       toolsUsed.push({
         tool: toolCall.name,
+        invocation_id: toolCall.id,
         status,
         ...(action ? { action } : {}),
         ...(candidates ? { candidates } : {}),
         ...(clarifyVerb ? { clarify_verb: clarifyVerb } : {}),
       });
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "tool_status",
         tool: toolCall.name,
+        invocation_id: toolCall.id,
         status,
       });
       if (details.display_text) {
         const candidates = details?.data?.candidates || null;
-        writeNdjson(res, {
+        writeNdjson(output, {
           type: "tool_result",
           tool: toolCall.name,
+          invocation_id: toolCall.id,
           text: details.display_text,
           status,
           ...(action ? { action } : {}),
@@ -437,11 +474,14 @@ async function streamAgentChat({ res, body }) {
     },
   });
 
+  const abortAgent = () => agent.abort();
+  controller.signal.addEventListener("abort", abortAgent, { once: true });
+
   agent.subscribe(async (event) => {
     const errorMessage = assistantErrorMessage(event);
     if (errorMessage) {
       agentError = errorMessage;
-      writeNdjson(res, { type: "error", message: errorMessage });
+      writeNdjson(output, { type: "error", message: errorMessage });
       return;
     }
     if (
@@ -449,12 +489,12 @@ async function streamAgentChat({ res, body }) {
       event.assistantMessageEvent?.type === "text_delta" &&
       event.assistantMessageEvent.delta
     ) {
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "text_delta",
         delta: event.assistantMessageEvent.delta,
       });
     } else if (event.type === "agent_end" && !agentError) {
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "done",
         reason: "agent_end",
         tools_used: toolsUsed,
@@ -462,17 +502,25 @@ async function streamAgentChat({ res, body }) {
     }
   });
 
+  const cleanupClientAbort = bindClientAbort(req, res, controller);
   try {
     await agent.prompt(lastUser.content);
     await agent.waitForIdle();
   } catch (err) {
-    writeNdjson(res, {
+    const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
+    console.error(
+      `[pi-sidecar] agent failed error_class=${errorClass} code=pi_agent_failed`,
+    );
+    writeNdjson(output, {
       type: "error",
-      message: err instanceof Error ? err.message : "pi agent error",
+      message: "服务暂时不可用，请稍后再试。",
     });
-  }
-  if (!res.writableEnded) {
-    res.end();
+  } finally {
+    if (!output.writableEnded && !controller.signal.aborted) {
+      output.end();
+    }
+    cleanupClientAbort();
+    controller.signal.removeEventListener("abort", abortAgent);
   }
 }
 
@@ -499,7 +547,7 @@ async function streamChatLegacy({ res, body }) {
     } else if (event.type === "error") {
       writeNdjson(res, {
         type: "error",
-        message: event.error?.errorMessage || "pi-ai stream error",
+        message: "服务暂时不可用，请稍后再试。",
       });
       break;
     } else if (event.type === "done") {
@@ -510,7 +558,11 @@ async function streamChatLegacy({ res, body }) {
   res.end();
 }
 
-const server = http.createServer(async (req, res) => {
+export function createRequestHandler({
+  enableTools = ENABLE_TOOLS,
+  streamAgentChatImpl = streamAgentChat,
+} = {}) {
+  return async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -528,7 +580,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/v1/chat") {
       const body = await readJson(req);
-      const useAgent = body.use_agent_core !== false && ENABLE_TOOLS;
+      const messages = normalizeMessages(body);
+      const lastUser = messages.findLast((message) => message.role === "user");
+      const capabilityResponse = capabilityResponseFor(lastUser?.content);
+      if (capabilityResponse) {
+        writeCapabilityResponse(res, capabilityResponse, body.stream);
+        return;
+      }
+      const useAgent = body.use_agent_core !== false && enableTools;
       if (body.stream === false) {
         // Non-stream: still use agent path into a buffer.
         const chunks = [];
@@ -546,9 +605,17 @@ const server = http.createServer(async (req, res) => {
           },
         };
         if (useAgent) {
-          await streamAgentChat({ res: fakeRes, body: { ...body, stream: true } });
+          await streamAgentChatImpl({
+            req,
+            res,
+            output: fakeRes,
+            body: { ...body, stream: true },
+          });
         } else {
           await streamChatLegacy({ res: fakeRes, body });
+        }
+        if (res.destroyed || res.writableEnded) {
+          return;
         }
         let text = "";
         let authoritativeText = "";
@@ -578,7 +645,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (useAgent) {
-        await streamAgentChat({ res, body });
+        await streamAgentChatImpl({ req, res, output: res, body });
         return;
       }
       await streamChatLegacy({ res, body });
@@ -588,7 +655,11 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   } catch (err) {
-    const message = err instanceof Error ? err.message : "sidecar_error";
+    const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
+    const message = "服务暂时不可用，请稍后再试。";
+    console.error(
+      `[pi-sidecar] request failed error_class=${errorClass} code=sidecar_request_failed`,
+    );
     if (!res.headersSent) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: message }));
@@ -597,12 +668,13 @@ const server = http.createServer(async (req, res) => {
     writeNdjson(res, { type: "error", message });
     res.end();
   }
-});
+  };
+}
+
+export const server = http.createServer(createRequestHandler());
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(
-    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask,memory,contact" : "off"} bridge=${TOOL_BRIDGE_URL}`,
-  );
+  console.log(`[pi-sidecar] listening port=${PORT} tools=${ENABLE_TOOLS ? "on" : "off"}`);
   if (ENABLE_TOOLS) {
     const schemasUrl = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/schemas`;
     fetch(schemasUrl, {
@@ -613,16 +685,16 @@ server.listen(PORT, "127.0.0.1", () => {
       .then(async (res) => {
         if (!res.ok) {
           console.error(
-            `[pi-sidecar] tool bridge health check failed HTTP ${res.status} at ${schemasUrl}`,
+            `[pi-sidecar] tool bridge health check failed status=${res.status} code=bridge_health_failed`,
           );
           return;
         }
-        console.log(`[pi-sidecar] tool bridge ok ${schemasUrl}`);
+        console.log("[pi-sidecar] tool bridge health check ok");
       })
       .catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
         console.error(
-          `[pi-sidecar] tool bridge health check unreachable ${schemasUrl}: ${message}`,
+          `[pi-sidecar] tool bridge health check failed error_class=${errorClass} code=bridge_health_unreachable`,
         );
       });
   }

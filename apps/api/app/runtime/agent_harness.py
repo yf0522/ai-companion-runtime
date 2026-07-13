@@ -13,14 +13,26 @@ from app.engines.base import (
     AnalyzerInput, IntentResult, EmotionResult, RiskResult,
     MemorySnapshot, PersonalityConfig,
 )
+from app.runtime.capability_response import capability_response_for
 from app.runtime.stream_manager import StreamManager
 from app.observability.trace_service import TraceService
+from app.tools.caretask_batch import detect_compound_caretask
 
 logger = logging.getLogger(__name__)
 _trace_svc = TraceService()
+_RISK_NOTIFICATION_TIMEOUT_S = 0.25
+_RISK_TRACE_TIMEOUT_S = 0.25
 
 
 _harness_config: dict | None = None
+
+
+async def _cancel_and_drain(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 def _load_harness_config() -> dict:
@@ -32,7 +44,10 @@ def _load_harness_config() -> dict:
         with open(path) as f:
             _harness_config = yaml.safe_load(f).get("harness", {})
     except Exception as exc:
-        logger.warning("Failed to load harness.yaml: %s, using defaults", exc)
+        logger.warning(
+            "Harness config load failed error_class=%s code=harness_config_load_failed",
+            type(exc).__name__,
+        )
         _harness_config = {}
     return _harness_config
 
@@ -78,7 +93,15 @@ async def _record_analysis_events(
             step_index=3,
             user_id=user_id,
             session_id=session_id,
-            output_json=risk.model_dump(),
+            output_json={
+                "level": risk.level,
+                "category": risk.category,
+                "confidence": risk.confidence,
+                "triggered_rule_types": sorted({
+                    str(rule).partition(":")[0][:40]
+                    for rule in (risk.triggered_rules or [])
+                }),
+            },
             status="success",
             latency_ms=latency_ms,
         ),
@@ -191,7 +214,7 @@ class AgentHarness:
                     latency_ms=analyzer_ms,
                 )
             )
-            await self._handle_risk(
+            risk_metadata = await self._handle_risk(
                 risk,
                 stream_mgr,
                 trace_id,
@@ -199,8 +222,13 @@ class AgentHarness:
                 user_id,
                 session_id,
                 analysis_trace,
+                message,
             )
-            return {"trace_id": trace_id, "blocked_by_risk": True}
+            return {
+                "trace_id": trace_id,
+                "blocked_by_risk": True,
+                **risk_metadata,
+            }
 
         asyncio.create_task(
             _record_analysis_events(
@@ -216,12 +244,41 @@ class AgentHarness:
         )
 
         if risk.level == "medium":
-            await self._dispatch_risk_notification(
-                user_id,
-                "medium",
-                risk.category,
-                self._build_family_notification_summary(risk),
-                trace_id,
+            from app.runtime.risk_gate import persist_nonblocking_decision
+
+            decision = await persist_nonblocking_decision(user_id, risk, trace_id)
+            await _trace_svc.add_event(
+                trace_id=trace_id,
+                step_name="risk_decision_persistence",
+                step_index=5,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                output_json={
+                    key: decision[key]
+                    for key in ("status", "error_class", "error_code")
+                    if key in decision
+                },
+                status="success" if decision.get("status") == "persisted" else "failed",
+            )
+
+        if capability_response_for(message):
+            return await self._run_deterministic_capability(
+                message=message,
+                trace_id=trace_id,
+                stream_mgr=stream_mgr,
+                user_id=user_id,
+                session_id=session_id,
+                start_time=start_time,
+            )
+
+        if detect_compound_caretask(message):
+            return await self._run_deterministic_caretask(
+                message=message,
+                trace_id=trace_id,
+                stream_mgr=stream_mgr,
+                user_id=db_user_id,
+                session_id=db_session_id,
+                start_time=start_time,
             )
 
         if "contact" in intent.tool_needs:
@@ -256,7 +313,7 @@ class AgentHarness:
         ttft_ms = None
         response_text = ""
         tool_results = []
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
 
         from app.runtime.prompt_builder import PromptBuilder
         prompt_builder = PromptBuilder()
@@ -315,9 +372,15 @@ class AgentHarness:
                         response_text += token
 
                 await asyncio.wait_for(_stream_model(), timeout=model_total_timeout)
+                if cancel_event.is_set():
+                    await _cancel_and_drain(tool_task)
+                    return {"trace_id": trace_id, "cancelled": True}
                 model_success = True
                 break
 
+            except asyncio.CancelledError:
+                await _cancel_and_drain(tool_task)
+                raise
             except asyncio.TimeoutError:
                 logger.warning(f"Model stream timed out after {model_total_timeout}s")
                 retries += 1
@@ -325,9 +388,17 @@ class AgentHarness:
                     break
             except Exception as exc:
                 retries += 1
-                logger.warning("Model attempt %s failed: %s", retries, exc)
+                logger.warning(
+                    "Model attempt failed attempt=%s error_class=%s code=model_attempt_failed",
+                    retries,
+                    type(exc).__name__,
+                )
                 if retries > self.max_retries:
                     break
+
+        if cancel_event.is_set():
+            await _cancel_and_drain(tool_task)
+            return {"trace_id": trace_id, "cancelled": True}
 
         if not model_success:
             fallback_text = self._template("model_all_fail") or "抱歉，我现在有点反应不过来，你能稍后再试一下吗？"
@@ -341,11 +412,17 @@ class AgentHarness:
         if tool_task:
             try:
                 tool_results = await asyncio.wait_for(tool_task, timeout=1.0)
+            except asyncio.CancelledError:
+                await _cancel_and_drain(tool_task)
+                raise
             except asyncio.TimeoutError:
                 logger.warning("Tool dispatch did not finish in time after model stream")
                 tool_results = []
             except Exception as exc:
-                logger.warning("Tool dispatch failed: %s", exc)
+                logger.warning(
+                    "Tool dispatch failed error_class=%s code=tool_dispatch_failed",
+                    type(exc).__name__,
+                )
                 tool_results = []
 
         # Contract: never let the model verbally promise success after a failed tool,
@@ -440,8 +517,9 @@ class AgentHarness:
             memory_updated=True,
         )
 
-        await self._persist_conversation(
+        evidence_status = await self._persist_conversation(
             session_id, user_id, message, response_text,
+            trace_id=trace_id, assistant_message_id=message_id,
         )
 
         return {
@@ -449,6 +527,7 @@ class AgentHarness:
             "message_id": message_id,
             "ttft_ms": ttft_ms,
             "total_latency_ms": total_latency_ms,
+            "message_evidence": evidence_status,
         }
 
     async def _run_deterministic_caretask(
@@ -485,7 +564,7 @@ class AgentHarness:
         ttft_ms = int((time.monotonic() - start_time) * 1000)
         await stream_mgr.send_first_reply(response_text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -494,13 +573,17 @@ class AgentHarness:
             tools_used=[tool_entry],
             memory_updated=True,
         )
-        await self._persist_conversation(session_id, user_id, message, response_text)
+        evidence_status = await self._persist_conversation(
+            session_id, user_id, message, response_text,
+            trace_id=trace_id, assistant_message_id=message_id,
+        )
         return {
             "trace_id": trace_id,
             "message_id": message_id,
             "ttft_ms": ttft_ms,
             "total_latency_ms": total_latency_ms,
             "deterministic_caretask": True,
+            "message_evidence": evidence_status,
         }
 
     async def _run_deterministic_contact(
@@ -536,7 +619,7 @@ class AgentHarness:
         ttft_ms = int((time.monotonic() - start_time) * 1000)
         await stream_mgr.send_first_reply(response_text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -545,13 +628,69 @@ class AgentHarness:
             tools_used=[tool_entry],
             memory_updated=False,
         )
-        await self._persist_conversation(session_id, user_id, message, response_text)
+        evidence_status = await self._persist_conversation(
+            session_id, user_id, message, response_text,
+            trace_id=trace_id, assistant_message_id=message_id,
+        )
         return {
             "trace_id": trace_id,
             "message_id": message_id,
             "ttft_ms": ttft_ms,
             "total_latency_ms": total_latency_ms,
             "deterministic_contact": True,
+            "message_evidence": evidence_status,
+        }
+
+    async def _run_deterministic_capability(
+        self,
+        *,
+        message: str,
+        trace_id: str,
+        stream_mgr: StreamManager,
+        user_id: str,
+        session_id: str,
+        start_time: float,
+    ) -> dict:
+        from app.runtime.capability_response import ELDER_CAPABILITY_RESPONSE
+
+        response_text = ELDER_CAPABILITY_RESPONSE
+        ttft_ms = int((time.monotonic() - start_time) * 1000)
+        await stream_mgr.send_first_reply(response_text, ttft_ms)
+        total_latency_ms = int((time.monotonic() - start_time) * 1000)
+        message_id = str(uuid.uuid4())
+        await stream_mgr.send_final(
+            trace_id=trace_id,
+            message_id=message_id,
+            ttft_ms=ttft_ms,
+            total_latency_ms=total_latency_ms,
+            tools_used=[],
+            memory_updated=False,
+        )
+        evidence_status = await self._persist_conversation(
+            session_id,
+            user_id,
+            message,
+            response_text,
+            trace_id=trace_id,
+            assistant_message_id=message_id,
+        )
+        await _trace_svc.add_event(
+            trace_id=trace_id,
+            step_name="capability_response_final",
+            step_index=10,
+            user_id=_stable_uuid(user_id),
+            session_id=_stable_uuid(session_id),
+            output_json={"message_id": message_id, "response_kind": "elder_capabilities"},
+            status="success",
+            latency_ms=total_latency_ms,
+        )
+        return {
+            "trace_id": trace_id,
+            "message_id": message_id,
+            "ttft_ms": ttft_ms,
+            "total_latency_ms": total_latency_ms,
+            "deterministic_capability": True,
+            "message_evidence": evidence_status,
         }
 
     async def _run_analyzers(self, input: AnalyzerInput) -> tuple:
@@ -568,8 +707,12 @@ class AgentHarness:
                     )
             except asyncio.TimeoutError:
                 logger.warning(f"{engine_name} timed out ({timeout_ms}ms)")
-            except Exception as e:
-                logger.warning(f"{engine_name} failed: {e}")
+            except Exception as exc:
+                logger.warning(
+                    "Analyzer failed engine=%s error_class=%s code=analyzer_failed",
+                    engine_name,
+                    type(exc).__name__,
+                )
             if engine_name == "risk":
                 return RiskResult(
                     level="critical",
@@ -599,8 +742,11 @@ class AgentHarness:
                 )
         except asyncio.TimeoutError:
             logger.warning(f"Memory recall timed out ({timeout_ms}ms)")
-        except Exception as e:
-            logger.warning(f"Memory recall failed: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Memory recall failed error_class=%s code=memory_recall_failed",
+                type(exc).__name__,
+            )
         return MemorySnapshot()
 
     def _get_engine(self, name: str):
@@ -615,69 +761,156 @@ class AgentHarness:
         user_id: str,
         session_id: str | None = None,
         analysis_trace: asyncio.Task | None = None,
+        user_message: str | None = None,
     ):
         """Handle high/critical risk: send alert and safe response."""
-        from app.runtime.risk_gate import build_safety_response, load_safety_message
+        from app.runtime.risk_gate import load_safety_message, notification_notice
 
         summary = self._build_family_notification_summary(risk)
-        notify_status = await self._dispatch_risk_notification(
-            user_id,
-            risk.level,
-            risk.category,
-            summary,
-            trace_id,
-        )
-        safety_msg = build_safety_response(
-            load_safety_message(risk.level, risk.category),
-            notify_status,
-        )
-        # Level-only alert: safety copy goes once via first_reply (avoid bubble dup).
+        base_message = load_safety_message(risk.level, risk.category)
         await stream_mgr.send_risk_alert(risk.level, "")
-
         ttft_ms = int((time.monotonic() - start_time) * 1000)
-        await stream_mgr.send_first_reply(safety_msg, ttft_ms)
+        await stream_mgr.send_first_reply(base_message, ttft_ms)
 
+        try:
+            notify_status = await asyncio.wait_for(
+                self._dispatch_risk_notification(
+                    user_id,
+                    risk.level,
+                    risk.category,
+                    summary,
+                    trace_id,
+                ),
+                timeout=_RISK_NOTIFICATION_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Notification dispatch timed out trace=%s code=notification_dispatch_timeout",
+                trace_id[:80],
+            )
+            notify_status = {
+                "status": "failed",
+                "records": 0,
+                "webhook_status": None,
+                "error_class": "TimeoutError",
+                "error_code": "notification_dispatch_timeout",
+            }
+        except Exception as exc:
+            logger.error(
+                "Notification dispatch failed trace=%s error_class=%s code=notification_dispatch_failed",
+                trace_id[:80], type(exc).__name__,
+            )
+            notify_status = {
+                "status": "failed",
+                "records": 0,
+                "webhook_status": None,
+                "error_class": type(exc).__name__,
+                "error_code": "notification_dispatch_failed",
+            }
+        notice = notification_notice(notify_status)
+        await stream_mgr.send_delta(f" {notice}")
+        response_text = f"{base_message.rstrip()} {notice}"
+        message_id = str(uuid.uuid4())
+
+        async def persist_risk_audit() -> None:
+            from app.observability.message_evidence import persist_turn_messages
+
+            if not session_id:
+                raise LookupError("risk turn has no session")
+            persisted = await persist_turn_messages(
+                session_id=session_id,
+                user_id=user_id,
+                trace_id=trace_id,
+                user_content=user_message or "[risk input unavailable]",
+                assistant_content=response_text,
+                assistant_message_id=message_id,
+            )
+            if persisted.assistant_message_id != message_id:
+                raise RuntimeError("assistant message ID mismatch")
+            await _trace_svc.add_event(
+                trace_id=trace_id,
+                step_name="family_notification",
+                step_index=5,
+                user_id=_stable_uuid(user_id),
+                output_json={
+                    key: notify_status[key]
+                    for key in (
+                        "status", "records", "webhook_status", "delivery_status",
+                        "error_class", "error_code",
+                    )
+                    if key in notify_status
+                },
+                status=(
+                    "success"
+                    if notify_status.get("status") in {"persisted", "queued"}
+                    else "failed"
+                ),
+            )
+
+            if analysis_trace is not None:
+                await analysis_trace
+            await _trace_svc.add_event(
+                trace_id=trace_id,
+                step_name="risk_response_final",
+                step_index=10,
+                user_id=_stable_uuid(user_id),
+                session_id=_stable_uuid(session_id) if session_id else None,
+                output_json={
+                    "risk_level": risk.level,
+                    "risk_category": risk.category,
+                    "ttft_ms": ttft_ms,
+                    "total_latency_ms": int((time.monotonic() - start_time) * 1000),
+                    "notification_status": notify_status.get("status"),
+                },
+                status="success",
+                latency_ms=int((time.monotonic() - start_time) * 1000),
+                required=True,
+            )
+
+        trace_status = "persisted"
+        try:
+            await asyncio.wait_for(
+                persist_risk_audit(),
+                timeout=_RISK_TRACE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            trace_status = "failed"
+            logger.error(
+                "Risk trace persistence timed out trace=%s code=risk_trace_timeout",
+                trace_id[:80],
+            )
+        except Exception as exc:
+            trace_status = "failed"
+            logger.error(
+                "Risk trace persistence failed trace=%s error_class=%s code=risk_trace_failed",
+                trace_id[:80], type(exc).__name__,
+            )
+        finally:
+            if analysis_trace is not None:
+                if not analysis_trace.done():
+                    analysis_trace.cancel()
+                await asyncio.gather(analysis_trace, return_exceptions=True)
         total_latency_ms = int((time.monotonic() - start_time) * 1000)
-        await _trace_svc.add_event(
-            trace_id=trace_id,
-            step_name="family_notification",
-            step_index=4,
-            user_id=_stable_uuid(user_id),
-            output_json=notify_status,
-            status=(
-                "success"
-                if notify_status.get("status") in {"persisted", "queued"}
-                else "failed"
-            ),
-        )
-
-        if analysis_trace is not None:
-            await analysis_trace
-        await _trace_svc.add_event(
-            trace_id=trace_id,
-            step_name="risk_response_final",
-            step_index=10,
-            user_id=_stable_uuid(user_id),
-            session_id=_stable_uuid(session_id) if session_id else None,
-            output_json={
-                "risk_level": risk.level,
-                "risk_category": risk.category,
-                "ttft_ms": ttft_ms,
-                "total_latency_ms": total_latency_ms,
-                "notification_status": notify_status.get("status"),
-            },
-            status="success",
-            latency_ms=total_latency_ms,
-            required=True,
-        )
         await stream_mgr.send_final(
             trace_id=trace_id,
-            message_id=f"m_{nanoid(size=12)}",
+            message_id=message_id,
             ttft_ms=ttft_ms,
             total_latency_ms=total_latency_ms,
             tools_used=[],
             memory_updated=False,
         )
+        return {
+            "message_id": message_id,
+            "notification_status": {
+                key: notify_status[key]
+                for key in (
+                    "status", "webhook_status", "delivery_status",
+                    "error_class", "error_code",
+                )
+                if key in notify_status
+            },
+            "risk_trace_persistence": trace_status,
+        }
 
     async def _dispatch_risk_notification(
         self,
@@ -705,12 +938,16 @@ class AgentHarness:
                 result["delivery_queued"] = True
             return result
         except Exception as exc:
-            logger.error("Notification dispatch failed: %s", exc)
+            logger.error(
+                "Notification dispatch failed trace=%s error_class=%s code=notification_dispatch_failed",
+                trace_id[:80], type(exc).__name__,
+            )
             return {
                 "status": "failed",
                 "records": 0,
                 "webhook_status": None,
-                "error": str(exc),
+                "error_class": type(exc).__name__,
+                "error_code": "notification_dispatch_failed",
             }
 
     def _build_family_notification_summary(self, risk: RiskResult) -> str:
@@ -785,7 +1022,10 @@ class AgentHarness:
                 return True
 
         except Exception as exc:
-            logger.warning("Fast reply race failed: %s", exc)
+            logger.warning(
+                "Fast reply race failed error_class=%s code=fast_reply_failed",
+                type(exc).__name__,
+            )
 
         return False
 
@@ -827,20 +1067,53 @@ class AgentHarness:
         return await engine.adapt(emotion=emotion, intent=intent)
 
     async def _persist_conversation(
-        self, session_id: str, user_id: str, user_message: str, ai_response: str,
+        self,
+        session_id: str,
+        user_id: str,
+        user_message: str,
+        ai_response: str,
+        *,
+        trace_id: str | None = None,
+        assistant_message_id: str | None = None,
     ):
-        """Write user message and AI response to L0 working memory."""
+        """Write reconstructable PostgreSQL evidence, then update L0 memory."""
+        evidence_status = "not_attempted"
+        if trace_id and assistant_message_id and ai_response:
+            try:
+                from app.observability.message_evidence import persist_turn_messages
+
+                persisted = await persist_turn_messages(
+                    session_id=session_id,
+                    user_id=user_id,
+                    trace_id=trace_id,
+                    user_content=user_message,
+                    assistant_content=ai_response,
+                    assistant_message_id=assistant_message_id,
+                )
+                if persisted.assistant_message_id != assistant_message_id:
+                    raise RuntimeError("assistant message ID mismatch")
+                evidence_status = "persisted"
+            except Exception as exc:
+                evidence_status = "failed"
+                logger.error(
+                    "Harness message evidence failed trace=%s error_class=%s code=message_evidence_failed",
+                    trace_id[:80],
+                    type(exc).__name__,
+                )
         try:
             from app.storage.working_memory import append_message
             await append_message(session_id, "user", user_message)
             if ai_response:
                 await append_message(session_id, "assistant", ai_response)
-        except Exception as e:
-            logger.warning(f"Failed to persist conversation to L0: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Working memory persistence failed error_class=%s code=working_memory_persist_failed",
+                type(exc).__name__,
+            )
 
         from app.config.settings import settings
         if not settings.enable_celery_tasks:
-            return
+            return evidence_status
 
         try:
             from app.workers.memory_worker import (
@@ -851,6 +1124,7 @@ class AgentHarness:
                 update_session_summary.delay(session_id)
         except Exception as exc:
             logger.debug("Celery memory tasks skipped: %s", exc)
+        return evidence_status
 
     def _generate_trace_id(self, user_id: str) -> str:
         from datetime import datetime

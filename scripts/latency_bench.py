@@ -3,7 +3,7 @@
 
 Usage:
   python scripts/latency_bench.py
-  python scripts/latency_bench.py --iterations 5 --json
+  python scripts/latency_bench.py --iterations 100 --json
   python scripts/latency_bench.py --baseline docs/evidence/latency-baseline.json
   python scripts/latency_bench.py --update-baseline docs/evidence/latency-baseline.json
 
@@ -18,6 +18,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 # Repo root on sys.path so `app.*` imports work when invoked from repo root.
@@ -35,7 +36,7 @@ from app.engines.base import (  # noqa: E402
 )
 from app.runtime.agent_harness import AgentHarness  # noqa: E402
 
-DEFAULT_ITERATIONS = 5
+DEFAULT_ITERATIONS = 100
 DEFAULT_REGRESSION_PCT = 20.0
 # Synthetic wall-clock samples on shared hosted runners can cross a percentage
 # boundary by a fraction of a millisecond due to scheduler jitter. This is only
@@ -205,6 +206,11 @@ def _install_harness_mocks(
     async def fake_risk_notification(*_args, **_kwargs):
         return {"status": "skipped", "records": 0}
 
+    async def fake_persist_turn_messages(**kwargs):
+        return SimpleNamespace(
+            assistant_message_id=kwargs["assistant_message_id"],
+        )
+
     harness._run_analyzers = fake_analyzers  # type: ignore[method-assign]
     harness._get_personality = fake_personality  # type: ignore[method-assign]
     harness._fast_reply_race = fake_fast_reply  # type: ignore[method-assign]
@@ -218,9 +224,15 @@ def _install_harness_mocks(
             return _MockModel(delay)
 
     import app.models.router as router_mod
+    import app.observability.message_evidence as message_evidence_mod
     import app.runtime.agent_harness as harness_mod
 
     monkeypatch.setattr(router_mod, "model_router", _Router())
+    monkeypatch.setattr(
+        message_evidence_mod,
+        "persist_turn_messages",
+        fake_persist_turn_messages,
+    )
     monkeypatch.setattr(harness_mod._trace_svc, "add_event", _async_noop)
     monkeypatch.setattr(harness_mod._trace_svc, "record_model_call", _async_noop)
 

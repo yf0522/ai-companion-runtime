@@ -45,6 +45,6 @@ jobs:
       - name: Latency regression benchmark
         run: |
           python scripts/latency_bench.py \
-            --iterations 5 \
+            --iterations 100 \
             --baseline docs/evidence/latency-baseline.json \
             --regression-pct 20

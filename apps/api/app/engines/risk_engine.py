@@ -10,6 +10,50 @@ from app.engines.base import AnalyzerInput, BaseEngine, RiskResult
 
 logger = logging.getLogger(__name__)
 
+_CLAUSE_BOUNDARY_RE = re.compile(r"[，,。；;！？!?\n]|(?:但是|不过|然而|可是|但|却)")
+_NON_ASSERTED_CONTEXT_RE = re.compile(
+    r"(?:新闻|报道).{0,8}(?:里|中)?(?:说|称|提到|写道|报道)|"
+    r"(?:例子|例如|比如|举例|假设)"
+)
+_HYPOTHETICAL_CONTEXT_RE = re.compile(r"(?:如果|假如|要是|倘若)")
+_EXPLICIT_PRESENT_SELF_RE = re.compile(r"(?:我|本人)(?:现在|确实|真的)")
+_NEGATED_SPEECH_CONTEXT_RE = re.compile(
+    r"(?:我|本人)?(?:刚才|之前|曾经)?(?:没|没有|并未|不曾)说(?:过)?"
+    r"(?:我|本人)?(?:现在|确实|真的)?$"
+)
+_SELF_REPORT_RE = re.compile(
+    r"(?:我|本人)(?:刚才|现在|之前|已经)?(?:说|表示|提到|告诉你|告诉大家)"
+)
+_THIRD_PARTY_ATTRIBUTION_RE = re.compile(
+    r"(?:是)?(?:"
+    r"我(?:的)?(?:妈|妈妈|母亲|爸|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
+    r"(?:妈妈|母亲|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
+    r"(?:他|她|他们|她们|对方)|"
+    r"(?:听说)?有人|"
+    r"(?:邻居|朋友)[\u4e00-\u9fff]{1,4}(?:阿姨|叔叔|大爷|大妈)|"
+    r"[\u4e00-\u9fff]{1,3}(?:医生|护士|大夫)(?:说|表示|提到)(?:他|她|他们|她们)|"
+    r"(?:医生|护士|大夫)(?:(?:跟|对)我)?(?:说|表示|提到)(?:他|她|他们|她们)|"
+    r"(?:我)?听(?:医生|护士|大夫)(?:说|表示|提到)(?:我|本人|他|她|他们|她们)|"
+    r"(?:我)?听说(?:有人|他|她|他们|她们|我(?:的)?朋友)|"
+    r"听(?:朋友|邻居|家人)说(?:他|她|他们|她们)|"
+    r"据说(?:有人|他|她|他们|她们)|"
+    r"(?:朋友|邻居|家人)(?:跟|对)我说(?:他|她|他们|她们)"
+    r")"
+    r"(?:现在|最近|刚才)?"
+    r"(?:(?:说|表示|提到|告诉我)(?:我|本人|他|她|他们|她们)?)?"
+    r"(?:现在|最近|刚才)?$"
+)
+_NEGATION_SCOPE_BRIDGE_RE = re.compile(
+    r"(?:并|真的|确实|曾经|正在|再|会|要|有|任何|感觉|觉得|出现|发生)*"
+)
+_EARLIER_HEALTH_PREDICATE_RE = re.compile(
+    r"(?:胸口|胸部|心口).{0,8}(?:疼|痛|闷).*$"
+)
+_RISK_KEYWORD_VARIANTS = {
+    "胸口疼": re.compile(r"(?:胸口|胸部|心口)(?:很|非常|特别|剧烈|持续|一直)?(?:疼|痛)"),
+}
+_QUOTE_PAIRS = (("“", "”"), ("「", "」"), ("『", "』"), ('"', '"'), ("‘", "’"), ("'", "'"))
+
 
 class RiskConfigurationError(RuntimeError):
     """Risk policy is unavailable or does not satisfy the runtime contract."""
@@ -58,62 +102,181 @@ class RiskEngine(BaseEngine):
         self._safe_patterns = self._rules.get("safe_context_patterns", [])
         self._negation_words = self._rules.get("negation_words", [])
 
-    def _is_safe_context(self, message: str) -> bool:
-        """Check if the message matches a known safe context (false positive)."""
+    @staticmethod
+    def _quote_spans(message: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        for opening, closing in _QUOTE_PAIRS:
+            start = 0
+            while (left := message.find(opening, start)) >= 0:
+                right = message.find(closing, left + len(opening))
+                if right < 0:
+                    break
+                spans.append((left, right + len(closing)))
+                start = right + len(closing)
+        return spans
+
+    @staticmethod
+    def _clause_start(message: str, position: int) -> int:
+        start = 0
+        for boundary in _CLAUSE_BOUNDARY_RE.finditer(message, 0, position):
+            start = boundary.end()
+        return start
+
+    def _overlaps_safe_expression(self, message: str, start: int, end: int) -> bool:
         for safe in self._safe_patterns:
-            if safe in message:
-                return True
+            safe_start = 0
+            while (safe_idx := message.find(safe, safe_start)) >= 0:
+                safe_end = safe_idx + len(safe)
+                if safe_idx < end and start < safe_end:
+                    return True
+                safe_start = safe_end
         return False
 
-    def _is_negated(self, message: str, keyword: str) -> bool:
-        """Check if a keyword is preceded by a negation word.
-
-        e.g. "我没有想死" → "想死" is negated → not a real risk signal.
-        "我不想死" → immediate 不 before 想死 → suppressed.
-        But "我不想活了" → keyword is "不想活了" itself (YAML), not negated.
-        """
-        idx = message.find(keyword)
-        if idx < 0:
+    def _is_negated_span(self, message: str, start: int) -> bool:
+        """Apply negation only when it explicitly governs the matched predicate."""
+        clause_start = self._clause_start(message, start)
+        prefix = message[clause_start:start]
+        nearest: tuple[int, str] | None = None
+        for neg in (*self._negation_words, "不", "没"):
+            idx = prefix.rfind(neg)
+            if idx >= 0 and (nearest is None or idx > nearest[0]):
+                nearest = (idx, neg)
+        if nearest is None:
             return False
-        # Look at the 6 chars before the keyword for negation
-        prefix_start = max(0, idx - 6)
-        prefix = message[prefix_start:idx]
-        for neg in self._negation_words:
-            if neg in prefix:
+        neg_idx, neg = nearest
+        between = prefix[neg_idx + len(neg):]
+        return _NEGATION_SCOPE_BRIDGE_RE.fullmatch(between) is not None
+
+    def _is_explicit_self_quote(
+        self,
+        message: str,
+        end: int,
+        quote_span: tuple[int, int],
+    ) -> bool:
+        left, _ = quote_span
+        clause_start = self._clause_start(message, left)
+        reporter = message[clause_start:left].rstrip("：: ")
+        if _SELF_REPORT_RE.fullmatch(reporter) is None:
+            return False
+        quoted_subject = message[left + 1:end].lstrip()
+        return quoted_subject.startswith(("我", "本人"))
+
+    def _is_asserted_match(
+        self,
+        message: str,
+        start: int,
+        end: int,
+        *,
+        quote_spans: list[tuple[int, int]],
+        pattern_match: bool = False,
+    ) -> bool:
+        quote_span = next(
+            ((left, right) for left, right in quote_spans if left <= start and end <= right),
+            None,
+        )
+        if quote_span and not self._is_explicit_self_quote(message, end, quote_span):
+            return False
+        if self._overlaps_safe_expression(message, start, end):
+            return False
+        clause_start = self._clause_start(message, start)
+        closed_quote_ends = [right for _, right in quote_spans if clause_start < right <= start]
+        modality_start = clause_start
+        if closed_quote_ends:
+            after_quote = max(closed_quote_ends)
+            if "我" in message[after_quote:start]:
+                modality_start = after_quote
+        clause_prefix = message[modality_start:start]
+        if _NEGATED_SPEECH_CONTEXT_RE.search(clause_prefix):
+            return False
+        if _NON_ASSERTED_CONTEXT_RE.search(clause_prefix):
+            return False
+        subject_prefix = _EARLIER_HEALTH_PREDICATE_RE.sub("", clause_prefix)
+        if _THIRD_PARTY_ATTRIBUTION_RE.fullmatch(subject_prefix):
+            return False
+        explicit_self = _EXPLICIT_PRESENT_SELF_RE.search(clause_prefix) is not None
+        if not explicit_self:
+            if _HYPOTHETICAL_CONTEXT_RE.search(clause_prefix):
+                return False
+        if pattern_match:
+            matched = message[start:end]
+            symptom_parts = list(re.finditer(
+                r"(?:胸口|胸部|心口).{0,3}(?:疼|痛)|"
+                r"(?:呼吸.{0,4}(?:困难|急促)|喘不上气|透不过气)",
+                matched,
+            ))
+            if symptom_parts and any(
+                self._is_negated_span(message, start + part.start())
+                for part in symptom_parts
+            ):
+                return False
+        return not self._is_negated_span(message, start)
+
+    def _keyword_match(
+        self,
+        message: str,
+        keyword: str,
+        quote_spans: list[tuple[int, int]],
+    ) -> bool:
+        variant = _RISK_KEYWORD_VARIANTS.get(keyword)
+        matches = (
+            variant.finditer(message)
+            if variant is not None
+            else re.finditer(re.escape(keyword), message)
+        )
+        for match in matches:
+            if self._is_asserted_match(
+                message,
+                match.start(),
+                match.end(),
+                quote_spans=quote_spans,
+            ):
                 return True
-            if idx >= len(neg) and message[idx - len(neg) : idx] == neg:
-                return True
-        # Immediate 不/没/别 before keyword (我不想死)
-        if idx > 0 and message[idx - 1] in ("不", "没", "别"):
-            return True
         return False
+
+    def _pattern_match(
+        self,
+        message: str,
+        pattern: str,
+        quote_spans: list[tuple[int, int]],
+    ) -> bool:
+        return any(
+            self._is_asserted_match(
+                message, match.start(), match.end(), quote_spans=quote_spans,
+                pattern_match=True,
+            )
+            for match in re.finditer(pattern, message)
+        )
 
     async def analyze(self, input: AnalyzerInput) -> RiskResult:
         raw_message = input.message
         message = _normalize_text(raw_message)
         rules = self._rules.get("rules", {})
-
-        # Fast path: safe context suppresses common false positives
-        if self._is_safe_context(message):
-            return RiskResult(level="low", category="none", confidence=0.9)
+        quote_spans = self._quote_spans(message)
 
         # Critical: health emergency
         critical = rules.get("critical", {})
+        for pattern in critical.get("patterns", []):
+            if self._pattern_match(message, pattern, quote_spans):
+                return RiskResult(
+                    level="critical",
+                    category=critical.get("category", "health_emergency"),
+                    confidence=0.95,
+                    triggered_rules=[f"pattern:{pattern}"],
+                )
         for kw in critical.get("keywords", []):
-            if kw in message and not self._is_negated(message, kw):
+            if self._keyword_match(message, kw, quote_spans):
                 return RiskResult(
                     level="critical",
                     category=critical.get("category", "health_emergency"),
                     confidence=0.95,
                     triggered_rules=[f"keyword:{kw}"],
                 )
-
         # High: sub-categories (scam / health)
         high = rules.get("high", {})
         for cat_name, cat_rules in high.get("categories", {}).items():
             category = "health_emergency" if cat_name == "health_concern" else cat_name
             for kw in cat_rules.get("keywords", []):
-                if kw in message and not self._is_negated(message, kw):
+                if self._keyword_match(message, kw, quote_spans):
                     return RiskResult(
                         level="high",
                         category=category,
@@ -121,8 +284,7 @@ class RiskEngine(BaseEngine):
                         triggered_rules=[f"keyword:{kw}"],
                     )
             for pattern in cat_rules.get("patterns", []):
-                m = re.search(pattern, message)
-                if m and not self._is_negated(message, m.group()):
+                if self._pattern_match(message, pattern, quote_spans):
                     return RiskResult(
                         level="high",
                         category=category,
@@ -133,12 +295,20 @@ class RiskEngine(BaseEngine):
         # Medium: emotional low
         medium = rules.get("medium", {})
         for kw in medium.get("keywords", []):
-            if kw in message and not self._is_negated(message, kw):
+            if self._keyword_match(message, kw, quote_spans):
                 return RiskResult(
                     level="medium",
                     category=medium.get("category", "emotional_low"),
                     confidence=0.6,
                     triggered_rules=[f"medium_keyword:{kw}"],
+                )
+        for pattern in medium.get("patterns", []):
+            if self._pattern_match(message, pattern, quote_spans):
+                return RiskResult(
+                    level="medium",
+                    category=medium.get("category", "emotional_low"),
+                    confidence=0.7,
+                    triggered_rules=[f"medium_pattern:{pattern}"],
                 )
 
         # Default: low risk

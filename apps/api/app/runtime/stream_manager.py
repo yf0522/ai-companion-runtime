@@ -16,6 +16,7 @@ class StreamManager:
     def __init__(self, websocket: WebSocket):
         self._ws = websocket
         self._dead = False
+        self._trace_id: str | None = None
 
     @property
     def dead(self) -> bool:
@@ -23,7 +24,11 @@ class StreamManager:
         return self._dead
 
     async def send_trace(self, trace_id: str):
+        self._trace_id = trace_id
         await self._send({"type": "trace", "trace_id": trace_id})
+
+    async def send_cancelled(self, trace_id: str):
+        await self._send({"type": "cancelled", "trace_id": trace_id})
 
     async def send_first_reply(self, text: str, ttft_ms: int):
         await self._send({"type": "first_reply", "text": text, "ttft_ms": ttft_ms})
@@ -31,8 +36,13 @@ class StreamManager:
     async def send_delta(self, text: str):
         await self._send({"type": "delta", "text": text})
 
-    async def send_tool_status(self, tool: str, status: str):
-        await self._send({"type": "tool_status", "tool": tool, "status": status})
+    async def send_tool_status(
+        self, tool: str, status: str, *, invocation_id: str | None = None
+    ):
+        await self._send({
+            "type": "tool_status", "tool": tool, "status": status,
+            **({"invocation_id": invocation_id} if invocation_id else {}),
+        })
 
     async def send_tool_result(
         self,
@@ -43,6 +53,7 @@ class StreamManager:
         action: str | None = None,
         candidates: list | None = None,
         data: dict | None = None,
+        invocation_id: str | None = None,
     ):
         payload: dict = {"type": "tool_result", "tool": tool, "text": text}
         if status:
@@ -53,6 +64,8 @@ class StreamManager:
             payload["candidates"] = candidates
         if data:
             payload["data"] = data
+        if invocation_id:
+            payload["invocation_id"] = invocation_id
         await self._send(payload)
 
     async def send_risk_alert(self, level: str, message: str):
@@ -96,6 +109,8 @@ class StreamManager:
     async def _send(self, data: dict):
         if self._dead:
             return
+        if data.get("type") not in {"connected", "trace"} and self._trace_id:
+            data = {**data, "trace_id": data.get("trace_id") or self._trace_id}
         try:
             await self._ws.send_json(data)
         except Exception as e:

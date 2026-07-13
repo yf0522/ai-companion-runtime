@@ -65,7 +65,8 @@ class Message(Base):
     session: Mapped[Session] = relationship(back_populates="messages")
 
     __table_args__ = (
-        Index("idx_messages_session", "session_id", "message_index"),
+        UniqueConstraint("session_id", "message_index", name="uq_messages_session_message_index"),
+        Index("idx_messages_trace_id", "trace_id"),
     )
 
 

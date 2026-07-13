@@ -28,12 +28,12 @@
 .outcomeReceipt[data-tone="success"] .outcomeIcon { background: var(--care-success-soft); color: var(--care-success); }
 .outcomeReceipt[data-tone="pending"] .outcomeIcon { background: var(--care-warning-soft); color: var(--care-warning); }
 .outcomeReceipt[data-tone="error"] .outcomeIcon { background: var(--care-critical-soft); color: var(--care-critical); }
-.outcomeReceipt[data-tone="info"] .outcomeIcon svg { animation: elder-spin 1.2s linear infinite; }
+.outcomeReceipt[data-tone="loading"] .outcomeIcon svg { animation: elder-spin 1.2s linear infinite; }
 
 .outcomeReceipt strong,
 .outcomeReceipt small { display: block; }
 .outcomeReceipt strong { color: var(--care-ink); font-size: 14px; line-height: 1.4; }
-.outcomeReceipt small { margin-top: 3px; color: var(--care-muted); font-size: 12px; line-height: 1.55; }
+.outcomeReceipt small { margin-top: 3px; color: var(--care-muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
 
 @keyframes elder-spin { to { transform: rotate(360deg); } }
 

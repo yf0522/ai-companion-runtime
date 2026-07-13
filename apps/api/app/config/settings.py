@@ -1,10 +1,31 @@
 import logging
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings
 
 _logger = logging.getLogger(__name__)
 
 _INSECURE_JWT_SECRET = "change-me-in-production"
+_REQUIRED_MIGRATION_HEAD = "c1d2e3f4a5b6"
+
+
+def is_public_endpoint_url(value: str, *, schemes: set[str]) -> bool:
+    """Return whether a URL uses an allowed scheme and a non-local host."""
+    try:
+        parsed = urlsplit(value.strip())
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        if parsed.scheme.lower() not in schemes or not hostname:
+            return False
+        if hostname == "localhost" or hostname.endswith(".localhost"):
+            return False
+        try:
+            address = ip_address(hostname)
+        except ValueError:
+            return True
+        return address.is_global
+    except ValueError:
+        return False
 
 
 class Settings(BaseSettings):
@@ -55,6 +76,11 @@ class Settings(BaseSettings):
     controlled_elder_enrollment: bool = False
     platform_worker_heartbeat_key: str = "platform:worker:heartbeat"
     platform_worker_heartbeat_max_age_seconds: int = 120
+    platform_readiness_check_timeout_seconds: float = 2.0
+    platform_readiness_cleanup_grace_seconds: float = 0.05
+    platform_readiness_dependency_timeout_seconds: float = 1.5
+    platform_readiness_stale_after_seconds: int = 60
+    platform_readiness_future_skew_seconds: int = 5
 
     # OpenTelemetry
     otel_exporter_otlp_endpoint: str = "http://jaeger:4317"
@@ -119,11 +145,19 @@ class Settings(BaseSettings):
         if is_prod:
             if not self.require_tls:
                 errors.append("REQUIRE_TLS must be true in production.")
-            elif not self.public_base_url.startswith("https://"):
-                errors.append("PUBLIC_BASE_URL must use https when REQUIRE_TLS is true.")
+            elif not is_public_endpoint_url(self.public_base_url, schemes={"https"}):
+                errors.append(
+                    "PUBLIC_BASE_URL must use https with a publicly routable host in production."
+                )
 
-            if not self.expected_migration_heads.strip():
-                errors.append("EXPECTED_MIGRATION_HEADS must be set in production.")
+            configured_heads = [
+                item.strip() for item in self.expected_migration_heads.split(",") if item.strip()
+            ]
+            if configured_heads != [_REQUIRED_MIGRATION_HEAD]:
+                errors.append(
+                    "EXPECTED_MIGRATION_HEADS must name the current sole head "
+                    f"{_REQUIRED_MIGRATION_HEAD} in production."
+                )
 
             if not self.backup_bucket.strip():
                 errors.append("BACKUP_BUCKET must be set in production.")
@@ -134,16 +168,25 @@ class Settings(BaseSettings):
             if not self.evidence_manifest_required:
                 errors.append("EVIDENCE_MANIFEST_REQUIRED must be true in production.")
 
-            if not self.public_api_url.startswith("https://"):
-                errors.append("PUBLIC_API_URL must use https in production.")
+            if not is_public_endpoint_url(self.public_api_url, schemes={"https"}):
+                errors.append(
+                    "PUBLIC_API_URL must use https with a publicly routable host in production."
+                )
 
-            if not self.public_ws_url.startswith("wss://"):
-                errors.append("PUBLIC_WS_URL must use wss in production.")
+            if not is_public_endpoint_url(self.public_ws_url, schemes={"wss"}):
+                errors.append(
+                    "PUBLIC_WS_URL must use wss with a publicly routable host in production."
+                )
 
             if self.notification_provider != "signed_webhook":
                 errors.append("NOTIFICATION_PROVIDER must be signed_webhook in production.")
-            elif not self.notification_outbound_url.startswith("https://"):
-                errors.append("NOTIFICATION_OUTBOUND_URL must use https in production.")
+            elif not is_public_endpoint_url(
+                self.notification_outbound_url, schemes={"https"}
+            ):
+                errors.append(
+                    "NOTIFICATION_OUTBOUND_URL must use https with a publicly routable host "
+                    "in production."
+                )
 
             if not self.notification_webhook_secret.strip():
                 errors.append("NOTIFICATION_WEBHOOK_SECRET must be set in production.")

@@ -17,6 +17,7 @@ import {
   HeartHandshake,
   HelpCircle,
   Home,
+  Gauge,
   LogOut,
   Menu,
   RadioTower,
@@ -77,6 +78,7 @@ const iconMap: Record<string, LucideIcon> = {
   "/family/readiness": ShieldCheck,
   "/family/summary": Bot,
   "/ops/care": ShieldCheck,
+  "/ops/platform": Gauge,
   "/ops/households/readiness": Home,
   "/ops/traces": RadioTower,
 };

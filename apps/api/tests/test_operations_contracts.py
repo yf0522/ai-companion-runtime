@@ -35,7 +35,7 @@ def test_production_config_requires_tls_migrations_backup_and_evidence():
         public_base_url="https://api.example.test",
         public_api_url="https://api.example.test",
         public_ws_url="wss://api.example.test",
-        expected_migration_heads="a9c0d1e2f3b4",
+        expected_migration_heads="c1d2e3f4a5b6",
         backup_bucket="pilot-backups",
         backup_kms_key_id="kms-key",
         evidence_manifest_required=True,
@@ -54,11 +54,11 @@ def test_evidence_manifest_keeps_external_evidence_pending_by_default():
         repo_root=_REPO_ROOT,
         environment="ci",
         account_role="ci",
-        migration_heads=["a9c0d1e2f3b4"],
+        migration_heads=["c1d2e3f4a5b6"],
         trace_ids=["trace-1"],
         receipt_ids=["receipt-1"],
     )
-    assert manifest.migration_heads == ["a9c0d1e2f3b4"]
+    assert manifest.migration_heads == ["c1d2e3f4a5b6"]
     assert manifest.external_evidence["legal_review"] == "pending_unconfigured"
     assert manifest.external_evidence["physical_device"] == "pending_unconfigured"
 

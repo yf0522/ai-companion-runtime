@@ -8,6 +8,105 @@ import {
   normalizeMemoryParams,
 } from "../caretask-params.mjs";
 
+test("single CareTask mutations require direct speech-act authorization", () => {
+  for (const query of [
+    "请问如何取消吃药提醒",
+    "我只是举例：取消吃药提醒",
+    "不要取消吃药提醒",
+    "如果我要取消吃药提醒怎么办",
+    "医生问我是否取消吃药提醒",
+    "她说“提醒我晚上8点吃药”",
+    "我没完成吃药任务",
+    "我不是要取消吃药提醒",
+    "我不想取消吃药提醒",
+    "我不打算延后吃药提醒",
+    "我不会建立吃药提醒",
+  ]) {
+    assert.equal(normalizeCareTaskParams({ action: "cancel" }, query).action, "clarify", query);
+  }
+  for (const [query, action] of [
+    ["请完成降压药", "complete"],
+    ["取消吃药提醒", "cancel"],
+    ["不要提醒我吃药", "cancel"],
+    ["提醒我晚上8点吃药", "create"],
+    ["明天晚上八点吃药", "create"],
+    ["后天上午九点复诊", "create"],
+    ["每天晚上八点吃降糖药", "create"],
+    ["把降压药提醒延后30分钟", "snooze"],
+    ["我吃了药", "complete"],
+    ["关掉提醒", "cancel"],
+    ["建立提醒", "create"],
+  ]) {
+    assert.equal(normalizeCareTaskParams({ action: "list" }, query).action, action, query);
+  }
+});
+
+test("Python and JavaScript CareTask speech-act parity corpus", () => {
+  for (const [query, expected] of [
+    ["请完成降压药", "complete"],
+    ["取消吃药提醒", "cancel"],
+    ["不要提醒我吃药", "cancel"],
+    ["提醒我晚上8点吃药", "create"],
+    ["明天晚上八点吃药", "create"],
+    ["把降压药提醒延后30分钟", "snooze"],
+    ["我吃了药", "complete"],
+    ["吃完降压药", "complete"],
+    ["降压药打卡", "complete"],
+    ["医生问我取消吃药提醒", "clarify"],
+    ["妈妈说取消吃药提醒", "clarify"],
+    ["我明天晚上八点吃药", "list"],
+    ["今天有什么任务", "list"],
+  ]) {
+    assert.equal(
+      normalizeCareTaskParams({ action: "create" }, query).action,
+      expected,
+      query,
+    );
+  }
+});
+
+test("CareTask normalizer drops model-controlled semantic arguments", () => {
+  const result = normalizeCareTaskParams(
+    {
+      action: "snooze",
+      task_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      title: "模型伪造任务",
+      task_type: "appointment",
+      due_at: "2039-01-01T00:00:00",
+      minutes: 1440,
+      notes: "模型伪造备注",
+      schedule_type: "once",
+    },
+    "把降压药提醒延后30分钟",
+  );
+
+  assert.deepEqual(result, {
+    action: "snooze",
+    query: "把降压药提醒延后30分钟",
+  });
+});
+
+test("scheduled CareTask creation rejects questions, hypotheticals, reports, quotes, and ordinary mentions", () => {
+  for (const query of [
+    "我明天晚上八点吃药",
+    "明天我会吃药",
+    "明天如果不舒服就吃药",
+    "明天医生让我晚上八点吃药",
+    "明天新闻说晚上八点吃药",
+    "明天“晚上八点吃药”",
+    "如果明天晚上八点吃药会怎么样",
+    "明天晚上八点吃药吗？",
+    "新闻里说明天晚上八点吃药",
+    "她说“明天晚上八点吃药”",
+  ]) {
+    assert.notEqual(
+      normalizeCareTaskParams({ action: "create" }, query).action,
+      "create",
+      query,
+    );
+  }
+});
+
 test("corrects list to cancel for explicit cancellation intent", () => {
   assert.deepEqual(
     normalizeCareTaskParams({ action: "list" }, "取消吃药提醒"),
@@ -33,7 +132,7 @@ test("overrides model create for read-only care task questions", () => {
   for (const query of ["今日任务", "我问你今天有什么照护任务", "我今天需要做什么", "吃药"]) {
     assert.deepEqual(
       normalizeCareTaskParams({ action: "create", title: "模型误建任务" }, query),
-      { action: "list", title: "模型误建任务", query, scope: "today" },
+      { action: "list", query, scope: "today" },
     );
   }
 });
@@ -112,7 +211,6 @@ test("uses original user text instead of model-injected schedule text", () => {
     {
       action: "create",
       query: "提醒我吃降糖药",
-      due_at: "2023-11-20T08:00:00",
     },
   );
 });

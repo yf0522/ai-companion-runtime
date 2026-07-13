@@ -1,5 +1,4 @@
 import { API_PATHS, makeIdempotencyKey, mutationHeaders } from "./release-a-contracts.mjs";
-
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 function getAuthHeaders(): HeadersInit {
@@ -238,6 +237,31 @@ export interface OperatorCaseEvidence {
 export interface OperatorCasesResponse {
   items: OperatorCaseItem[];
   total: number;
+}
+
+export type PlatformReadinessStatus = "ready" | "degraded" | "unsafe_to_serve";
+
+export interface OperatorPlatformReadinessCheck {
+  id: string;
+  label: string;
+  status: PlatformReadinessStatus;
+  summary: string;
+  duration_ms: number;
+  owner: string;
+  next_action: string;
+  runbook: string;
+  observed?: Record<string, string | number | boolean | string[]>;
+}
+
+export interface OperatorPlatformReadinessResponse {
+  contract_version: "operator-platform-readiness.v1";
+  scope: "platform";
+  status: PlatformReadinessStatus;
+  checked_at: string;
+  stale_after_seconds: number;
+  future_skew_seconds: number;
+  duration_ms: number;
+  checks: OperatorPlatformReadinessCheck[];
 }
 
 export interface CareCircleMember {
@@ -955,6 +979,14 @@ export async function fetchOperatorCases(): Promise<OperatorCasesResponse> {
     headers: authHeaders(),
   });
   return readJson<OperatorCasesResponse>(res);
+}
+
+export async function fetchOperatorPlatformReadiness(): Promise<OperatorPlatformReadinessResponse> {
+  const res = await fetch(`${API_URL}/api/operator/platform/readiness`, {
+    headers: authHeaders(),
+    cache: "no-store",
+  });
+  return readJson<OperatorPlatformReadinessResponse>(res);
 }
 
 export async function fetchOperatorHouseholds(query = ""): Promise<OperatorHouseholdsResponse> {

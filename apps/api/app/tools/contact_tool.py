@@ -12,6 +12,32 @@ from app.workers.notification_outbox_worker import (
 
 logger = logging.getLogger(__name__)
 
+_FAMILY = r"(?:家人|家属|孩子|女儿|儿子)"
+_CONTACT_NEGATIVE = re.compile(
+    rf"(?:不用|不要|不需要|不想|不打算|不会).{{0,12}}"
+    rf"(?:联系|通知|告诉|让).{{0,8}}{_FAMILY}|"
+    rf"(?:联系|通知|告诉).{{0,6}}{_FAMILY}.{{0,4}}(?:了吗|了没|过吗|没有)$"
+)
+_CONTACT_POSITIVE = (
+    re.compile(rf"^(?:请|麻烦|帮我|能不能|可以)?(?:联系|通知|告诉).{{0,4}}{_FAMILY}"),
+    re.compile(
+        rf"^(?:请|麻烦|帮我|让|我想让|想让|希望|我希望|需要|我需要|能不能让|可以让)"
+        rf".{{0,6}}{_FAMILY}.{{0,12}}"
+        r"(?:联系我|给我打电话|知道我需要帮助|来帮我|帮帮我|来看看我)"
+    ),
+    re.compile(
+        rf"^(?:(?:我希望|我想).{{0,4}}你|(?:请|麻烦).{{0,4}}(?:你)?)"
+        rf"(?:联系|通知|告诉).{{0,4}}{_FAMILY}"
+    ),
+)
+
+
+def is_explicit_family_contact_request(query: str | None) -> bool:
+    text = str(query or "").strip()
+    if not text or _CONTACT_NEGATIVE.search(text):
+        return False
+    return any(pattern.search(text) for pattern in _CONTACT_POSITIVE)
+
 
 class ContactFamilyTool(ToolBase):
     name = "contact"
@@ -86,7 +112,10 @@ class ContactFamilyTool(ToolBase):
                 # Persistence is the source of truth. A broker outage must not
                 # turn a committed outbox row into a false-negative response;
                 # beat/retry workers can still deliver it later.
-                logger.warning("Contact outbox dispatch scheduling failed: %s", exc)
+                logger.warning(
+                    "Contact outbox scheduling failed error_class=%s code=contact_schedule_failed",
+                    type(exc).__name__,
+                )
                 result["delivery_task_queued"] = False
                 result["delivery_schedule_error"] = "broker_unavailable"
 

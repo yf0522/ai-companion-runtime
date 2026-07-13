@@ -18,6 +18,22 @@ interface WsState {
 }
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
+const TOOL_TURN_FINAL_GRACE_MS = 2500;
+let toolTurnFinalTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearToolTurnFinalTimer() {
+  if (toolTurnFinalTimer) clearTimeout(toolTurnFinalTimer);
+  toolTurnFinalTimer = null;
+}
+
+function armToolTurnFinalFallback(status: string | undefined) {
+  if (!["success", "failed", "timeout", "needs_clarification"].includes(status || "")) return;
+  clearToolTurnFinalTimer();
+  toolTurnFinalTimer = setTimeout(() => {
+    useChatStore.getState().completeToolTurnFallback();
+    toolTurnFinalTimer = null;
+  }, TOOL_TURN_FINAL_GRACE_MS);
+}
 
 export const useWsStore = create<WsState>((set, get) => ({
   status: "disconnected",
@@ -43,6 +59,7 @@ export const useWsStore = create<WsState>((set, get) => ({
       set({ status: newStatus });
       // Reset streaming state on disconnect to unblock the send button
       if (newStatus === "disconnected" || newStatus === "reconnecting" || newStatus === "failed") {
+        clearToolTurnFinalTimer();
         useChatStore.getState().resetStreaming();
       }
     });
@@ -63,28 +80,32 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Risk alert
     client.on("risk_alert", (data) => {
-      useChatStore.getState().setRiskAlert(data.level, data.message);
+      useChatStore.getState().setRiskAlert(data.trace_id, data.level, data.message);
     });
 
     // First reply
     client.on("first_reply", (data) => {
-      useChatStore.getState().setFirstReply(data.text, data.ttft_ms);
+      useChatStore.getState().setFirstReply(data.trace_id, data.text, data.ttft_ms);
     });
 
     // Delta
     client.on("delta", (data) => {
-      useChatStore.getState().appendDelta(data.text);
+      useChatStore.getState().appendDelta(data.trace_id, data.text);
     });
 
     // Tool status
     client.on("tool_status", (data) => {
-      useChatStore.getState().setToolStatus(data.tool, data.status);
+      useChatStore.getState().setToolStatus(
+        data.trace_id, data.tool, data.status, data.invocation_id,
+      );
     });
 
     // Tool result — may carry clarify candidates for CareTask UI
     client.on("tool_result", (data) => {
       const payload = data.data || {};
       useChatStore.getState().setToolResult({
+        traceId: data.trace_id,
+        invocationId: data.invocation_id,
         tool: data.tool,
         status: data.status,
         text: data.text,
@@ -93,10 +114,12 @@ export const useWsStore = create<WsState>((set, get) => ({
         candidates: data.candidates || payload.candidates,
         clarifyVerb: payload.clarify_verb || data.clarify_verb,
       });
+      armToolTurnFinalFallback(data.status);
     });
 
     // Final
     client.on("final", (data) => {
+      clearToolTurnFinalTimer();
       useChatStore.getState().finalizeMessage({
         traceId: data.trace_id,
         messageId: data.message_id,
@@ -109,7 +132,13 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Error
     client.on("error", (data) => {
-      useChatStore.getState().setError(data.message);
+      clearToolTurnFinalTimer();
+      useChatStore.getState().setError(data.trace_id, data.message);
+    });
+
+    client.on("cancelled", (data) => {
+      clearToolTurnFinalTimer();
+      useChatStore.getState().acknowledgeCancellation(data.trace_id);
     });
 
     set({ client, status: "connecting" });
@@ -117,6 +146,7 @@ export const useWsStore = create<WsState>((set, get) => ({
   },
 
   disconnect: () => {
+    clearToolTurnFinalTimer();
     get().client?.disconnect();
     set({ client: null, status: "disconnected", sessionId: null });
   },
@@ -130,9 +160,9 @@ export const useWsStore = create<WsState>((set, get) => ({
   },
 
   stopGeneration: () => {
+    clearToolTurnFinalTimer();
     const { client } = get();
     const traceId = useChatStore.getState().currentTraceId;
     if (client && traceId) client.stopGeneration(traceId);
-    useChatStore.getState().resetStreaming();
   },
 }));
