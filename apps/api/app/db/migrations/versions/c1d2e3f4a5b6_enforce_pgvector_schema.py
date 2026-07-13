@@ -7,6 +7,7 @@ Revises: b0c1d2e3f4a5
 from collections.abc import Sequence
 
 from alembic import op
+from sqlalchemy import text
 
 revision: str = "c1d2e3f4a5b6"
 down_revision: str | None = "b0c1d2e3f4a5"
@@ -29,50 +30,44 @@ def upgrade() -> None:
         $migration$
         """
     )
-    op.execute(
-        """
-        DO $migration$
-        DECLARE
-            current_type text;
-        BEGIN
+    bind = op.get_bind()
+    current_type = bind.execute(
+        text(
+            """
             SELECT format_type(attribute.atttypid, attribute.atttypmod)
-            INTO current_type
             FROM pg_attribute AS attribute
             WHERE attribute.attrelid = to_regclass('memory_embeddings')
               AND attribute.attname = 'embedding'
-              AND NOT attribute.attisdropped;
+              AND NOT attribute.attisdropped
+            """
+        )
+    ).scalar_one_or_none()
+    if current_type != "vector(1536)":
+        raise RuntimeError(
+            "memory_embeddings.embedding is not vector(1536); run the reviewed "
+            "maintenance migration with a rehearsed rewrite window before retrying"
+        )
 
-            IF current_type IS NULL THEN
-                RAISE EXCEPTION USING
-                    MESSAGE = 'memory_embeddings.embedding is missing',
-                    HINT = 'Restore the expected memory_embeddings schema before rerunning the migration.';
-            END IF;
+    index_definition = bind.execute(
+        text(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND indexname = 'idx_memory_embeddings_vector'
+            """
+        )
+    ).scalar_one_or_none()
+    if "using hnsw (embedding vector_cosine_ops)" in (index_definition or "").lower():
+        return
 
-            IF current_type <> 'vector(1536)' THEN
-                BEGIN
-                    ALTER TABLE memory_embeddings
-                    ALTER COLUMN embedding TYPE vector(1536)
-                    USING CASE
-                        WHEN embedding IS NULL THEN NULL
-                        ELSE embedding::vector(1536)
-                    END;
-                EXCEPTION WHEN OTHERS THEN
-                    RAISE EXCEPTION USING
-                        MESSAGE = 'memory_embeddings.embedding could not be converted to vector(1536)',
-                        DETAIL = SQLERRM,
-                        HINT = 'Repair non-null embeddings so every value is a valid 1536-dimensional pgvector literal, then rerun the migration.';
-                END;
-            END IF;
-        END
-        $migration$
-        """
-    )
-    op.execute("DROP INDEX IF EXISTS idx_memory_embeddings_vector")
-    op.execute(
-        "CREATE INDEX idx_memory_embeddings_vector "
-        "ON memory_embeddings USING hnsw (embedding vector_cosine_ops)"
-    )
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_memory_embeddings_vector")
+        op.execute(
+            "CREATE INDEX CONCURRENTLY idx_memory_embeddings_vector "
+            "ON memory_embeddings USING hnsw (embedding vector_cosine_ops)"
+        )
 
 
 def downgrade() -> None:
-    """Preserve the vector schema already established by revision b0's ancestry."""
+    """No-op: preserve b0's forward-compatible vector schema and production data."""

@@ -6,7 +6,7 @@
 - Terminate TLS at a reviewed ingress or load balancer and forward only trusted traffic to the private Compose network.
 - Set explicit API runtime URLs: `PUBLIC_API_URL=https://...` and `PUBLIC_WS_URL=wss://...`.
 - Set `EXPECTED_MIGRATION_HEADS=c1d2e3f4a5b6` and verify `alembic heads` returns that single head.
-- Ensure the migration role can enable the `vector` extension. The head migration fails closed unless `memory_embeddings.embedding` is `vector(1536)` with its HNSW cosine index; repair invalid legacy text embeddings before retrying.
+- Ensure the migration role can enable the `vector` extension. The head migration fails closed unless `memory_embeddings.embedding` is already `vector(1536)`; an incompatible column requires a reviewed, rehearsed maintenance migration rather than an unbounded deployment-time rewrite. A missing or incorrect HNSW cosine index is replaced with `CREATE INDEX CONCURRENTLY` outside the migration transaction. The c1 downgrade is intentionally a no-op to preserve forward-schema compatibility and production data.
 - Configure a real backup bucket and KMS key, then complete the restore drill in `backup-restore.md`.
 - Configure a production-capable `NOTIFICATION_PROVIDER`; `sandbox` and `unconfigured` are never production-ready.
 - Keep `DEVICE_IDENTITY_REQUIRED=true` and `ENABLE_CELERY_TASKS=true`; `/ready` requires a fresh worker heartbeat.
@@ -27,7 +27,7 @@ docker compose --env-file .env.production \
   build web
 ```
 
-The explicit `--env-file` supplies Compose interpolation for the required Web build arguments and runtime environment. A service-level `env_file` only injects values into the container; it does not supply Compose interpolation. Reject a rendered production model containing `localhost` API or WebSocket values.
+The explicit `--env-file` supplies Compose interpolation for the required Web build arguments and same-value environment contract. A service-level `env_file` only injects values into the container; it does not supply Compose interpolation. `NEXT_PUBLIC_*` values are build-time inlined into the browser bundle: changing runner environment variables cannot reconfigure an already-built client. Reject localhost, loopback, non-HTTPS API, and non-WSS WebSocket values, and rebuild the Web image whenever these values change. The production overlay clears every inherited published port; reviewed ingress joins the private network instead of publishing Compose service ports.
 
 1. Build immutable API and web images from one commit SHA.
 2. Run `alembic upgrade c1d2e3f4a5b6` as a one-off migration job.

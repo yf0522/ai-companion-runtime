@@ -9,6 +9,8 @@ on:
       - "infra/**"
       - "scripts/**"
       - "docs/runbooks/**"
+      - ".env.example"
+      - ".env.production.example"
       - ".github/workflows/production-contracts.yml"
   pull_request:
     paths:
@@ -17,6 +19,8 @@ on:
       - "infra/**"
       - "scripts/**"
       - "docs/runbooks/**"
+      - ".env.example"
+      - ".env.production.example"
       - ".github/workflows/production-contracts.yml"
 
 jobs:
@@ -293,12 +297,21 @@ jobs:
           }
           assert build_args == expected
           assert runtime_environment == expected
-          assert not web.get("ports")
+          for service in config["services"].values():
+              assert not service.get("ports")
           assert all(
               "localhost" not in value
               for value in (*build_args.values(), *runtime_environment.values())
           )
           PY
+          echo "Invalid public URL values are rejected"
+          if docker build apps/web \
+            --build-arg NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 \
+            --build-arg NEXT_PUBLIC_WS_URL=ws://localhost:8000 \
+            --build-arg NEXT_PUBLIC_AGENT_RUNTIME=pi; then
+            echo "invalid production public URLs unexpectedly built" >&2
+            exit 1
+          fi
           docker compose --env-file .env.production \
             -f infra/docker-compose.yml \
             -f infra/docker-compose.production.yml \
