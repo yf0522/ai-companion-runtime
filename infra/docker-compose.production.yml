@@ -2,7 +2,7 @@ services:
   api:
     env_file:
       - ../.env.production
-    ports: []
+    ports: !override []
     read_only: true
     tmpfs:
       - /tmp
@@ -47,19 +47,19 @@ services:
       - no-new-privileges:true
 
   postgres:
-    ports: []
+    ports: !override []
 
   redis:
-    ports: []
+    ports: !override []
 
   minio:
-    ports: []
+    ports: !override []
 
   jaeger:
-    ports: []
+    ports: !override []
 
   prometheus:
-    ports: []
+    ports: !override []
 
   grafana:
-    ports: []
+    ports: !override []
