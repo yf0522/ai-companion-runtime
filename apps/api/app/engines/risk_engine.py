@@ -15,22 +15,39 @@ _NON_ASSERTED_CONTEXT_RE = re.compile(
     r"(?:新闻|报道).{0,8}(?:里|中)?(?:说|称|提到|写道|报道)|"
     r"(?:例子|例如|比如|举例|假设)"
 )
-_HYPOTHETICAL_CONTEXT_RE = re.compile(r"^(?:如果|假如|要是|倘若)")
+_HYPOTHETICAL_CONTEXT_RE = re.compile(r"(?:如果|假如|要是|倘若)")
+_EXPLICIT_PRESENT_SELF_RE = re.compile(r"(?:我|本人)(?:现在|确实|真的)")
+_NEGATED_SPEECH_CONTEXT_RE = re.compile(
+    r"(?:我|本人)?(?:刚才|之前|曾经)?(?:没|没有|并未|不曾)说(?:过)?"
+    r"(?:我|本人)?(?:现在|确实|真的)?$"
+)
 _SELF_REPORT_RE = re.compile(
     r"(?:我|本人)(?:刚才|现在|之前|已经)?(?:说|表示|提到|告诉你|告诉大家)"
 )
 _THIRD_PARTY_ATTRIBUTION_RE = re.compile(
-    r"(?:"
-    r"我(?:的)?(?:妈妈|母亲|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
+    r"(?:是)?(?:"
+    r"我(?:的)?(?:妈|妈妈|母亲|爸|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
     r"(?:妈妈|母亲|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
-    r"(?:他|她|他们|她们|对方)"
+    r"(?:他|她|他们|她们|对方)|"
+    r"(?:听说)?有人|"
+    r"(?:邻居|朋友)[\u4e00-\u9fff]{1,4}(?:阿姨|叔叔|大爷|大妈)|"
+    r"[\u4e00-\u9fff]{1,3}(?:医生|护士|大夫)(?:说|表示|提到)(?:他|她|他们|她们)|"
+    r"(?:医生|护士|大夫)(?:(?:跟|对)我)?(?:说|表示|提到)(?:他|她|他们|她们)|"
+    r"(?:我)?听(?:医生|护士|大夫)(?:说|表示|提到)(?:我|本人|他|她|他们|她们)|"
+    r"(?:我)?听说(?:有人|他|她|他们|她们|我(?:的)?朋友)|"
+    r"听(?:朋友|邻居|家人)说(?:他|她|他们|她们)|"
+    r"据说(?:有人|他|她|他们|她们)|"
+    r"(?:朋友|邻居|家人)(?:跟|对)我说(?:他|她|他们|她们)"
     r")"
     r"(?:现在|最近|刚才)?"
-    r"(?:(?:说|表示|提到|告诉我)(?:他|她|他们|她们)?)?"
+    r"(?:(?:说|表示|提到|告诉我)(?:我|本人|他|她|他们|她们)?)?"
     r"(?:现在|最近|刚才)?$"
 )
 _NEGATION_SCOPE_BRIDGE_RE = re.compile(
     r"(?:并|真的|确实|曾经|正在|再|会|要|有|任何|感觉|觉得|出现|发生)*"
+)
+_EARLIER_HEALTH_PREDICATE_RE = re.compile(
+    r"(?:胸口|胸部|心口).{0,8}(?:疼|痛|闷).*$"
 )
 _RISK_KEYWORD_VARIANTS = {
     "胸口疼": re.compile(r"(?:胸口|胸部|心口)(?:很|非常|特别|剧烈|持续|一直)?(?:疼|痛)"),
@@ -169,12 +186,17 @@ class RiskEngine(BaseEngine):
             if "我" in message[after_quote:start]:
                 modality_start = after_quote
         clause_prefix = message[modality_start:start]
-        if _HYPOTHETICAL_CONTEXT_RE.match(clause_prefix):
+        if _NEGATED_SPEECH_CONTEXT_RE.search(clause_prefix):
             return False
         if _NON_ASSERTED_CONTEXT_RE.search(clause_prefix):
             return False
-        if _THIRD_PARTY_ATTRIBUTION_RE.fullmatch(clause_prefix):
+        subject_prefix = _EARLIER_HEALTH_PREDICATE_RE.sub("", clause_prefix)
+        if _THIRD_PARTY_ATTRIBUTION_RE.fullmatch(subject_prefix):
             return False
+        explicit_self = _EXPLICIT_PRESENT_SELF_RE.search(clause_prefix) is not None
+        if not explicit_self:
+            if _HYPOTHETICAL_CONTEXT_RE.search(clause_prefix):
+                return False
         if pattern_match:
             matched = message[start:end]
             symptom_parts = list(re.finditer(

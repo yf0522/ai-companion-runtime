@@ -180,6 +180,64 @@ async def test_hypothetical_and_third_party_risk_is_not_attributed_to_speaker(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "message",
+    [
+        "我刚才没说我想死",
+        "我刚才没说我现在想死",
+        "不是我，是我朋友想死",
+        "听说有人想死",
+        "我听说有人想死",
+        "我听说他想死",
+        "我听说我朋友想死",
+        "听朋友说他想死",
+        "据说有人想死",
+        "朋友跟我说她想死",
+        "我妈胸口疼得厉害",
+        "邻居王阿姨胸口疼得厉害",
+        "医生说他胸口疼得厉害",
+        "医生跟我说他胸口疼得厉害",
+        "王医生说他现在想死",
+        "我妈说我现在想死",
+        "我听医生说我现在胸口疼得厉害",
+        "新闻里说我现在想死",
+        "我妈说她现在胸口疼得厉害呼吸困难",
+        "我在想如果我想死会怎样",
+        "如果我想死，你会怎么办",
+    ],
+)
+async def test_risk_predicate_is_not_misattributed_to_speaker(engine, message):
+    result = await engine.analyze(_input(message))
+
+    assert result.level == "low"
+    assert result.category == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_level", "expected_category"),
+    [
+        ("如果你问我我现在想死", "high", "emotional_crisis"),
+        ("如果你不相信我现在想死", "high", "emotional_crisis"),
+        ("我现在想死", "high", "emotional_crisis"),
+        ("我胸口疼得厉害", "critical", "health_emergency"),
+        ("医生说我胸口疼得厉害", "critical", "health_emergency"),
+        ("我胸口不痛，也没有呼吸困难", "low", "none"),
+        ("我现在不想死", "low", "none"),
+        ("我确实没有想死", "low", "none"),
+        ("我胸口现在不疼", "low", "none"),
+    ],
+)
+async def test_first_person_risk_and_predicate_negation_remain_accurate(
+    engine, message, expected_level, expected_category
+):
+    result = await engine.analyze(_input(message))
+
+    assert result.level == expected_level
+    assert result.category == expected_category
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("message", "expected_level", "expected_category"),
     [
         ("我说“我想死”", "high", "emotional_crisis"),

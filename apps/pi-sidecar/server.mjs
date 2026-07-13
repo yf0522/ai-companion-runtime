@@ -83,6 +83,24 @@ function writeNdjson(res, payload) {
   res.write(`${JSON.stringify(payload)}\n`);
 }
 
+export function bindClientAbort(req, res, controller) {
+  function cleanup() {
+    req.off("aborted", abort);
+    res.off("close", abort);
+    res.off("finish", cleanup);
+  }
+  function abort() {
+    if (!res.writableEnded && !controller.signal.aborted) {
+      controller.abort(new Error("client_closed"));
+    }
+    cleanup();
+  }
+  req.once("aborted", abort);
+  res.once("close", abort);
+  res.once("finish", cleanup);
+  return cleanup;
+}
+
 function writeCapabilityResponse(res, text, stream) {
   if (stream === false) {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -331,10 +349,8 @@ function makeContactTool(ctx) {
   };
 }
 
-async function streamAgentChat({ req, res, body }) {
+async function streamAgentChat({ req, res, output = res, body }) {
   const controller = new AbortController();
-  const abort = () => controller.abort(new Error("client_closed"));
-  req?.once?.("close", abort);
   const model = resolveModel(body.provider, body.model);
   const userMessages = normalizeMessages(body);
   const lastUser = userMessages[userMessages.length - 1];
@@ -354,7 +370,7 @@ async function streamAgentChat({ req, res, body }) {
   const toolsUsed = [];
   let agentError = null;
 
-  res.writeHead(200, {
+  output.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
@@ -381,7 +397,7 @@ async function streamAgentChat({ req, res, body }) {
       if (!ENABLE_TOOLS) {
         return { block: true, reason: "tools_disabled" };
       }
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "tool_status",
         tool: toolCall.name,
         invocation_id: toolCall.id,
@@ -404,7 +420,7 @@ async function streamAgentChat({ req, res, body }) {
         ...(candidates ? { candidates } : {}),
         ...(clarifyVerb ? { clarify_verb: clarifyVerb } : {}),
       });
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "tool_status",
         tool: toolCall.name,
         invocation_id: toolCall.id,
@@ -412,7 +428,7 @@ async function streamAgentChat({ req, res, body }) {
       });
       if (details.display_text) {
         const candidates = details?.data?.candidates || null;
-        writeNdjson(res, {
+        writeNdjson(output, {
           type: "tool_result",
           tool: toolCall.name,
           invocation_id: toolCall.id,
@@ -458,13 +474,14 @@ async function streamAgentChat({ req, res, body }) {
     },
   });
 
-  controller.signal.addEventListener("abort", () => agent.abort(), { once: true });
+  const abortAgent = () => agent.abort();
+  controller.signal.addEventListener("abort", abortAgent, { once: true });
 
   agent.subscribe(async (event) => {
     const errorMessage = assistantErrorMessage(event);
     if (errorMessage) {
       agentError = errorMessage;
-      writeNdjson(res, { type: "error", message: errorMessage });
+      writeNdjson(output, { type: "error", message: errorMessage });
       return;
     }
     if (
@@ -472,12 +489,12 @@ async function streamAgentChat({ req, res, body }) {
       event.assistantMessageEvent?.type === "text_delta" &&
       event.assistantMessageEvent.delta
     ) {
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "text_delta",
         delta: event.assistantMessageEvent.delta,
       });
     } else if (event.type === "agent_end" && !agentError) {
-      writeNdjson(res, {
+      writeNdjson(output, {
         type: "done",
         reason: "agent_end",
         tools_used: toolsUsed,
@@ -485,6 +502,7 @@ async function streamAgentChat({ req, res, body }) {
     }
   });
 
+  const cleanupClientAbort = bindClientAbort(req, res, controller);
   try {
     await agent.prompt(lastUser.content);
     await agent.waitForIdle();
@@ -493,15 +511,17 @@ async function streamAgentChat({ req, res, body }) {
     console.error(
       `[pi-sidecar] agent failed error_class=${errorClass} code=pi_agent_failed`,
     );
-    writeNdjson(res, {
+    writeNdjson(output, {
       type: "error",
       message: "服务暂时不可用，请稍后再试。",
     });
+  } finally {
+    if (!output.writableEnded && !controller.signal.aborted) {
+      output.end();
+    }
+    cleanupClientAbort();
+    controller.signal.removeEventListener("abort", abortAgent);
   }
-  if (!res.writableEnded) {
-    res.end();
-  }
-  req?.off?.("close", abort);
 }
 
 /** Legacy stream path without agent-core (tools disabled / fallback). */
@@ -538,7 +558,11 @@ async function streamChatLegacy({ res, body }) {
   res.end();
 }
 
-const server = http.createServer(async (req, res) => {
+export function createRequestHandler({
+  enableTools = ENABLE_TOOLS,
+  streamAgentChatImpl = streamAgentChat,
+} = {}) {
+  return async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -563,7 +587,7 @@ const server = http.createServer(async (req, res) => {
         writeCapabilityResponse(res, capabilityResponse, body.stream);
         return;
       }
-      const useAgent = body.use_agent_core !== false && ENABLE_TOOLS;
+      const useAgent = body.use_agent_core !== false && enableTools;
       if (body.stream === false) {
         // Non-stream: still use agent path into a buffer.
         const chunks = [];
@@ -581,9 +605,17 @@ const server = http.createServer(async (req, res) => {
           },
         };
         if (useAgent) {
-          await streamAgentChat({ res: fakeRes, body: { ...body, stream: true } });
+          await streamAgentChatImpl({
+            req,
+            res,
+            output: fakeRes,
+            body: { ...body, stream: true },
+          });
         } else {
           await streamChatLegacy({ res: fakeRes, body });
+        }
+        if (res.destroyed || res.writableEnded) {
+          return;
         }
         let text = "";
         let authoritativeText = "";
@@ -613,7 +645,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (useAgent) {
-        await streamAgentChat({ req, res, body });
+        await streamAgentChatImpl({ req, res, output: res, body });
         return;
       }
       await streamChatLegacy({ res, body });
@@ -636,7 +668,10 @@ const server = http.createServer(async (req, res) => {
     writeNdjson(res, { type: "error", message });
     res.end();
   }
-});
+  };
+}
+
+export const server = http.createServer(createRequestHandler());
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`[pi-sidecar] listening port=${PORT} tools=${ENABLE_TOOLS ? "on" : "off"}`);

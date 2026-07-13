@@ -829,6 +829,36 @@ async def test_production_public_api_ws_config_requires_explicit_tls_urls():
     assert "PUBLIC_WS_URL is not set" in check.detail
 
 
+@pytest.mark.parametrize(
+    ("api_url", "ws_url"),
+    [
+        ("https://localhost/api", "wss://api.example.test/ws"),
+        ("https://127.0.0.1/api", "wss://api.example.test/ws"),
+        ("https://0.0.0.0/api", "wss://api.example.test/ws"),
+        ("https://10.0.0.1/api", "wss://api.example.test/ws"),
+        ("https://api.example.test", "wss://[::1]/ws"),
+    ],
+)
+async def test_production_public_api_ws_config_rejects_non_public_hosts(api_url, ws_url):
+    check = await check_public_api_ws_config(
+        _production_settings(public_api_url=api_url, public_ws_url=ws_url)
+    )
+
+    assert check.status == UNSAFE
+    assert "publicly routable host" in check.detail
+
+
+async def test_production_public_api_ws_config_accepts_global_ip_and_domain_hosts():
+    check = await check_public_api_ws_config(
+        _production_settings(
+            public_api_url="https://8.8.8.8/api",
+            public_ws_url="wss://api.example.test/ws",
+        )
+    )
+
+    assert check.status == READY
+
+
 async def test_production_notification_provider_rejects_sandbox():
     check = await check_notification_provider(_production_settings(notification_provider="sandbox"))
 
@@ -844,6 +874,24 @@ async def test_production_signed_webhook_requires_capability_config():
     assert check.status == UNSAFE
     assert "NOTIFICATION_OUTBOUND_URL must use https" in check.detail
     assert "NOTIFICATION_WEBHOOK_SECRET is not set" in check.detail
+
+
+async def test_production_signed_webhook_rejects_loopback_endpoint():
+    check = await check_notification_provider(
+        _production_settings(notification_outbound_url="https://[::1]/events")
+    )
+
+    assert check.status == UNSAFE
+    assert "publicly routable host" in check.detail
+
+
+async def test_production_signed_webhook_rejects_link_local_endpoint():
+    check = await check_notification_provider(
+        _production_settings(notification_outbound_url="https://169.254.1.2/events")
+    )
+
+    assert check.status == UNSAFE
+    assert "publicly routable host" in check.detail
 
 
 async def test_production_device_identity_must_be_enforced():

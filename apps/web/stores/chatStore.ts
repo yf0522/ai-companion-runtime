@@ -446,10 +446,11 @@ export const useChatStore = create<ChatState>()(
         const fromFinal = (data.toolsUsed || [])
           .map(normalizeToolChip)
           .filter((c): c is ToolChip => c !== null);
-        // Prefer live chip statuses; merge final outcomes by tool name.
+        // Prefer live chip evidence; merge final outcomes by tool and invocation.
         let chips = [...(last.toolsUsed || [])];
         for (const chip of fromFinal) {
           chips = upsertToolChip(chips, chip.tool, chip.status, {
+            invocationId: chip.invocationId,
             action: chip.action,
             displayText: chip.displayText,
             data: chip.data,

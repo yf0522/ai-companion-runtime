@@ -15,7 +15,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 from sqlalchemy import text
 
-from app.config.settings import Settings, settings
+from app.config.settings import Settings, is_public_endpoint_url, settings
 
 READY = "ready"
 DEGRADED = "degraded"
@@ -277,12 +277,12 @@ async def check_public_api_ws_config(app_settings: Settings) -> ReadinessCheck:
         failures: list[str] = []
         if not api_url:
             failures.append("PUBLIC_API_URL is not set")
-        elif not api_url.startswith("https://"):
-            failures.append("PUBLIC_API_URL must use https")
+        elif not is_public_endpoint_url(api_url, schemes={"https"}):
+            failures.append("PUBLIC_API_URL must use https with a publicly routable host")
         if not ws_url:
             failures.append("PUBLIC_WS_URL is not set")
-        elif not ws_url.startswith("wss://"):
-            failures.append("PUBLIC_WS_URL must use wss")
+        elif not is_public_endpoint_url(ws_url, schemes={"wss"}):
+            failures.append("PUBLIC_WS_URL must use wss with a publicly routable host")
         if failures:
             return ReadinessCheck(UNSAFE, "; ".join(failures), observed)
     if not api_url or not ws_url:
@@ -530,8 +530,12 @@ async def check_notification_provider(app_settings: Settings) -> ReadinessCheck:
         )
     if provider == "signed_webhook" and _is_production(app_settings):
         failures: list[str] = []
-        if not app_settings.notification_outbound_url.startswith("https://"):
-            failures.append("NOTIFICATION_OUTBOUND_URL must use https")
+        if not is_public_endpoint_url(
+            app_settings.notification_outbound_url, schemes={"https"}
+        ):
+            failures.append(
+                "NOTIFICATION_OUTBOUND_URL must use https with a publicly routable host"
+            )
         if not app_settings.notification_webhook_secret.strip():
             failures.append("NOTIFICATION_WEBHOOK_SECRET is not set")
         if failures:
