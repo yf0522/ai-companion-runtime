@@ -13,8 +13,10 @@ from app.engines.base import (
     AnalyzerInput, IntentResult, EmotionResult, RiskResult,
     MemorySnapshot, PersonalityConfig,
 )
+from app.runtime.capability_response import capability_response_for
 from app.runtime.stream_manager import StreamManager
 from app.observability.trace_service import TraceService
+from app.tools.caretask_batch import detect_compound_caretask
 
 logger = logging.getLogger(__name__)
 _trace_svc = TraceService()
@@ -259,8 +261,6 @@ class AgentHarness:
                 status="success" if decision.get("status") == "persisted" else "failed",
             )
 
-        from app.runtime.capability_response import capability_response_for
-
         if capability_response_for(message):
             return await self._run_deterministic_capability(
                 message=message,
@@ -270,8 +270,6 @@ class AgentHarness:
                 session_id=session_id,
                 start_time=start_time,
             )
-
-        from app.tools.caretask_batch import detect_compound_caretask
 
         if detect_compound_caretask(message):
             return await self._run_deterministic_caretask(

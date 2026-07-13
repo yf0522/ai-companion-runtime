@@ -18,6 +18,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 # Repo root on sys.path so `app.*` imports work when invoked from repo root.
@@ -205,6 +206,11 @@ def _install_harness_mocks(
     async def fake_risk_notification(*_args, **_kwargs):
         return {"status": "skipped", "records": 0}
 
+    async def fake_persist_turn_messages(**kwargs):
+        return SimpleNamespace(
+            assistant_message_id=kwargs["assistant_message_id"],
+        )
+
     harness._run_analyzers = fake_analyzers  # type: ignore[method-assign]
     harness._get_personality = fake_personality  # type: ignore[method-assign]
     harness._fast_reply_race = fake_fast_reply  # type: ignore[method-assign]
@@ -218,9 +224,15 @@ def _install_harness_mocks(
             return _MockModel(delay)
 
     import app.models.router as router_mod
+    import app.observability.message_evidence as message_evidence_mod
     import app.runtime.agent_harness as harness_mod
 
     monkeypatch.setattr(router_mod, "model_router", _Router())
+    monkeypatch.setattr(
+        message_evidence_mod,
+        "persist_turn_messages",
+        fake_persist_turn_messages,
+    )
     monkeypatch.setattr(harness_mod._trace_svc, "add_event", _async_noop)
     monkeypatch.setattr(harness_mod._trace_svc, "record_model_call", _async_noop)
 

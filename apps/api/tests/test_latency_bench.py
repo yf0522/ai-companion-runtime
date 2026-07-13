@@ -124,7 +124,7 @@ def test_absolute_thresholds():
     assert any("analyzer_ms_p95" in f for f in failures)
 
 
-async def test_run_benchmark_mocked_passes():
+async def test_run_benchmark_mocked_passes(caplog):
     mod = _load_latency_bench()
     report = await mod.run_benchmark(iterations=2)
     assert len(report.fixtures) == 3
@@ -132,6 +132,7 @@ async def test_run_benchmark_mocked_passes():
     assert names == {"chitchat", "scam_risk", "reminder"}
     scam = next(f for f in report.fixtures if f.fixture == "scam_risk")
     assert scam.blocked_by_risk_count == 2
+    assert "risk_trace_failed" not in caplog.text
 
 
 def test_main_exit_zero_with_baseline(tmp_path, monkeypatch):

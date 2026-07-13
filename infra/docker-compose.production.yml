@@ -1,6 +1,6 @@
 services:
   api:
-    env_file:
+    env_file: !override
       - ../.env.production
     ports: !override []
     read_only: true
@@ -29,7 +29,7 @@ services:
       - no-new-privileges:true
 
   celery-worker:
-    env_file:
+    env_file: !override
       - ../.env.production
     read_only: true
     tmpfs:
@@ -38,7 +38,7 @@ services:
       - no-new-privileges:true
 
   celery-beat:
-    env_file:
+    env_file: !override
       - ../.env.production
     read_only: true
     tmpfs:
