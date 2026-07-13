@@ -161,6 +161,42 @@ async def test_reported_possessive_subject_does_not_become_first_person_assertio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "如果我想死，你会怎么办？",
+        "我朋友说他想死",
+        "我妈妈胸口疼得厉害",
+    ],
+)
+async def test_hypothetical_and_third_party_risk_is_not_attributed_to_speaker(
+    engine, message
+):
+    result = await engine.analyze(_input(message))
+
+    assert result.level == "low"
+    assert result.category == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_level", "expected_category"),
+    [
+        ("我说“我想死”", "high", "emotional_crisis"),
+        ("我说“我现在胸口很痛，呼吸也很困难”", "critical", "health_emergency"),
+        ("我没有家人胸口很痛", "critical", "health_emergency"),
+    ],
+)
+async def test_explicit_self_attribution_and_non_predicate_negation_remain_actionable(
+    engine, message, expected_level, expected_category
+):
+    result = await engine.analyze(_input(message))
+
+    assert result.level == expected_level
+    assert result.category == expected_category
+
+
+@pytest.mark.asyncio
 async def test_safety_message_emotional_crisis_has_cn_hotlines():
     from app.runtime.risk_gate import load_safety_message
 
