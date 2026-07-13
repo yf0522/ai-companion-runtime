@@ -94,9 +94,8 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
       ? statusRaw
       : "calling") as ToolChipStatus;
     const action = obj.action ? String(obj.action) : undefined;
-    const invocationId = obj.invocationId
-      ? String(obj.invocationId)
-      : obj.invocation_id ? String(obj.invocation_id) : undefined;
+    const rawInvocationId = obj.invocationId || obj.invocation_id;
+    const invocationId = rawInvocationId ? String(rawInvocationId) : undefined;
     const displayText = obj.displayText
       ? String(obj.displayText)
       : obj.text
