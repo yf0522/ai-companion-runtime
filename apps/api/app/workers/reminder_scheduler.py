@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from app.workers.celery_app import app
+from app.workers.async_runner import run_async_task
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,7 @@ def next_delivery_state(*, delivered: bool, attempt_number: int, now: datetime) 
 
 @app.task(name="app.workers.reminder_scheduler.check_due_reminders")
 def check_due_reminders():
-    import asyncio
-    asyncio.run(_check_and_fire())
+    run_async_task(_check_and_fire)
 
 
 async def _check_and_fire():

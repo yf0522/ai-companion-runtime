@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.workers.celery_app import app
+from app.workers.async_runner import run_async_task
 
 logger = logging.getLogger(__name__)
 
@@ -10,8 +11,7 @@ logger = logging.getLogger(__name__)
 @app.task(name="app.workers.embedding_worker.generate_embedding")
 def generate_embedding(memory_id: str):
     """Generate embedding for a memory and store in memory_embeddings table."""
-    import asyncio
-    asyncio.run(_generate(memory_id))
+    run_async_task(lambda: _generate(memory_id))
 
 
 async def _generate(memory_id: str):
@@ -129,9 +129,7 @@ async def _generate(memory_id: str):
 
 @app.task(name="app.workers.embedding_worker.backfill_embeddings")
 def backfill_embeddings(limit: int = 100):
-    import asyncio
-
-    asyncio.run(_backfill(limit))
+    run_async_task(lambda: _backfill(limit))
 
 
 async def _backfill(limit: int):

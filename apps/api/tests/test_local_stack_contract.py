@@ -336,6 +336,16 @@ def test_profile_persists_only_allowlisted_values_and_drives_later_commands(stac
     assert "TCP:3000" not in stop_log
 
 
+def test_stop_kills_recorded_trees_before_tmux_and_sweeps_repo_celery_orphans():
+    source = (REPO_ROOT / "scripts" / "local_stack.sh").read_text(encoding="utf-8")
+
+    process_tree_stop = source.index('_kill_process_tree "$pid"')
+    tmux_stop = source.index('tmux kill-session -t "=$s"')
+    assert process_tree_stop < tmux_stop
+    assert '_kill_repo_celery_orphans' in source
+    assert '$ROOT/apps/api/.venv/bin/celery -A app.workers.celery_app' in source
+
+
 def test_malicious_duplicate_profile_is_data_not_code(stack_repo, tmp_path):
     marker = tmp_path / "profile-executed"
     (stack_repo["run_dir"] / "profile.env").write_text(

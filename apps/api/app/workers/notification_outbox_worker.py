@@ -1,7 +1,6 @@
 """Notification outbox worker and provider adapters."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -15,6 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import settings
+from app.workers.async_runner import run_async_task
 from app.workers.celery_app import app
 
 ProviderState = Literal["accepted", "delivered", "read", "failed", "expired", "unknown", "unconfigured"]
@@ -838,7 +838,7 @@ async def persist_nonblocking_safety_decision(
 
 @app.task(name="app.workers.notification_outbox_worker.deliver_notification_outbox")
 def deliver_notification_outbox() -> dict[str, int]:
-    return asyncio.run(deliver_due_outbox())
+    return run_async_task(deliver_due_outbox)
 
 
 async def deliver_due_outbox(limit: int = 50) -> dict[str, int]:
@@ -964,7 +964,7 @@ async def record_signed_provider_receipt(
 
 @app.task(name="app.workers.notification_outbox_worker.reconcile_notification_outbox")
 def reconcile_notification_outbox() -> dict[str, int]:
-    return asyncio.run(reconcile_stale_outbox())
+    return run_async_task(reconcile_stale_outbox)
 
 
 async def reconcile_stale_outbox(limit: int = 100) -> dict[str, int]:

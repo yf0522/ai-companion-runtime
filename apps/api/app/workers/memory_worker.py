@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.workers.celery_app import app
+from app.workers.async_runner import run_async_task
 
 logger = logging.getLogger(__name__)
 
@@ -10,16 +11,14 @@ logger = logging.getLogger(__name__)
 @app.task(name="app.workers.memory_worker.append_working_memory")
 def append_working_memory(session_id: str, role: str, content: str):
     """Sync wrapper for appending to L0. Called from async context via .delay()"""
-    import asyncio
     from app.storage.working_memory import append_message
-    asyncio.run(append_message(session_id, role, content))
+    run_async_task(lambda: append_message(session_id, role, content))
 
 
 @app.task(name="app.workers.memory_worker.update_session_summary")
 def update_session_summary(session_id: str):
     """Compress L0 into L1 summary using lightweight model."""
-    import asyncio
-    asyncio.run(_update_summary(session_id))
+    run_async_task(lambda: _update_summary(session_id))
 
 
 async def _update_summary(session_id: str):
@@ -43,8 +42,7 @@ async def _update_summary(session_id: str):
 @app.task(name="app.workers.memory_worker.evaluate_importance")
 def evaluate_importance(user_id: str, content: str, session_id: str = ""):
     """Evaluate memory importance and store if >= 0.6."""
-    import asyncio
-    asyncio.run(_evaluate_and_store(user_id, content, session_id))
+    run_async_task(lambda: _evaluate_and_store(user_id, content, session_id))
 
 
 IMPORTANT_PATTERNS: list[tuple[str, float]] = [
