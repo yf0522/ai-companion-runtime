@@ -163,6 +163,16 @@ async def tool_execute(
     trusted_query = str(body.query or "").strip()
     mutation_requested = False
     if body.tool_name == "caretask":
+        for key in (
+            "task_id",
+            "title",
+            "task_type",
+            "due_at",
+            "minutes",
+            "notes",
+            "schedule_type",
+        ):
+            params.pop(key, None)
         from app.tools.caretask_batch import (
             classify_caretask_speech_act,
             detect_compound_caretask,

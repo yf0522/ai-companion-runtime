@@ -1,5 +1,16 @@
 export function normalizeCareTaskParams(params, userText) {
   const normalized = { ...(params || {}) };
+  for (const key of [
+    "task_id",
+    "title",
+    "task_type",
+    "due_at",
+    "minutes",
+    "notes",
+    "schedule_type",
+  ]) {
+    delete normalized[key];
+  }
   const text = String(userText || "").trim();
   if (text) normalized.query = text;
   const scheduledCandidate = /^(?:请|麻烦|帮我)?(?:(?:今天|明天|后天|每天|每日|每周).{0,24}|(?:早上|上午|中午|下午|傍晚|晚上|夜里|凌晨)?\d{1,2}\s*[点时:](?:\d{1,2}\s*分?)?.{0,8})(?:吃.{0,8}药|服.{0,8}药|复诊|看病|去医院)(?:吧|啊|哦)?$/.test(text);
@@ -8,7 +19,7 @@ export function normalizeCareTaskParams(params, userText) {
     scheduledCandidate &&
     !scheduledDirective.includes("我") &&
     !/(?:吗|么|呢|如何|怎么|怎样|怎么办)[？?]?$|[？?]$/.test(scheduledDirective) &&
-    !/[“”「」『』"']|(?:如果|假如|要是|若|万一|倘若|假设|据说|听说)|(?:新闻|报道|文章|视频).{0,16}(?:提到|说|写|讲)?|(?:医生|家人|别人|他|她|他们|她们).{0,16}(?:吃|服|复诊|看病|去医院)|(?:不要|别|不用|无需|不必|不需要|禁止|没有|并未|没|未)/.test(scheduledDirective);
+    !/[“”「」『』"']|(?:如果|假如|要是|若|万一|倘若|假设|据说|听说)|(?:新闻|报道|文章|视频).{0,16}(?:提到|说|写|讲)?|(?:医生|家人|妈妈|爸爸|母亲|父亲|别人|他|她|他们|她们).{0,16}(?:吃|服|复诊|看病|去医院)|(?:不要|别|不用|无需|不必|不需要|禁止|没有|并未|没|未)/.test(scheduledDirective);
 
   const readOnly =
     /有哪些|有什么|列出|查看|看看|查一下|我的.*任务|待办|还没吃/.test(
@@ -23,7 +34,7 @@ export function normalizeCareTaskParams(params, userText) {
     return normalized;
   }
 
-  const mutationCue = /(?:不要|别)(?:再)?提醒我|取消|删除|关掉|不要了|吃过了|吃了(?:药)?|已吃|完成|晚点再|等会儿再|推迟|延后|再提醒|分钟后再|提醒我|帮我记(?:一下|下)|记一下|记下|新增|添加|新建|创建|建立|设置|安排/g;
+  const mutationCue = /(?:不要|别)(?:再)?提醒我|取消|删除|关掉|不要了|吃完|吃过(?:了)?|吃了(?:药)?|已吃|完成|打卡|晚点再|等会儿再|推迟|延后|再提醒|分钟后再|提醒我|帮我记(?:一下|下)|记一下|记下|新增|添加|新建|创建|建立|设置|安排/g;
   const cues = [...text.matchAll(mutationCue)];
   const cue = cues[0];
   const cueIndex = cue?.index ?? -1;
@@ -40,7 +51,7 @@ export function normalizeCareTaskParams(params, userText) {
     openQuote ||
     /(?:不要|别|不用|无需|不必|不需要|禁止|没有|并未|没|未|不是(?:要|想)|不想|不打算|不会).{0,10}$/.test(prefix) ||
     /(?:如果|假如|要是|若|万一|倘若|假设|如何|怎么|怎样|是否|能否|可否|要不要|该不该|会不会|是不是|教程|教我|说明|解释|举例|例子|比如|例如).{0,24}$/.test(prefix) ||
-    /(?:(?:新闻|报道|文章|视频)(?:里|中)?(?:提到|说|写|讲)|(?:别人|医生|家人|他|她|他们|她们)(?:让我|叫我|要我|建议我|问我|提到|说|讲)).{0,18}$/.test(prefix) ||
+    /(?:(?:新闻|报道|文章|视频)(?:里|中)?(?:提到|说|写|讲)|(?:别人|医生|家人|妈妈|爸爸|母亲|父亲|他|她|他们|她们)(?:让我|叫我|要我|建议我|问我|提到|说|讲)).{0,18}$/.test(prefix) ||
     /(?:吗|么|呢|如何|怎么|怎样|怎么办)[？?]?$|[？?]$/.test(text);
 
   if (cue && unauthorized) {
@@ -53,7 +64,7 @@ export function normalizeCareTaskParams(params, userText) {
     normalized.action = "cancel";
     return normalized;
   }
-  if (/吃过了|吃了|已吃|完成/.test(text)) {
+  if (/吃完|吃过(?:了)?|吃了|已吃|完成|打卡/.test(text)) {
     normalized.action = "complete";
     return normalized;
   }

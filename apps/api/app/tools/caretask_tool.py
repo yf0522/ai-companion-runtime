@@ -25,6 +25,15 @@ _ACTION_ALIASES = {
     "cancel": "cancel",
     "missed": "missed",
 }
+_MODEL_SEMANTIC_FIELDS = (
+    "task_id",
+    "title",
+    "task_type",
+    "due_at",
+    "minutes",
+    "notes",
+    "schedule_type",
+)
 
 
 def parse_due_at(text: str, *, now: datetime | None = None) -> datetime | None:
@@ -103,7 +112,9 @@ def _promises_reminder(text: str) -> bool:
 def _infer_task_type(text: str) -> str:
     if re.search(r"复诊|预约|看病|医院|门诊", text):
         return "appointment"
-    return "medication"
+    if re.search(r"药|服用|服药|打针|胰岛素", text):
+        return "medication"
+    return "other"
 
 
 def _infer_title(text: str, task_type: str) -> str:
@@ -292,8 +303,12 @@ class CareTaskTool(ToolBase):
     }
 
     async def execute(self, params: dict) -> ToolResult:
+        params = dict(params)
         action = str(params.get("action") or "").strip().lower()
         query = str(params.get("query") or "")
+        if query:
+            for key in _MODEL_SEMANTIC_FIELDS:
+                params.pop(key, None)
         from app.tools.caretask_batch import classify_caretask_speech_act
 
         speech_act = classify_caretask_speech_act(query) if query else None
@@ -437,6 +452,11 @@ class CareTaskTool(ToolBase):
         # Model-provided timestamps are untrusted semantic arguments. A CareTask
         # is scheduled only when the user's own utterance contains a parseable time.
         due_at = parse_due_at(query) if query else None
+        schedule_type = (
+            svc.infer_caretask_schedule_type(query or title)
+            if query
+            else params.get("schedule_type")
+        )
         if query and _promises_reminder(query) and due_at is None:
             return ToolResult(
                 tool_name=self.name,
@@ -483,7 +503,7 @@ class CareTaskTool(ToolBase):
                                 "title": title,
                                 "task_type": task_type,
                                 "due_at": due_at.isoformat() if due_at else None,
-                                "schedule_type": params.get("schedule_type"),
+                                "schedule_type": schedule_type,
                             },
                         },
                         query,
@@ -507,7 +527,6 @@ class CareTaskTool(ToolBase):
                 render=lambda row: _create_result(row, query),
             )
 
-        schedule_type = params.get("schedule_type")
         row = await svc.create_care_task(
             user_id=str(user_id),
             title=title,
@@ -675,14 +694,18 @@ class CareTaskTool(ToolBase):
         )
 
     async def _snooze(self, params: dict, user_id: str, query: str) -> ToolResult:
-        minutes = params.get("minutes")
+        minutes = params.get("minutes") if not query else None
         if minutes is None:
-            try:
-                from app.tools.reminder_tool import detect_snooze
+            match = re.search(r"(\d{1,4})\s*分钟", query)
+            if match:
+                minutes = max(1, min(int(match.group(1)), 24 * 60))
+            else:
+                try:
+                    from app.tools.reminder_tool import detect_snooze
 
-                minutes = detect_snooze(query) or 30
-            except Exception:
-                minutes = 30
+                    minutes = detect_snooze(query) or 30
+                except Exception:
+                    minutes = 30
         resolved = await self._resolve_or_clarify(
             user_id=user_id,
             params=params,

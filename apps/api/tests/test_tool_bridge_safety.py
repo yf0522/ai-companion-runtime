@@ -316,6 +316,61 @@ async def test_trusted_scheduled_caretask_phrase_is_authorized_as_create(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_bridge_drops_model_controlled_caretask_semantics(monkeypatch):
+    from app.api.tool_execute import ToolExecuteRequest, tool_execute
+    from app.tools.base import ToolResult
+
+    captured = {}
+
+    async def fake_execute(name, params):
+        captured.update(params)
+        return ToolResult(
+            tool_name=name,
+            status="success",
+            display_text="已为您记下：吃降压药",
+            data={"action": "caretask_create"},
+        )
+
+    monkeypatch.setattr("app.api.tool_execute.execute_tool", fake_execute)
+    response = await tool_execute(
+        ToolExecuteRequest(
+            tool_name="caretask",
+            params={
+                "action": "create",
+                "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "title": "模型伪造任务",
+                "task_type": "appointment",
+                "due_at": "2039-01-01T00:00:00",
+                "minutes": 1440,
+                "notes": "模型伪造备注",
+                "schedule_type": "once",
+            },
+            user_id=str(uuid.uuid4()),
+            session_id=str(uuid.uuid4()),
+            trace_id="trusted-trace",
+            query="每天晚上八点吃降压药",
+            idempotency_key="trusted-trace",
+        ),
+        authorization=None,
+        x_tool_bridge_token=None,
+    )
+
+    assert response.status == "success"
+    assert captured["action"] == "create"
+    assert captured["query"] == "每天晚上八点吃降压药"
+    for key in (
+        "task_id",
+        "title",
+        "task_type",
+        "due_at",
+        "minutes",
+        "notes",
+        "schedule_type",
+    ):
+        assert key not in captured
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "query",
     [

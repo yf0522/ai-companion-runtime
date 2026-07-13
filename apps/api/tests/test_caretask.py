@@ -603,13 +603,6 @@ async def test_cancel_generic_med_with_multiple_tasks_clarifies(monkeypatch):
             "due_at": None,
             "task_type": "medication",
         },
-        {
-            "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            "title": "九点吃药",
-            "status": "pending",
-            "due_at": None,
-            "task_type": "medication",
-        },
     ]
 
     async def fake_list(**kwargs):
@@ -635,6 +628,8 @@ async def test_cancel_generic_med_with_multiple_tasks_clarifies(monkeypatch):
         {
             "action": "cancel",
             "query": "取消吃药提醒",
+            "task_id": tasks[0]["id"],
+            "title": tasks[0]["title"],
             "user_id": str(uuid.uuid4()),
         }
     )
@@ -888,6 +883,47 @@ async def test_caretask_undated_general_note_remains_allowed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_caretask_create_derives_semantics_only_from_trusted_query(monkeypatch):
+    tool = CareTaskTool()
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "title": kwargs["title"],
+            "task_type": kwargs["task_type"],
+            "status": "pending",
+            "due_at": kwargs["due_at"].isoformat(),
+            "reminder_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "notes": kwargs.get("notes"),
+            "_action": "caretask_create",
+        }
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.create_care_task", fake_create)
+    result = await tool.execute(
+        {
+            "action": "create",
+            "query": "每天晚上八点吃降压药",
+            "title": "模型伪造的复诊",
+            "task_type": "appointment",
+            "due_at": "2039-01-01T00:00:00",
+            "schedule_type": "once",
+            "notes": "模型伪造备注",
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+
+    assert result.status == "success"
+    assert captured["title"] == "吃降压药"
+    assert captured["task_type"] == "medication"
+    assert captured["schedule_type"] == "daily"
+    assert captured["notes"] is None
+    assert captured["query"] == "每天晚上八点吃降压药"
+    assert captured["due_at"].year != 2039
+
+
+@pytest.mark.asyncio
 async def test_caretask_create_links_reminder(monkeypatch):
     tool = CareTaskTool()
     captured = {}
@@ -988,6 +1024,44 @@ async def test_caretask_complete_and_snooze(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_caretask_snooze_minutes_come_from_trusted_query(monkeypatch):
+    tool = CareTaskTool()
+    task = {
+        "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "title": "吃降压药",
+        "status": "pending",
+        "task_type": "medication",
+        "version": 1,
+    }
+    captured = {}
+
+    async def fake_resolve(**_kwargs):
+        from app.tools.caretask_service import ResolveResult
+
+        return ResolveResult(kind="one", task=task)
+
+    async def fake_snooze(**kwargs):
+        captured.update(kwargs)
+        return {**task, "status": "snoozed", "snooze_minutes": kwargs["minutes"]}
+
+    monkeypatch.setattr("app.tools.caretask_tool.svc.resolve_task_ref", fake_resolve)
+    monkeypatch.setattr("app.tools.caretask_tool.svc.snooze_care_task", fake_snooze)
+
+    result = await tool.execute(
+        {
+            "action": "snooze",
+            "query": "把降压药提醒延后30分钟",
+            "minutes": 1440,
+            "user_id": str(uuid.uuid4()),
+        }
+    )
+
+    assert result.status == "success"
+    assert captured["minutes"] == 30
+    assert result.data["snooze_minutes"] == 30
+
+
+@pytest.mark.asyncio
 async def test_caretask_failed_does_not_claim_success():
     tool = CareTaskTool()
     result = await tool.execute({"action": "create", "query": "吃药"})
@@ -1009,6 +1083,8 @@ async def test_caretask_failed_does_not_claim_success():
         "我不想取消吃药提醒",
         "我不打算延后吃药提醒",
         "我不会建立吃药提醒",
+        "医生问我取消吃药提醒",
+        "妈妈说取消吃药提醒",
     ],
 )
 async def test_single_unauthorized_mutation_never_calls_domain(monkeypatch, query):
@@ -1023,6 +1099,37 @@ async def test_single_unauthorized_mutation_never_calls_domain(monkeypatch, quer
     assert result.data["reason"] in {"mutation_not_authorized", "ambiguous_mutation_cues"}
     for call in domain_calls:
         call.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("请完成降压药", "complete"),
+        ("取消吃药提醒", "cancel"),
+        ("不要提醒我吃药", "cancel"),
+        ("提醒我晚上8点吃药", "create"),
+        ("明天晚上八点吃药", "create"),
+        ("把降压药提醒延后30分钟", "snooze"),
+        ("我吃了药", "complete"),
+        ("吃完降压药", "complete"),
+        ("降压药打卡", "complete"),
+        ("医生问我取消吃药提醒", "clarify"),
+        ("妈妈说取消吃药提醒", "clarify"),
+        ("我明天晚上八点吃药", "list"),
+        ("今天有什么任务", "list"),
+    ],
+)
+def test_caretask_python_js_parity_corpus(query, expected):
+    from app.tools.caretask_batch import classify_caretask_speech_act
+
+    speech_act = classify_caretask_speech_act(query)
+    if speech_act.authorized:
+        actual = speech_act.action
+    elif speech_act.action is None:
+        actual = "list"
+    else:
+        actual = "clarify"
+    assert actual == expected
 
 
 @pytest.mark.asyncio

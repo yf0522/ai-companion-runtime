@@ -41,6 +41,51 @@ test("single CareTask mutations require direct speech-act authorization", () => 
   }
 });
 
+test("Python and JavaScript CareTask speech-act parity corpus", () => {
+  for (const [query, expected] of [
+    ["请完成降压药", "complete"],
+    ["取消吃药提醒", "cancel"],
+    ["不要提醒我吃药", "cancel"],
+    ["提醒我晚上8点吃药", "create"],
+    ["明天晚上八点吃药", "create"],
+    ["把降压药提醒延后30分钟", "snooze"],
+    ["我吃了药", "complete"],
+    ["吃完降压药", "complete"],
+    ["降压药打卡", "complete"],
+    ["医生问我取消吃药提醒", "clarify"],
+    ["妈妈说取消吃药提醒", "clarify"],
+    ["我明天晚上八点吃药", "list"],
+    ["今天有什么任务", "list"],
+  ]) {
+    assert.equal(
+      normalizeCareTaskParams({ action: "create" }, query).action,
+      expected,
+      query,
+    );
+  }
+});
+
+test("CareTask normalizer drops model-controlled semantic arguments", () => {
+  const result = normalizeCareTaskParams(
+    {
+      action: "snooze",
+      task_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      title: "模型伪造任务",
+      task_type: "appointment",
+      due_at: "2039-01-01T00:00:00",
+      minutes: 1440,
+      notes: "模型伪造备注",
+      schedule_type: "once",
+    },
+    "把降压药提醒延后30分钟",
+  );
+
+  assert.deepEqual(result, {
+    action: "snooze",
+    query: "把降压药提醒延后30分钟",
+  });
+});
+
 test("scheduled CareTask creation rejects questions, hypotheticals, reports, quotes, and ordinary mentions", () => {
   for (const query of [
     "我明天晚上八点吃药",
@@ -87,7 +132,7 @@ test("overrides model create for read-only care task questions", () => {
   for (const query of ["今日任务", "我问你今天有什么照护任务", "我今天需要做什么", "吃药"]) {
     assert.deepEqual(
       normalizeCareTaskParams({ action: "create", title: "模型误建任务" }, query),
-      { action: "list", title: "模型误建任务", query, scope: "today" },
+      { action: "list", query, scope: "today" },
     );
   }
 });
