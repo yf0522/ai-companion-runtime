@@ -80,28 +80,29 @@ export const useWsStore = create<WsState>((set, get) => ({
 
     // Risk alert
     client.on("risk_alert", (data) => {
-      useChatStore.getState().setRiskAlert(data.level, data.message);
+      useChatStore.getState().setRiskAlert(data.trace_id, data.level, data.message);
     });
 
     // First reply
     client.on("first_reply", (data) => {
-      useChatStore.getState().setFirstReply(data.text, data.ttft_ms);
+      useChatStore.getState().setFirstReply(data.trace_id, data.text, data.ttft_ms);
     });
 
     // Delta
     client.on("delta", (data) => {
-      useChatStore.getState().appendDelta(data.text);
+      useChatStore.getState().appendDelta(data.trace_id, data.text);
     });
 
     // Tool status
     client.on("tool_status", (data) => {
-      useChatStore.getState().setToolStatus(data.tool, data.status);
+      useChatStore.getState().setToolStatus(data.trace_id, data.tool, data.status);
     });
 
     // Tool result — may carry clarify candidates for CareTask UI
     client.on("tool_result", (data) => {
       const payload = data.data || {};
       useChatStore.getState().setToolResult({
+        traceId: data.trace_id,
         tool: data.tool,
         status: data.status,
         text: data.text,
@@ -129,7 +130,12 @@ export const useWsStore = create<WsState>((set, get) => ({
     // Error
     client.on("error", (data) => {
       clearToolTurnFinalTimer();
-      useChatStore.getState().setError(data.message);
+      useChatStore.getState().setError(data.trace_id, data.message);
+    });
+
+    client.on("cancelled", (data) => {
+      clearToolTurnFinalTimer();
+      useChatStore.getState().acknowledgeCancellation(data.trace_id);
     });
 
     set({ client, status: "connecting" });
@@ -155,6 +161,5 @@ export const useWsStore = create<WsState>((set, get) => ({
     const { client } = get();
     const traceId = useChatStore.getState().currentTraceId;
     if (client && traceId) client.stopGeneration(traceId);
-    useChatStore.getState().resetStreaming();
   },
 }));

@@ -168,10 +168,11 @@ interface ChatState {
   activateUser: (userId: string | null) => void;
   addUserMessage: (content: string) => string;
   startAssistantMessage: (traceId: string) => void;
-  appendDelta: (text: string) => void;
-  setFirstReply: (text: string, ttftMs: number) => void;
-  setToolStatus: (tool: string, status: string) => void;
+  appendDelta: (traceId: string, text: string) => void;
+  setFirstReply: (traceId: string, text: string, ttftMs: number) => void;
+  setToolStatus: (traceId: string, tool: string, status: string) => void;
   setToolResult: (data: {
+    traceId: string;
     tool: string;
     status?: string;
     text?: string;
@@ -180,7 +181,7 @@ interface ChatState {
     candidates?: unknown;
     clarifyVerb?: string;
   }) => void;
-  setRiskAlert: (level: string, message: string) => void;
+  setRiskAlert: (traceId: string, level: string, message: string) => void;
   finalizeMessage: (data: {
     traceId: string;
     messageId: string;
@@ -190,7 +191,8 @@ interface ChatState {
     memoryUpdated: boolean;
   }) => void;
   completeToolTurnFallback: () => void;
-  setError: (message: string) => void;
+  setError: (traceId: string, message: string) => void;
+  acknowledgeCancellation: (traceId: string) => void;
   resetStreaming: () => void;
   clearMessages: () => void;
 }
@@ -336,8 +338,9 @@ export const useChatStore = create<ChatState>()(
     }));
   },
 
-  setFirstReply: (text, ttftMs) => {
+  setFirstReply: (traceId, text, ttftMs) => {
     set((s) => {
+      if (s.currentTraceId !== traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant" && last.status === "streaming") {
@@ -347,8 +350,9 @@ export const useChatStore = create<ChatState>()(
     });
   },
 
-  appendDelta: (text) => {
+  appendDelta: (traceId, text) => {
     set((s) => {
+      if (s.currentTraceId !== traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant" && last.status === "streaming") {
@@ -358,8 +362,9 @@ export const useChatStore = create<ChatState>()(
     });
   },
 
-  setToolStatus: (tool, status) => {
+  setToolStatus: (traceId, tool, status) => {
     set((s) => {
+      if (s.currentTraceId !== traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant") {
@@ -376,6 +381,7 @@ export const useChatStore = create<ChatState>()(
 
   setToolResult: (data) => {
     set((s) => {
+      if (s.currentTraceId !== data.traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role !== "assistant") return {};
@@ -409,8 +415,9 @@ export const useChatStore = create<ChatState>()(
     });
   },
 
-  setRiskAlert: (level, message) => {
+  setRiskAlert: (traceId, level, message) => {
     set((s) => {
+      if (s.currentTraceId !== traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant") {
@@ -473,14 +480,27 @@ export const useChatStore = create<ChatState>()(
     });
   },
 
-  setError: (message) => {
+  setError: (traceId, message) => {
     set((s) => {
+      if (s.currentTraceId !== traceId) return {};
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant" && last.status === "streaming") {
         msgs[msgs.length - 1] = { ...last, content: message, status: "error" };
       }
       return { ...stateWithMessages(s, msgs), isStreaming: false };
+    });
+  },
+
+  acknowledgeCancellation: (traceId) => {
+    set((s) => {
+      if (s.currentTraceId !== traceId) return {};
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "assistant" && last.traceId === traceId) {
+        msgs[msgs.length - 1] = { ...last, status: "complete" };
+      }
+      return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
     });
   },
 

@@ -10,6 +10,7 @@ from app.runtime.agent_runtime import DEFAULT_RUNTIME, get_agent_runtime
 from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
+_CANCEL_CLEANUP_GRACE_S = 0.5
 
 
 @dataclass
@@ -122,5 +123,15 @@ class WebSocketGateway:
         task = conn.active_message_task
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(task, return_exceptions=True),
+                    timeout=_CANCEL_CLEANUP_GRACE_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Turn cleanup exceeded grace trace=%s code=cancel_cleanup_timeout",
+                    requested_trace_id[:80],
+                )
+        await StreamManager(conn.websocket).send_cancelled(requested_trace_id)
         return True

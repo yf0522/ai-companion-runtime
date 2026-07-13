@@ -16,6 +16,7 @@ class StreamManager:
     def __init__(self, websocket: WebSocket):
         self._ws = websocket
         self._dead = False
+        self._trace_id: str | None = None
 
     @property
     def dead(self) -> bool:
@@ -23,7 +24,11 @@ class StreamManager:
         return self._dead
 
     async def send_trace(self, trace_id: str):
+        self._trace_id = trace_id
         await self._send({"type": "trace", "trace_id": trace_id})
+
+    async def send_cancelled(self, trace_id: str):
+        await self._send({"type": "cancelled", "trace_id": trace_id})
 
     async def send_first_reply(self, text: str, ttft_ms: int):
         await self._send({"type": "first_reply", "text": text, "ttft_ms": ttft_ms})
@@ -96,6 +101,8 @@ class StreamManager:
     async def _send(self, data: dict):
         if self._dead:
             return
+        if data.get("type") not in {"connected", "trace"} and self._trace_id:
+            data = {**data, "trace_id": data.get("trace_id") or self._trace_id}
         try:
             await self._ws.send_json(data)
         except Exception as e:
