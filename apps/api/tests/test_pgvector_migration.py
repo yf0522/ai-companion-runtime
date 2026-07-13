@@ -131,10 +131,12 @@ def test_additive_head_requires_extension_vector_dimension_and_hnsw_index(monkey
 
     statements = [call.args[0] for call in execute.call_args_list]
     assert migration.down_revision == "b0c1d2e3f4a5"
-    assert len(statements) == 3
+    assert len(statements) == 5
     assert "CREATE EXTENSION IF NOT EXISTS vector" in statements[0]
     assert "DROP INDEX CONCURRENTLY IF EXISTS" in statements[1]
     assert "CREATE INDEX CONCURRENTLY" in statements[2]
+    assert "DROP INDEX CONCURRENTLY IF EXISTS idx_memory_embeddings_vector" in statements[3]
+    assert "RENAME TO idx_memory_embeddings_vector" in statements[4]
     context.autocommit_block.assert_called_once()
 
 
@@ -158,6 +160,7 @@ def test_additive_head_fails_closed_for_incompatible_embedding_column(monkeypatc
     migration = importlib.import_module(ENFORCEMENT_MIGRATION)
     bind = MagicMock()
     bind.execute.return_value.scalar_one_or_none.return_value = "text"
+    monkeypatch.setattr(migration.op, "execute", MagicMock())
     monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
 
     with pytest.raises(RuntimeError, match="maintenance migration"):

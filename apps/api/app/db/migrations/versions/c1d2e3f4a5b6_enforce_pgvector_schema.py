@@ -62,10 +62,15 @@ def upgrade() -> None:
         return
 
     with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_memory_embeddings_vector_replacement")
+        op.execute(
+            "CREATE INDEX CONCURRENTLY idx_memory_embeddings_vector_replacement "
+            "ON memory_embeddings USING hnsw (embedding vector_cosine_ops)"
+        )
         op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_memory_embeddings_vector")
         op.execute(
-            "CREATE INDEX CONCURRENTLY idx_memory_embeddings_vector "
-            "ON memory_embeddings USING hnsw (embedding vector_cosine_ops)"
+            "ALTER INDEX idx_memory_embeddings_vector_replacement "
+            "RENAME TO idx_memory_embeddings_vector"
         )
 
 
