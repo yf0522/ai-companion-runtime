@@ -15,6 +15,26 @@ _NON_ASSERTED_CONTEXT_RE = re.compile(
     r"(?:新闻|报道).{0,8}(?:里|中)?(?:说|称|提到|写道|报道)|"
     r"(?:例子|例如|比如|举例|假设)"
 )
+_HYPOTHETICAL_CONTEXT_RE = re.compile(r"^(?:如果|假如|要是|倘若)")
+_SELF_REPORT_RE = re.compile(
+    r"(?:我|本人)(?:刚才|现在|之前|已经)?(?:说|表示|提到|告诉你|告诉大家)"
+)
+_THIRD_PARTY_ATTRIBUTION_RE = re.compile(
+    r"(?:"
+    r"我(?:的)?(?:妈妈|母亲|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
+    r"(?:妈妈|母亲|爸爸|父亲|家人|家里人|朋友|邻居|老伴|丈夫|妻子|儿子|女儿|孩子|亲戚)|"
+    r"(?:他|她|他们|她们|对方)"
+    r")"
+    r"(?:现在|最近|刚才)?"
+    r"(?:(?:说|表示|提到|告诉我)(?:他|她|他们|她们)?)?"
+    r"(?:现在|最近|刚才)?$"
+)
+_NEGATION_SCOPE_BRIDGE_RE = re.compile(
+    r"(?:并|真的|确实|曾经|正在|再|会|要|有|任何|感觉|觉得|出现|发生)*"
+)
+_RISK_KEYWORD_VARIANTS = {
+    "胸口疼": re.compile(r"(?:胸口|胸部|心口)(?:很|非常|特别|剧烈|持续|一直)?(?:疼|痛)"),
+}
 _QUOTE_PAIRS = (("“", "”"), ("「", "」"), ("『", "』"), ('"', '"'), ("‘", "’"), ("'", "'"))
 
 
@@ -96,7 +116,7 @@ class RiskEngine(BaseEngine):
         return False
 
     def _is_negated_span(self, message: str, start: int) -> bool:
-        """Apply negation only within the match's clause and to its nearby target."""
+        """Apply negation only when it explicitly governs the matched predicate."""
         clause_start = self._clause_start(message, start)
         prefix = message[clause_start:start]
         nearest: tuple[int, str] | None = None
@@ -108,9 +128,21 @@ class RiskEngine(BaseEngine):
             return False
         neg_idx, neg = nearest
         between = prefix[neg_idx + len(neg):]
-        # A nearby negator can govern a short noun/verb target (没有胸口疼、没有说想死),
-        # but never crosses punctuation or adversative clause boundaries.
-        return len(between) <= 5
+        return _NEGATION_SCOPE_BRIDGE_RE.fullmatch(between) is not None
+
+    def _is_explicit_self_quote(
+        self,
+        message: str,
+        end: int,
+        quote_span: tuple[int, int],
+    ) -> bool:
+        left, _ = quote_span
+        clause_start = self._clause_start(message, left)
+        reporter = message[clause_start:left].rstrip("：: ")
+        if _SELF_REPORT_RE.fullmatch(reporter) is None:
+            return False
+        quoted_subject = message[left + 1:end].lstrip()
+        return quoted_subject.startswith(("我", "本人"))
 
     def _is_asserted_match(
         self,
@@ -121,7 +153,11 @@ class RiskEngine(BaseEngine):
         quote_spans: list[tuple[int, int]],
         pattern_match: bool = False,
     ) -> bool:
-        if any(left <= start and end <= right for left, right in quote_spans):
+        quote_span = next(
+            ((left, right) for left, right in quote_spans if left <= start and end <= right),
+            None,
+        )
+        if quote_span and not self._is_explicit_self_quote(message, end, quote_span):
             return False
         if self._overlaps_safe_expression(message, start, end):
             return False
@@ -133,7 +169,11 @@ class RiskEngine(BaseEngine):
             if "我" in message[after_quote:start]:
                 modality_start = after_quote
         clause_prefix = message[modality_start:start]
+        if _HYPOTHETICAL_CONTEXT_RE.match(clause_prefix):
+            return False
         if _NON_ASSERTED_CONTEXT_RE.search(clause_prefix):
+            return False
+        if _THIRD_PARTY_ATTRIBUTION_RE.fullmatch(clause_prefix):
             return False
         if pattern_match:
             matched = message[start:end]
@@ -155,12 +195,20 @@ class RiskEngine(BaseEngine):
         keyword: str,
         quote_spans: list[tuple[int, int]],
     ) -> bool:
-        start = 0
-        while (idx := message.find(keyword, start)) >= 0:
-            end = idx + len(keyword)
-            if self._is_asserted_match(message, idx, end, quote_spans=quote_spans):
+        variant = _RISK_KEYWORD_VARIANTS.get(keyword)
+        matches = (
+            variant.finditer(message)
+            if variant is not None
+            else re.finditer(re.escape(keyword), message)
+        )
+        for match in matches:
+            if self._is_asserted_match(
+                message,
+                match.start(),
+                match.end(),
+                quote_spans=quote_spans,
+            ):
                 return True
-            start = end
         return False
 
     def _pattern_match(
