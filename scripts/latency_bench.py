@@ -3,7 +3,7 @@
 
 Usage:
   python scripts/latency_bench.py
-  python scripts/latency_bench.py --iterations 5 --json
+  python scripts/latency_bench.py --iterations 100 --json
   python scripts/latency_bench.py --baseline docs/evidence/latency-baseline.json
   python scripts/latency_bench.py --update-baseline docs/evidence/latency-baseline.json
 
@@ -36,7 +36,7 @@ from app.engines.base import (  # noqa: E402
 )
 from app.runtime.agent_harness import AgentHarness  # noqa: E402
 
-DEFAULT_ITERATIONS = 5
+DEFAULT_ITERATIONS = 100
 DEFAULT_REGRESSION_PCT = 20.0
 # Synthetic wall-clock samples on shared hosted runners can cross a percentage
 # boundary by a fraction of a millisecond due to scheduler jitter. This is only

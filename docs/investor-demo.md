@@ -38,9 +38,9 @@ Local demo ports (this machine’s usual layout):
 
 ```bash
 cd <repo-root>
-python scripts/latency_bench.py --iterations 5
+python scripts/latency_bench.py --iterations 100
 # Optional: refresh CI baseline (mocked adapters — no live keys)
-python scripts/latency_bench.py --iterations 5 --update-baseline docs/evidence/latency-baseline.json
+python scripts/latency_bench.py --iterations 100 --update-baseline docs/evidence/latency-baseline.json
 cd apps/api
 pytest -q tests/test_latency_bench.py
 ```

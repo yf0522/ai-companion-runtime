@@ -20,6 +20,9 @@ def _load_latency_bench():
 def test_percentile_and_summarize():
     mod = _load_latency_bench()
     assert mod.percentile([10.0, 20.0, 30.0, 40.0], 50) == 30.0
+    hundred_samples = [float(value) for value in range(1, 101)]
+    assert mod.percentile(hundred_samples, 95) == 95.0
+    assert mod.percentile(hundred_samples, 95) < max(hundred_samples)
     summary = mod.summarize([5.0, 10.0, 15.0, 20.0])
     assert summary["p50"] == 15.0
     assert summary["max"] == 20.0
