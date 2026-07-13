@@ -8,6 +8,7 @@ from datetime import datetime
 
 import pytest
 
+import app.runtime.readiness as readiness_module
 from app.config.settings import Settings
 from app.observability.metrics import (
     PLATFORM_READINESS_CHECKS_TOTAL,
@@ -25,6 +26,7 @@ from app.runtime.readiness import (
     check_migration_heads,
     check_notification_provider,
     check_public_api_ws_config,
+    check_vector_schema,
     check_worker_broker_and_heartbeat,
     operator_readiness_payload,
     readiness_http_status,
@@ -44,7 +46,7 @@ def _production_settings(**overrides):
         "public_base_url": "https://api.example.test",
         "public_api_url": "https://api.example.test",
         "public_ws_url": "wss://api.example.test",
-        "expected_migration_heads": "b0c1d2e3f4a5",
+        "expected_migration_heads": "c1d2e3f4a5b6",
         "backup_bucket": "pilot-backups",
         "backup_kms_key_id": "kms-key",
         "evidence_manifest_required": True,
@@ -177,6 +179,133 @@ async def test_platform_readiness_hard_deadline_does_not_wait_for_resistant_canc
         await asyncio.sleep(0)
 
 
+async def test_platform_readiness_bounds_live_probes_under_concurrent_load(monkeypatch):
+    capacity = 4
+    release_probes = asyncio.Event()
+    all_slots_started = asyncio.Event()
+    started = 0
+    live = 0
+    peak_live = 0
+
+    async def _blocked_probe(_settings):
+        nonlocal started, live, peak_live
+        started += 1
+        live += 1
+        peak_live = max(peak_live, live)
+        if started == capacity:
+            all_slots_started.set()
+        try:
+            await release_probes.wait()
+        finally:
+            live -= 1
+        return ReadinessCheck(READY, "released")
+
+    monkeypatch.setattr(readiness_module, "_MAX_PROBE_SLOTS", capacity)
+    assessments = [
+        asyncio.create_task(
+            assess_platform_readiness(
+                _production_settings(platform_readiness_check_timeout_seconds=0.3),
+                checks=(("redis", _blocked_probe),),
+                allow_partial_checks=True,
+            )
+        )
+        for _ in range(capacity * 5)
+    ]
+    try:
+        await asyncio.wait_for(all_slots_started.wait(), timeout=0.2)
+        await asyncio.sleep(0)
+
+        rejected = [task.result() for task in assessments if task.done()]
+        assert len(rejected) == capacity * 4
+        assert all(result["status"] == UNSAFE for result in rejected)
+        assert all(
+            result["checks"]["readiness_configuration"]["detail"]
+            == "readiness probe capacity is exhausted"
+            for result in rejected
+        )
+        assert started == capacity
+        assert live == capacity
+        assert peak_live == capacity
+        assert readiness_module._ACTIVE_PROBE_SLOTS == capacity
+    finally:
+        release_probes.set()
+
+    results = await asyncio.gather(*assessments)
+    assert sum(result["status"] == READY for result in results) == capacity
+    assert readiness_module._ACTIVE_PROBE_SLOTS == 0
+    assert readiness_module._DETACHED_PROBE_TASKS == set()
+
+
+async def test_detached_probe_holds_capacity_until_resistant_task_finishes(monkeypatch):
+    cancellation_seen = asyncio.Event()
+    release_probe = asyncio.Event()
+    probe_finished = asyncio.Event()
+    later_probe_calls = 0
+
+    async def _resistant(_settings):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release_probe.wait()
+        finally:
+            probe_finished.set()
+        return ReadinessCheck(READY, "late ready")
+
+    async def _later_probe(_settings):
+        nonlocal later_probe_calls
+        later_probe_calls += 1
+        return ReadinessCheck(READY, "later ready")
+
+    monkeypatch.setattr(readiness_module, "_MAX_PROBE_SLOTS", 1)
+    try:
+        timed_out = await assess_platform_readiness(
+            _production_settings(
+                platform_readiness_check_timeout_seconds=0.03,
+                platform_readiness_cleanup_grace_seconds=0.01,
+            ),
+            checks=(("redis", _resistant),),
+            allow_partial_checks=True,
+        )
+
+        assert timed_out["status"] == UNSAFE
+        assert cancellation_seen.is_set()
+        assert len(readiness_module._DETACHED_PROBE_TASKS) == 1
+        assert readiness_module._ACTIVE_PROBE_SLOTS == 0
+
+        rejected = await assess_platform_readiness(
+            _production_settings(),
+            checks=(("database", _later_probe),),
+            allow_partial_checks=True,
+        )
+
+        assert rejected["status"] == UNSAFE
+        assert rejected["checks"]["readiness_configuration"]["detail"] == (
+            "readiness probe capacity is exhausted"
+        )
+        assert later_probe_calls == 0
+    finally:
+        release_probe.set()
+        await asyncio.wait_for(probe_finished.wait(), timeout=0.2)
+        await asyncio.sleep(0)
+
+    assert readiness_module._DETACHED_PROBE_TASKS == set()
+    assert readiness_module._ACTIVE_PROBE_SLOTS == 0
+    recovered = await assess_platform_readiness(
+        _production_settings(),
+        checks=(("database", _later_probe),),
+        allow_partial_checks=True,
+    )
+    assert recovered["status"] == READY
+    assert later_probe_calls == 1
+    assert readiness_module._ACTIVE_PROBE_SLOTS == 0
+    assert [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_name().startswith("platform-readiness:")
+    ] == []
+
+
 async def test_caller_cancellation_cleans_probe_tasks_before_propagating():
     probe_started = asyncio.Event()
     probe_cancelled = asyncio.Event()
@@ -250,6 +379,150 @@ async def test_database_readiness_applies_the_dependency_timeout(monkeypatch):
     assert time.perf_counter() - started_at < 0.2
     assert check.status == UNSAFE
     assert check.detail == "database is unavailable"
+
+
+@pytest.mark.parametrize(
+    (
+        "app_env", "extension_installed", "embedding_type", "index_exists",
+        "index_method", "index_opclass", "index_table", "index_column",
+        "index_valid", "index_ready", "expected_status",
+    ),
+    [
+        ("production", True, "vector(1536)", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "embedding", True, True, READY),
+        ("production", False, "vector(1536)", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "embedding", True, True, UNSAFE),
+        ("production", True, "text", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "embedding", True, True, UNSAFE),
+        ("production", True, "vector(1536)", False, "missing", "missing", "missing", "missing", False, False, UNSAFE),
+        ("production", True, "vector(1536)", True, "ivfflat", "vector_cosine_ops", "memory_embeddings", "embedding", True, True, UNSAFE),
+        ("production", True, "vector(1536)", True, "hnsw", "vector_l2_ops", "memory_embeddings", "embedding", True, True, UNSAFE),
+        ("production", True, "vector(1536)", True, "hnsw", "vector_cosine_ops", "other_table", "embedding", True, True, UNSAFE),
+        ("production", True, "vector(1536)", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "other_column", True, True, UNSAFE),
+        ("production", True, "vector(1536)", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "embedding", False, True, UNSAFE),
+        ("production", True, "vector(1536)", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "embedding", True, False, UNSAFE),
+        ("development", False, "missing", False, "missing", "missing", "missing", "missing", False, False, DEGRADED),
+        ("development", True, "vector(768)", True, "hnsw", "vector_cosine_ops", "memory_embeddings", "embedding", True, True, DEGRADED),
+    ],
+)
+async def test_vector_schema_readiness_requires_extension_and_exact_dimension(
+    monkeypatch,
+    app_env,
+    extension_installed,
+    embedding_type,
+    index_exists,
+    index_method,
+    index_opclass,
+    index_table,
+    index_column,
+    index_valid,
+    index_ready,
+    expected_status,
+):
+    class _Result:
+        def one(self):
+            return (
+                extension_installed, embedding_type, index_exists, index_method, index_opclass,
+                index_table, index_column, index_valid, index_ready,
+            )
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def execute(self, statement):
+            sql = str(statement)
+            assert "pg_extension" in sql
+            assert "to_regclass('memory_embeddings')" in sql
+            return _Result()
+
+    monkeypatch.setattr("app.db.session.async_session", lambda: _Session())
+    app_settings = (
+        _production_settings()
+        if app_env == "production"
+        else Settings(app_env="development")
+    )
+
+    check = await check_vector_schema(app_settings)
+
+    assert check.status == expected_status
+    assert check.observed == {
+        "extension_installed": extension_installed,
+        "embedding_type": embedding_type,
+        "index_exists": index_exists,
+        "index_method": index_method,
+        "index_opclass": index_opclass,
+        "index_table": index_table,
+        "index_column": index_column,
+        "index_valid": index_valid,
+        "index_ready": index_ready,
+    }
+
+
+async def test_vector_schema_readiness_sanitizes_catalog_failures(monkeypatch, caplog):
+    secret = "postgresql://user:catalog-secret@db.example.test/runtime"
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def execute(self, _statement):
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr("app.db.session.async_session", lambda: _Session())
+
+    with caplog.at_level(logging.WARNING, logger="app.runtime.readiness"):
+        check = await check_vector_schema(_production_settings())
+
+    assert check.status == UNSAFE
+    assert check.detail == "pgvector schema could not be verified"
+    assert check.observed == {}
+    assert secret not in caplog.text
+
+
+async def test_vector_schema_observed_fields_are_bounded_by_catalog(monkeypatch):
+    class _Result:
+        def one(self):
+            return (
+                True,
+                "vector(" + "1" * 100 + ")",
+                True,
+                "hnsw" + "x" * 100,
+                "vector_cosine_ops" + "x" * 100,
+                "memory_embeddings" + "x" * 100,
+                "embedding" + "x" * 100,
+                True,
+                True,
+            )
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def execute(self, _statement):
+            return _Result()
+
+    monkeypatch.setattr("app.db.session.async_session", lambda: _Session())
+
+    readiness = await assess_platform_readiness(
+        Settings(app_env="development"),
+        checks=(("vector_schema", check_vector_schema),),
+        allow_partial_checks=True,
+    )
+
+    observed = readiness["checks"]["vector_schema"]["observed"]
+    assert observed["extension_installed"] is True
+    assert len(observed["embedding_type"]) == 32
+    assert len(observed["index_method"]) == 16
+    assert len(observed["index_opclass"]) == 32
+    assert len(observed["index_table"]) == 64
+    assert len(observed["index_column"]) == 64
 
 
 async def test_platform_readiness_sanitizes_exceptions_from_payload_and_logs(caplog):
@@ -515,13 +788,20 @@ async def test_platform_readiness_metrics_increment_with_bounded_labels():
     known_before = PLATFORM_READINESS_CHECKS_TOTAL.labels(
         check_id="redis", status=READY
     )._value.get()
+    vector_schema_before = PLATFORM_READINESS_CHECKS_TOTAL.labels(
+        check_id="vector_schema", status=READY
+    )._value.get()
     unknown_before = PLATFORM_READINESS_CHECKS_TOTAL.labels(
         check_id="unknown", status=UNSAFE
     )._value.get()
 
     await assess_platform_readiness(
         _production_settings(),
-        checks=(("redis", _ready_check), ("hostile-user-value", _ready_check)),
+        checks=(
+            ("redis", _ready_check),
+            ("vector_schema", _ready_check),
+            ("hostile-user-value", _ready_check),
+        ),
         allow_partial_checks=True,
     )
 
@@ -531,6 +811,9 @@ async def test_platform_readiness_metrics_increment_with_bounded_labels():
     assert PLATFORM_READINESS_CHECKS_TOTAL.labels(check_id="redis", status=READY)._value.get() == (
         known_before + 1
     )
+    assert PLATFORM_READINESS_CHECKS_TOTAL.labels(
+        check_id="vector_schema", status=READY
+    )._value.get() == (vector_schema_before + 1)
     assert PLATFORM_READINESS_CHECKS_TOTAL.labels(
         check_id="unknown", status=UNSAFE
     )._value.get() == (unknown_before + 1)

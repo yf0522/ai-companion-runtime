@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -28,7 +29,49 @@ from app.engines.intent_engine import IntentEngine
     ["2026-07-12T16:30:00Z", "2026-07-12T16:30:00+00:00", datetime(2026, 7, 12, 16, 30)],
 )
 def test_caretask_time_is_displayed_in_asia_shanghai(value):
-    assert format_caretask_time(value) == "2026年7月13日 00:30"
+    now = datetime(2026, 7, 12, 16, 0, tzinfo=timezone.utc)
+    assert format_caretask_time(value, now=now) == "今天夜里 00:30"
+
+
+@pytest.mark.parametrize(
+    ("hour", "period"),
+    [
+        (0, "夜里"),
+        (4, "夜里"),
+        (5, "清晨"),
+        (7, "清晨"),
+        (8, "上午"),
+        (11, "上午"),
+        (12, "中午"),
+        (13, "中午"),
+        (14, "下午"),
+        (17, "下午"),
+        (18, "晚上"),
+        (22, "晚上"),
+        (23, "夜里"),
+    ],
+)
+def test_caretask_time_uses_elder_facing_day_period_boundaries(hour, period):
+    now = datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc)
+    value = datetime(2026, 7, 12, hour, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
+    assert format_caretask_time(value, now=now) == f"今天{period} {hour:02d}:15"
+
+
+@pytest.mark.parametrize(
+    ("days", "day_label"),
+    [(0, "今天"), (1, "明天"), (2, "后天")],
+)
+def test_caretask_time_uses_relative_days_in_shanghai(days, day_label):
+    now = datetime(2026, 7, 12, 15, 30, tzinfo=timezone.utc)  # Shanghai 23:30
+    target = datetime(2026, 7, 12, 0, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    target += timedelta(days=days)
+    assert format_caretask_time(target, now=now) == f"{day_label}夜里 00:30"
+
+
+def test_caretask_time_uses_absolute_chinese_date_outside_relative_window():
+    now = datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc)
+    value = "2026-07-15T06:00:00Z"
+    assert format_caretask_time(value, now=now) == "2026年7月15日下午 14:00"
 
 
 def test_state_machine_transitions():
@@ -949,7 +992,156 @@ async def test_caretask_failed_does_not_claim_success():
     tool = CareTaskTool()
     result = await tool.execute({"action": "create", "query": "吃药"})
     assert result.status == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "请问如何取消吃药提醒",
+        "我只是举例：取消吃药提醒",
+        "不要取消吃药提醒",
+        "如果我要取消吃药提醒怎么办",
+        "医生问我是否取消吃药提醒",
+        "她说“提醒我晚上8点吃药”",
+        "我没完成吃药任务",
+        "我不是要取消吃药提醒",
+        "我不想取消吃药提醒",
+        "我不打算延后吃药提醒",
+        "我不会建立吃药提醒",
+    ],
+)
+async def test_single_unauthorized_mutation_never_calls_domain(monkeypatch, query):
+    tool = CareTaskTool()
+    domain_calls = [AsyncMock() for _ in range(5)]
+    for name, call in zip(("_create", "_list", "_complete", "_snooze", "_cancel"), domain_calls):
+        monkeypatch.setattr(tool, name, call)
+
+    result = await tool.execute({"action": "cancel", "query": query, "user_id": "user-1"})
+
+    assert result.status == "needs_clarification"
+    assert result.data["reason"] in {"mutation_not_authorized", "ambiguous_mutation_cues"}
+    for call in domain_calls:
+        call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("请完成降压药", "complete"),
+        ("取消吃药提醒", "cancel"),
+        ("不要提醒我吃药", "cancel"),
+        ("提醒我晚上8点吃药", "create"),
+        ("明天晚上八点吃药", "create"),
+        ("后天上午九点复诊", "create"),
+        ("每天晚上八点吃降糖药", "create"),
+        ("把降压药提醒延后30分钟", "snooze"),
+        ("我吃了药", "complete"),
+        ("关掉提醒", "cancel"),
+        ("建立提醒", "create"),
+    ],
+)
+async def test_single_authorized_mutation_routes_to_expected_domain(monkeypatch, query, expected):
+    tool = CareTaskTool()
+    calls: dict[str, AsyncMock] = {}
+    for name in ("create", "list", "complete", "snooze", "cancel"):
+        call = AsyncMock(
+            return_value=ToolResult(
+                tool_name="caretask", status="success", display_text="ok", data={"action": name}
+            )
+        )
+        calls[name] = call
+        monkeypatch.setattr(tool, f"_{name}", call)
+
+    result = await tool.execute({"action": "list", "query": query, "user_id": "user-1"})
+
+    assert result.status == "success"
+    calls[expected].assert_awaited_once()
+    assert sum(call.await_count for call in calls.values()) == 1
     assert not response_claims_tool_success(result.display_text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "我明天晚上八点吃药",
+        "明天我会吃药",
+        "明天如果不舒服就吃药",
+        "明天医生让我晚上八点吃药",
+        "明天新闻说晚上八点吃药",
+        "明天“晚上八点吃药”",
+        "如果明天晚上八点吃药会怎么样",
+        "明天晚上八点吃药吗？",
+        "新闻里说明天晚上八点吃药",
+        "她说“明天晚上八点吃药”",
+    ],
+)
+async def test_scheduled_care_mentions_never_authorize_create(monkeypatch, query):
+    tool = CareTaskTool()
+    create = AsyncMock()
+    listed = AsyncMock(
+        return_value=ToolResult(
+            tool_name="caretask",
+            status="success",
+            display_text="今天没有待处理的照护任务",
+            data={"action": "caretask_list", "tasks": []},
+        )
+    )
+    monkeypatch.setattr(tool, "_create", create)
+    monkeypatch.setattr(tool, "_list", listed)
+
+    result = await tool.execute(
+        {"action": "create", "query": query, "user_id": "user-1"}
+    )
+
+    assert result.status in {"success", "needs_clarification"}
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_single_caretask_replay_returns_original_copy_before_resolving_again(
+    monkeypatch,
+):
+    tool = CareTaskTool()
+    cached = ToolResult(
+        tool_name="caretask",
+        status="success",
+        display_text="好的，我30分钟后再提醒您吃降压药",
+        data={
+            "action": "caretask_snooze",
+            "task": {"id": "task-1", "title": "吃降压药", "status": "snoozed"},
+            "snooze_minutes": 30,
+        },
+    )
+    lookup = AsyncMock(side_effect=[None, cached])
+    execute = AsyncMock(return_value=cached)
+    resolve = AsyncMock(
+        return_value={"id": "task-1", "title": "吃降压药", "version": 1}
+    )
+    monkeypatch.setattr(
+        "app.tools.caretask_batch_executor.lookup_single_caretask_result", lookup
+    )
+    monkeypatch.setattr(
+        "app.tools.caretask_batch_executor.execute_single_caretask_mutation", execute
+    )
+    monkeypatch.setattr(tool, "_resolve_or_clarify", resolve)
+
+    params = {
+        "action": "snooze",
+        "query": "把降压药提醒延后30分钟",
+        "minutes": 30,
+        "user_id": "user-1",
+        "idempotency_key": "trace-1",
+    }
+    first = await tool.execute(params)
+    replay = await tool.execute(params)
+
+    assert first.display_text == replay.display_text == cached.display_text
+    assert first.data == replay.data == cached.data
+    resolve.assert_awaited_once()
+    execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio

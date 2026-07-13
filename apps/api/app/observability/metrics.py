@@ -146,6 +146,7 @@ def record_platform_readiness(payload: dict) -> None:
         "public_api_ws_config",
         "risk_policy",
         "database",
+        "vector_schema",
         "redis",
         "migration_heads",
         "notification_provider",

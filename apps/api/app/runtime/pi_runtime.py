@@ -4,10 +4,10 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 import httpx
-from nanoid import generate as nanoid
 
 from app.config.settings import settings
 from app.runtime.agent_runtime import RUNTIME_PI_EXPERIMENTAL
@@ -76,15 +76,19 @@ async def _persist_pi_evidence_best_effort(
     tool_name: str | None = None,
     tool_status: str | None = None,
     tool_data: dict | None = None,
-) -> None:
+    assistant_message_id: str,
+) -> str:
     """Bound Pi audit latency and keep TraceEvent payloads content-free."""
     async def persist() -> None:
         from app.observability.trace_service import TraceService
 
-        await _persist_turn_best_effort(
+        persisted_id = await _persist_turn_best_effort(
             session_id=session_id, user_id=user_id, trace_id=trace_id,
             user_content=user_content, assistant_content=assistant_content,
+            assistant_message_id=assistant_message_id,
         )
+        if persisted_id != assistant_message_id:
+            raise RuntimeError("message evidence was not persisted")
         trace = TraceService()
         await trace.add_event(
             trace_id=trace_id, step_name="incoming_turn", step_index=0,
@@ -114,11 +118,19 @@ async def _persist_pi_evidence_best_effort(
 
     try:
         await asyncio.wait_for(persist(), timeout=_AUDIT_TIMEOUT_S)
+        return "persisted"
+    except asyncio.TimeoutError:
+        logger.error(
+            "Pi audit persistence failed trace=%s error_class=TimeoutError code=audit_persistence_timeout",
+            trace_id,
+        )
+        return "timed_out"
     except Exception as exc:
         logger.error(
             "Pi audit persistence failed trace=%s error_class=%s code=audit_persistence_failed",
             trace_id, type(exc).__name__,
         )
+        return "failed"
 
 
 def _bounded_tool_receipt_copy(data: dict | None) -> dict:
@@ -264,6 +276,8 @@ class PiExperimentalRuntime:
                 "cancel_event": cancel_event,
             }
         )
+        if cancel_event.is_set():
+            return {"trace_id": trace_id, "cancelled": True}
         data = result.data or {}
         await stream_mgr.send_tool_result(
             "caretask",
@@ -276,7 +290,7 @@ class PiExperimentalRuntime:
         ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(result.display_text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         tools_used = [{"tool": "caretask", "action": "caretask_batch", "status": result.status}]
         await stream_mgr.send_final(
             trace_id=trace_id,
@@ -286,11 +300,12 @@ class PiExperimentalRuntime:
             tools_used=tools_used,
             memory_updated=False,
         )
-        await _persist_pi_evidence_best_effort(
+        audit_persistence = await _persist_pi_evidence_best_effort(
             session_id=session_id, user_id=user_id, trace_id=trace_id,
             user_content=message, assistant_content=result.display_text,
             outcome="caretask_batch", latency_ms=total_latency_ms,
             tool_name="caretask", tool_status=result.status, tool_data=data,
+            assistant_message_id=message_id,
         )
         return {
             "trace_id": trace_id,
@@ -299,6 +314,7 @@ class PiExperimentalRuntime:
             "pi_experimental": True,
             "response_text": result.display_text,
             "tools_used": tools_used,
+            "audit_persistence": audit_persistence,
         }
 
     async def _run_sidecar(
@@ -511,6 +527,15 @@ class PiExperimentalRuntime:
                         seen_done = True
                         break
 
+        if cancel_event.is_set():
+            return {
+                "trace_id": trace_id,
+                "agent_runtime": self.name,
+                "pi_experimental": True,
+                "cancelled": True,
+                "tools_used": tools_used,
+            }
+
         if sidecar_error:
             raise RuntimeError(sidecar_error)
 
@@ -543,7 +568,7 @@ class PiExperimentalRuntime:
         await stream_mgr.send_first_reply(response_text, ttft_ms)
 
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -562,13 +587,14 @@ class PiExperimentalRuntime:
             str(terminal_tool.get("status")) if terminal_tool else None,
             terminal_tool_data,
         )
-        await _persist_pi_evidence_best_effort(
+        audit_persistence = await _persist_pi_evidence_best_effort(
             session_id=session_id, user_id=user_id, trace_id=trace_id,
             user_content=message, assistant_content=response_text,
             outcome=audit_outcome, latency_ms=total_latency_ms,
             tool_name=str(terminal_tool.get("tool")) if terminal_tool.get("tool") else None,
             tool_status=audit_tool_status,
             tool_data=terminal_tool_data,
+            assistant_message_id=message_id,
         )
         return {
             "trace_id": trace_id,
@@ -578,6 +604,7 @@ class PiExperimentalRuntime:
             "response_text": response_text,
             "tools_used": tools_used,
             "sidecar_error": sidecar_error,
+            "audit_persistence": audit_persistence,
             # Tradeoff note: pi-agent-core tool loop may increase TTFT vs harness fast-reply.
             "ttft_tradeoff": "pi_agent_core_tool_loop_may_delay_first_token_vs_harness_fast_reply",
         }
@@ -600,7 +627,7 @@ class PiExperimentalRuntime:
         ttft_ms = int((time.monotonic() - start) * 1000)
         await stream_mgr.send_first_reply(text, ttft_ms)
         total_latency_ms = int((time.monotonic() - start) * 1000)
-        message_id = f"m_{nanoid(size=12)}"
+        message_id = str(uuid.uuid4())
         await stream_mgr.send_final(
             trace_id=trace_id,
             message_id=message_id,
@@ -610,17 +637,21 @@ class PiExperimentalRuntime:
             memory_updated=False,
         )
         if user_id and session_id and user_message is not None:
-            await _persist_pi_evidence_best_effort(
+            audit_persistence = await _persist_pi_evidence_best_effort(
                 session_id=session_id, user_id=user_id, trace_id=trace_id,
                 user_content=user_message, assistant_content=text,
                 outcome=audit_outcome, latency_ms=total_latency_ms,
+                assistant_message_id=message_id,
             )
+        else:
+            audit_persistence = "not_attempted"
         return {
             "trace_id": trace_id,
             "message_id": message_id,
             "agent_runtime": self.name,
             "pi_experimental": True,
             "error": error,
+            "audit_persistence": audit_persistence,
         }
 
 

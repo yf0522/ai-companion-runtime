@@ -1,4 +1,6 @@
 """Tests for the risk engine — elderly companion: health, scam, emotional."""
+import uuid
+
 import pytest
 from app.engines.base import AnalyzerInput
 from app.engines.risk_engine import RiskEngine, _normalize_text
@@ -117,6 +119,48 @@ async def test_safe_context_累死_is_low(engine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_level"),
+    [
+        ("今天累死了，现在胸口很疼，也呼吸困难", "critical"),
+        ("我没有胸痛但呼吸困难", "critical"),
+        ("我胸口不痛，也没有呼吸困难", "low"),
+        ("新闻里说：\u201c我现在胸口疼，也呼吸困难\u201d", "low"),
+        ("例如\u201c胸口疼呼吸困难\u201d这种情况要及时就医", "low"),
+        ("新闻里说：\u201c我现在胸口疼呼吸困难\u201d，但我现在胸口疼呼吸困难", "critical"),
+        ("新闻里说\u201c有人胸口疼呼吸困难\u201d我现在胸口疼呼吸困难", "critical"),
+        ("新闻看完后我胸口疼得厉害", "critical"),
+        ("看了新闻以后我胸口疼得厉害", "critical"),
+        ("我看新闻时胸口疼得厉害", "critical"),
+        ("新闻里说有人胸口疼得厉害", "low"),
+    ],
+)
+async def test_risk_match_context_is_span_clause_and_modality_aware(
+    engine, message, expected_level
+):
+    result = await engine.analyze(_input(message))
+    assert result.level == expected_level
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "新闻里说我妈妈胸口疼得厉害",
+        "新闻里说我胸口疼得厉害",
+        "新闻报道中提到我朋友胸口疼呼吸困难",
+    ],
+)
+async def test_reported_possessive_subject_does_not_become_first_person_assertion(
+    engine, message
+):
+    result = await engine.analyze(_input(message))
+
+    assert result.level == "low"
+    assert result.category == "none"
+
+
+@pytest.mark.asyncio
 async def test_safety_message_emotional_crisis_has_cn_hotlines():
     from app.runtime.risk_gate import load_safety_message
 
@@ -203,7 +247,8 @@ def test_safety_response_does_not_claim_unconfirmed_delivery():
         "请拨打 110 或 120。",
         {"status": "persisted", "outbox_ids": ["outbox-1"], "webhook_status": "queued"},
     )
-    assert "正在发送" in queued
+    assert "请求已记录" in queued
+    assert "正在发送" not in queued
     assert "已经收到" not in queued
 
     no_contact = build_safety_response(
@@ -366,7 +411,7 @@ async def test_pi_critical_persistence_failure_still_emits_truthful_guidance(mon
     assert gate.blocked is True
     reply = stream.send_first_reply.await_args.args[0]
     assert "120" in reply
-    assert "暂时无法联系" in reply
+    assert "暂时无法联系" in stream.send_delta.await_args.args[0]
     assert "已经收到" not in reply
     stream.send_final.assert_awaited_once()
 
@@ -389,7 +434,10 @@ async def test_blocked_turn_persists_messages_and_redacted_trace_events(monkeypa
         "app.runtime.risk_gate._dispatch_family_notify",
         AsyncMock(return_value={"outbox_ids": ["opaque-id"], "webhook_status": "queued"}),
     )
-    persist = AsyncMock(return_value=SimpleNamespace(assistant_message_id="assistant-1"))
+    async def persist_messages(**kwargs):
+        return SimpleNamespace(assistant_message_id=kwargs["assistant_message_id"])
+
+    persist = AsyncMock(side_effect=persist_messages)
     add_event = AsyncMock()
     monkeypatch.setattr("app.observability.message_evidence.persist_turn_messages", persist)
     monkeypatch.setattr("app.observability.trace_service.TraceService.add_event", add_event)
@@ -405,6 +453,10 @@ async def test_blocked_turn_persists_messages_and_redacted_trace_events(monkeypa
     assert stored["user_content"] == "验证码 654321"
     assert stored["assistant_content"] == gate.metadata["response_text"]
     assert stored["trace_id"] == gate.trace_id
+    final_id = stream.send_final.await_args.kwargs["message_id"]
+    assert stored["assistant_message_id"] == final_id
+    assert gate.metadata["assistant_message_id"] == final_id
+    uuid.UUID(final_id)
     assert [call.kwargs["step_name"] for call in add_event.await_args_list] == [
         "incoming_turn", "final_outcome"
     ]
@@ -447,8 +499,114 @@ async def test_blocked_turn_hanging_audit_cannot_suppress_final(monkeypatch):
 
     assert gate.blocked is True
     assert gate.metadata["audit_persisted"] is False
+    assert gate.metadata["audit_persistence"] == "failed"
     assert gate.metadata["audit_error"] == "TimeoutError"
     assert "120" in gate.metadata["response_text"]
+    stream.send_first_reply.assert_awaited_once()
+    stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_hanging_notification_emits_promptly_without_delivery_claim(
+    monkeypatch,
+):
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock
+
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import run_risk_gate
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._analyze_risk",
+        AsyncMock(return_value=RiskResult(level="critical", category="health_emergency")),
+    )
+    monkeypatch.setattr("app.runtime.risk_gate._dispatch_family_notify", hang)
+    monkeypatch.setattr("app.runtime.risk_gate._NOTIFICATION_TIMEOUT_S", 0.01)
+    stream = AsyncMock()
+
+    started = time.monotonic()
+    gate = await asyncio.wait_for(
+        run_risk_gate(
+            user_id="user-1",
+            session_id="session-1",
+            message="胸口疼呼吸困难",
+            stream_mgr=stream,
+        ),
+        timeout=0.2,
+    )
+
+    assert time.monotonic() - started < 0.2
+    assert gate.metadata["notification_status"]["error_code"] == "family_notify_timeout"
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_first_reply_is_prompt_and_final_waits_for_durable_writes(monkeypatch):
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock
+
+    from app.engines.base import RiskResult
+    from app.runtime.risk_gate import run_risk_gate
+
+    notification_release = asyncio.Event()
+    notification_completed = asyncio.Event()
+    audit_release = asyncio.Event()
+    audit_started = asyncio.Event()
+    audit_completed = asyncio.Event()
+    first_reply_sent = asyncio.Event()
+
+    async def durable_notification(*_args, **_kwargs):
+        await notification_release.wait()
+        notification_completed.set()
+        return {"status": "persisted", "outbox_ids": ["outbox-1"]}
+
+    async def durable_audit(**_kwargs):
+        audit_started.set()
+        await audit_release.wait()
+        audit_completed.set()
+
+    async def send_first_reply(*_args, **_kwargs):
+        first_reply_sent.set()
+
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._analyze_risk",
+        AsyncMock(return_value=RiskResult(level="critical", category="health_emergency")),
+    )
+    monkeypatch.setattr(
+        "app.runtime.risk_gate._dispatch_family_notify",
+        durable_notification,
+    )
+    monkeypatch.setattr("app.runtime.risk_gate._persist_blocked_turn_evidence", durable_audit)
+    monkeypatch.setattr("app.runtime.risk_gate._NOTIFICATION_TIMEOUT_S", 1.0)
+    monkeypatch.setattr("app.runtime.risk_gate._BLOCKED_AUDIT_TIMEOUT_S", 1.0)
+    stream = AsyncMock()
+    stream.send_first_reply.side_effect = send_first_reply
+
+    started = time.monotonic()
+    task = asyncio.create_task(run_risk_gate(
+        user_id="user-1", session_id="session-1", message="胸口疼呼吸困难", stream_mgr=stream
+    ))
+
+    await asyncio.wait_for(first_reply_sent.wait(), timeout=0.2)
+    assert time.monotonic() - started < 0.2
+    assert not task.done()
+    stream.send_final.assert_not_awaited()
+
+    notification_release.set()
+    await asyncio.wait_for(notification_completed.wait(), timeout=0.2)
+    await asyncio.wait_for(audit_started.wait(), timeout=0.2)
+    assert not task.done()
+    stream.send_final.assert_not_awaited()
+
+    audit_release.set()
+    gate = await asyncio.wait_for(task, timeout=0.2)
+    assert audit_completed.is_set()
+    assert gate.metadata["audit_persistence"] == "persisted"
+    assert gate.metadata["notification_status"]["outbox_count"] == 1
     stream.send_first_reply.assert_awaited_once()
     stream.send_final.assert_awaited_once()
 

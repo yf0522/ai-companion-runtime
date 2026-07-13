@@ -5,13 +5,28 @@ RUN npm install
 
 FROM node:18-alpine AS builder
 WORKDIR /app
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ARG NEXT_PUBLIC_AGENT_RUNTIME
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
+ENV NEXT_PUBLIC_AGENT_RUNTIME=$NEXT_PUBLIC_AGENT_RUNTIME
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN test -n "$NEXT_PUBLIC_API_URL" \
+    && test -n "$NEXT_PUBLIC_WS_URL" \
+    && test -n "$NEXT_PUBLIC_AGENT_RUNTIME" \
+    && npm run build
 
 FROM node:18-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV production
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ARG NEXT_PUBLIC_AGENT_RUNTIME
+ENV NODE_ENV=production \
+    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL \
+    NEXT_PUBLIC_AGENT_RUNTIME=$NEXT_PUBLIC_AGENT_RUNTIME
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 EXPOSE 3000

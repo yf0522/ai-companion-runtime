@@ -17,14 +17,18 @@ class _Begin:
 
 
 class _Parent:
+    def __init__(self, user_id):
+        self.user_id = user_id
+
     @property
     def message_count(self):
         raise AssertionError("Session.message_count must not participate in allocation")
 
 
 class _Session:
-    def __init__(self, *, max_index=4, fail_flush=False):
-        self.scalars = [_Parent(), max_index]
+    def __init__(self, *, user_id=None, max_index=4, fail_flush=False):
+        self.user_id = user_id or uuid.uuid4()
+        self.scalars = [_Parent(self.user_id), max_index]
         self.added = []
         self.fail_flush = fail_flush
         self.queries = []
@@ -45,7 +49,8 @@ class _Session:
     def add_all(self, rows):
         self.added = list(rows)
         for row in self.added:
-            row.id = uuid.uuid4()
+            if row.id is None:
+                row.id = uuid.uuid4()
 
     async def flush(self):
         if self.fail_flush:
@@ -54,11 +59,12 @@ class _Session:
 
 @pytest.mark.asyncio
 async def test_persist_turn_allocates_max_plus_one_without_message_count(monkeypatch):
-    session = _Session(max_index=4)
+    user_id = uuid.uuid4()
+    session = _Session(user_id=user_id, max_index=4)
     monkeypatch.setattr(message_evidence, "async_session", lambda: session)
     result = await message_evidence.persist_turn_messages(
         session_id=str(uuid.uuid4()),
-        user_id=str(uuid.uuid4()),
+        user_id=str(user_id),
         trace_id="trace-1",
         user_content="你好",
         assistant_content="您好",
@@ -73,11 +79,15 @@ async def test_persist_turn_allocates_max_plus_one_without_message_count(monkeyp
 
 @pytest.mark.asyncio
 async def test_persist_turn_retries_integrity_error_once(monkeypatch):
-    sessions = iter([_Session(fail_flush=True), _Session(max_index=8)])
+    user_id = uuid.uuid4()
+    sessions = iter([
+        _Session(user_id=user_id, fail_flush=True),
+        _Session(user_id=user_id, max_index=8),
+    ])
     monkeypatch.setattr(message_evidence, "async_session", lambda: next(sessions))
     result = await message_evidence.persist_turn_messages(
         session_id=str(uuid.uuid4()),
-        user_id=str(uuid.uuid4()),
+        user_id=str(user_id),
         trace_id="trace-2",
         user_content="用户",
         assistant_content="助手",
@@ -88,9 +98,10 @@ async def test_persist_turn_retries_integrity_error_once(monkeypatch):
 @pytest.mark.asyncio
 async def test_persist_turn_stops_after_exactly_two_integrity_attempts(monkeypatch):
     created = []
+    user_id = uuid.uuid4()
 
     def make_session():
-        session = _Session(fail_flush=True)
+        session = _Session(user_id=user_id, fail_flush=True)
         created.append(session)
         return session
 
@@ -98,7 +109,7 @@ async def test_persist_turn_stops_after_exactly_two_integrity_attempts(monkeypat
     with pytest.raises(IntegrityError):
         await message_evidence.persist_turn_messages(
             session_id=str(uuid.uuid4()),
-            user_id=str(uuid.uuid4()),
+            user_id=str(user_id),
             trace_id="trace-two-attempts",
             user_content="用户",
             assistant_content="助手",
@@ -106,3 +117,34 @@ async def test_persist_turn_stops_after_exactly_two_integrity_attempts(monkeypat
 
     assert len(created) == 2
     assert all(len(session.added) == 2 for session in created)
+
+
+@pytest.mark.asyncio
+async def test_persist_turn_uses_explicit_assistant_uuid_and_rejects_wrong_owner(monkeypatch):
+    owner_id = uuid.uuid4()
+    assistant_id = uuid.uuid4()
+    session = _Session(user_id=owner_id)
+    monkeypatch.setattr(message_evidence, "async_session", lambda: session)
+
+    result = await message_evidence.persist_turn_messages(
+        session_id=str(uuid.uuid4()),
+        user_id=str(owner_id),
+        trace_id="trace-explicit",
+        user_content="用户",
+        assistant_content="助手",
+        assistant_message_id=str(assistant_id),
+    )
+
+    assert result.assistant_message_id == str(assistant_id)
+    assert session.added[1].id == assistant_id
+
+    wrong_owner = _Session(user_id=owner_id)
+    monkeypatch.setattr(message_evidence, "async_session", lambda: wrong_owner)
+    with pytest.raises(PermissionError):
+        await message_evidence.persist_turn_messages(
+            session_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            trace_id="trace-forbidden",
+            user_content="用户",
+            assistant_content="助手",
+        )

@@ -8,6 +8,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime, timedelta
+from collections.abc import Callable
 from typing import Any
 
 from app.tools.base import ToolResult
@@ -16,11 +17,203 @@ from app.tools.caretask_tool import _infer_task_type, _infer_title, parse_due_at
 from app.tools import caretask_service as svc
 
 _LEASE_SECONDS = 60
+_SINGLE_OPERATION = "caretask_single"
+
+
+class _SingleIdempotencyRace(RuntimeError):
+    """The same single-action key was committed by a concurrent transaction."""
 
 
 def _stable_request_hash(query: str) -> str:
     normalized = " ".join(unicodedata.normalize("NFKC", query).split()).strip()
     return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def single_caretask_request_payload(
+    action: str,
+    query: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the bounded semantic request whose digest owns one mutation key."""
+    payload: dict[str, Any] = {
+        "action": action,
+        "query": " ".join(unicodedata.normalize("NFKC", query).split()).strip(),
+    }
+    for key in (
+        "title",
+        "task_type",
+        "task_id",
+        "minutes",
+        "schedule_type",
+        "due_at",
+        "notes",
+    ):
+        value = params.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def _single_request_hash(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _single_conflict_result(reason: str) -> ToolResult:
+    if reason == "idempotency_conflict":
+        text = "这次请求与刚才使用同一标识的操作不一致，请重新发送。"
+    else:
+        text = "这项照护操作仍在处理中，请稍后再试。"
+    return ToolResult(
+        tool_name="caretask",
+        status="failed",
+        display_text=text,
+        data={"action": "caretask_idempotency", "reason": reason},
+    )
+
+
+def _single_result_from_record(record: Any, request_hash: str) -> ToolResult:
+    if record.request_hash != request_hash:
+        return _single_conflict_result("idempotency_conflict")
+    payload = record.response_json if isinstance(record.response_json, dict) else {}
+    if record.status == "completed" and payload:
+        return ToolResult.model_validate(payload)
+    return _single_conflict_result("idempotency_in_progress")
+
+
+async def _select_single_record(
+    db: Any,
+    *,
+    user_id: Any,
+    key: str,
+    for_update: bool,
+) -> Any:
+    from sqlalchemy import select
+    from app.db.models import IdempotencyRecord
+
+    statement = select(IdempotencyRecord).where(
+        IdempotencyRecord.user_id == user_id,
+        IdempotencyRecord.key == key,
+        IdempotencyRecord.operation == _SINGLE_OPERATION,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return (await db.execute(statement)).scalar_one_or_none()
+
+
+async def lookup_single_caretask_result(
+    *,
+    user_id: str,
+    idempotency_key: str,
+    request_payload: dict[str, Any],
+) -> ToolResult | None:
+    """Read a completed replay before mutable target resolution."""
+    from app.db.session import async_session
+
+    key = idempotency_key.strip()
+    request_hash = _single_request_hash(request_payload)
+    async with async_session() as db:
+        existing = await _select_single_record(
+            db,
+            user_id=svc.normalize_user_id(user_id),
+            key=key,
+            for_update=False,
+        )
+    if existing is None:
+        return None
+    return _single_result_from_record(existing, request_hash)
+
+
+async def execute_single_caretask_mutation(
+    *,
+    user_id: str,
+    idempotency_key: str,
+    request_payload: dict[str, Any],
+    mutation: dict[str, Any],
+    render: Callable[[dict[str, Any]], ToolResult],
+) -> ToolResult:
+    """Commit one CareTask mutation and its replay result in one transaction."""
+    from sqlalchemy.exc import IntegrityError
+    from app.db.models import IdempotencyRecord
+    from app.db.session import async_session
+
+    key = idempotency_key.strip()
+    request_hash = _single_request_hash(request_payload)
+    db_user = svc.normalize_user_id(user_id)
+    try:
+        async with async_session() as db:
+            async with db.begin():
+                existing = await _select_single_record(
+                    db, user_id=db_user, key=key, for_update=True
+                )
+                if existing is not None:
+                    return _single_result_from_record(existing, request_hash)
+
+                record = IdempotencyRecord(
+                    user_id=db_user,
+                    key=key,
+                    operation=_SINGLE_OPERATION,
+                    resource_type="care_task",
+                    request_hash=request_hash,
+                    response_json={},
+                    status="running",
+                    status_code=200,
+                )
+                db.add(record)
+                try:
+                    await db.flush()
+                except IntegrityError as exc:
+                    raise _SingleIdempotencyRace from exc
+
+                now = datetime.utcnow()
+                action = str(mutation["action"])
+                if action == "create":
+                    row = await svc.create_or_reuse_care_task_in_transaction(
+                        db,
+                        user_id=user_id,
+                        title=str(mutation["title"]),
+                        task_type=str(mutation["task_type"]),
+                        due_at=mutation.get("due_at"),
+                        query=str(mutation.get("query") or ""),
+                        now=now,
+                        reuse_task_id=mutation.get("reuse_task_id"),
+                        expected_version=mutation.get("expected_version"),
+                        idempotency_key=key,
+                        notes=mutation.get("notes"),
+                    )
+                elif action in {"complete", "snooze", "cancel"}:
+                    row = await svc.transition_care_task_in_transaction(
+                        db,
+                        user_id=user_id,
+                        task_id=str(mutation["task_id"]),
+                        expected_version=mutation.get("expected_version"),
+                        transition=action,
+                        now=now,
+                        minutes=int(mutation.get("minutes") or 30),
+                    )
+                else:
+                    raise ValueError("unsupported_single_caretask_mutation")
+
+                result = render(dict(row))
+                record.status = "completed"
+                record.response_json = result.model_dump(mode="json")
+                record.status_code = 200
+                try:
+                    record.resource_id = uuid.UUID(str(row.get("id")))
+                except (TypeError, ValueError):
+                    record.resource_id = None
+                record.updated_at = datetime.utcnow()
+                await db.flush()
+            return result
+    except _SingleIdempotencyRace:
+        replay = await lookup_single_caretask_result(
+            user_id=user_id,
+            idempotency_key=key,
+            request_payload=request_payload,
+        )
+        if replay is None:
+            raise RuntimeError("single_idempotency_race_unresolved")
+        return replay
 
 
 def _replay_snapshot(
@@ -101,8 +294,37 @@ async def _preflight(user_id: str, query: str, now: datetime) -> tuple[list[dict
                     reuse_task_id=exact["id"],
                     expected_version=exact.get("version", 1),
                 )
+                schedule_type = svc.infer_caretask_schedule_type(item.query)
+                current_due = (
+                    datetime.fromisoformat(
+                        str(exact["due_at"]).replace("Z", "+00:00")
+                    ).replace(tzinfo=None)
+                    if exact.get("due_at")
+                    else None
+                )
+                changed, next_status = svc.reuse_schedule_update(
+                    current_due_at=current_due,
+                    current_status=str(exact["status"]),
+                    current_schedule_type=exact.get("schedule_type"),
+                    has_reminder=bool(exact.get("reminder_id")),
+                    reminder_time_of_day=exact.get("_reminder_time_of_day"),
+                    reminder_next_fire_at=exact.get("_reminder_next_fire_at"),
+                    reminder_is_active=exact.get("_reminder_is_active"),
+                    due_at=due,
+                    schedule_type=schedule_type,
+                    now=now,
+                )
+                if changed:
+                    exact["due_at"] = due.isoformat() if due is not None else None
+                    exact["status"] = next_status
+                    exact["schedule_type"] = schedule_type
+                    exact["version"] = exact.get("version", 1) + 1
+                    exact["_reminder_time_of_day"] = due
+                    exact["_reminder_next_fire_at"] = due
+                    exact["_reminder_is_active"] = True
                 if str(exact["id"]).startswith("planned:"):
-                    action["ref_index"] = int(str(exact["id"]).split(":", 1)[1])
+                    action["ref_index"] = exact["_result_index"]
+                    exact["_result_index"] = item.index
                 actions.append(action)
                 continue
             near = [
@@ -119,8 +341,16 @@ async def _preflight(user_id: str, query: str, now: datetime) -> tuple[list[dict
                     "id": f"planned:{item.index}",
                     "title": action["title"],
                     "task_type": action["task_type"],
-                    "status": "pending",
+                    "status": svc.infer_initial_status(due, now),
                     "version": 1,
+                    "due_at": due.isoformat() if due is not None else None,
+                    "snooze_until": None,
+                    "reminder_id": f"planned-reminder:{item.index}" if due else None,
+                    "schedule_type": svc.infer_caretask_schedule_type(item.query),
+                    "_reminder_time_of_day": due,
+                    "_reminder_next_fire_at": due,
+                    "_reminder_is_active": True if due else None,
+                    "_result_index": item.index,
                 }
             )
         elif item.action != "list":
@@ -130,17 +360,31 @@ async def _preflight(user_id: str, query: str, now: datetime) -> tuple[list[dict
             target = matches[0]
             action.update(task_id=target["id"], expected_version=target.get("version", 1))
             if str(target["id"]).startswith("planned:"):
-                action["ref_index"] = int(str(target["id"]).split(":", 1)[1])
+                action["ref_index"] = target["_result_index"]
             if item.action == "snooze":
                 action["minutes"] = item.minutes or 30
                 target["status"] = "snoozed"
                 target["version"] = target.get("version", 1) + 1
+                snooze_until = now + timedelta(minutes=action["minutes"])
+                target["due_at"] = snooze_until.isoformat()
+                target["snooze_until"] = snooze_until.isoformat()
+                target["_reminder_next_fire_at"] = snooze_until
+                if target.get("reminder_id"):
+                    target["_reminder_is_active"] = True
             elif item.action == "complete":
                 target["status"] = "done"
                 target["version"] = target.get("version", 1) + 1
+                target["snooze_until"] = None
+                target["completed_at"] = now.isoformat()
+                if target.get("reminder_id"):
+                    target["_reminder_is_active"] = False
             elif item.action == "cancel":
                 target["status"] = "cancelled"
                 target["version"] = target.get("version", 1) + 1
+                target["snooze_until"] = None
+                if target.get("reminder_id"):
+                    target["_reminder_is_active"] = False
+            target["_result_index"] = item.index
             simulated = [task for task in simulated if task.get("status") in svc.ACTIVE_STATUSES]
         actions.append(action)
     return actions, None

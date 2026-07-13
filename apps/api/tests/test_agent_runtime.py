@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
@@ -210,6 +211,13 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
 
     monkeypatch.setattr("app.runtime.pi_runtime.run_risk_gate", fake_gate)
     monkeypatch.setattr("app.runtime.pi_runtime.settings.enable_pi_runtime", False)
+    persisted: list[dict] = []
+
+    async def persist_turn(**kwargs):
+        persisted.append(kwargs)
+        return kwargs["assistant_message_id"]
+
+    monkeypatch.setattr("app.runtime.pi_runtime._persist_turn_best_effort", persist_turn)
 
     runtime = PiExperimentalRuntime()
     stream = MagicMock()
@@ -229,6 +237,10 @@ async def test_pi_runtime_runs_risk_gate_before_stub(monkeypatch):
     assert result["agent_runtime"] == RUNTIME_PI_EXPERIMENTAL
     assert result.get("error") == "pi_experimental_not_enabled"
     assert result["decision_persistence"]["error_code"] == "decision_persistence_failed"
+    final_id = stream.send_final.await_args.kwargs["message_id"]
+    assert persisted[0]["assistant_message_id"] == final_id
+    assert result["message_id"] == final_id
+    uuid.UUID(final_id)
     stream.send_first_reply.assert_awaited()
 
 
@@ -448,6 +460,71 @@ async def test_pi_runtime_streams_from_sidecar_when_enabled(monkeypatch):
     stream.send_first_reply.assert_awaited_once()
     stream.send_delta.assert_not_awaited()
     stream.send_final.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pi_stalled_sidecar_task_cancellation_closes_upstream_without_false_final(
+    monkeypatch,
+):
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class FakeResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+            if False:
+                yield ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def stream(self, *_args, **_kwargs):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        "app.runtime.pi_runtime.httpx.AsyncClient", lambda **_kwargs: FakeClient()
+    )
+    stream = MagicMock(dead=False)
+    stream.send_first_reply = AsyncMock()
+    stream.send_final = AsyncMock()
+    stream.send_tool_result = AsyncMock()
+    stream.send_tool_status = AsyncMock()
+
+    task = asyncio.create_task(
+        PiExperimentalRuntime()._run_sidecar(
+            user_id="user-1",
+            session_id="session-1",
+            message="hello",
+            stream_mgr=stream,
+            cancel_event=asyncio.Event(),
+            trace_id="trace-stalled-pi",
+            start=0.0,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=0.2)
+
+    assert cleaned.is_set() is True
+    stream.send_first_reply.assert_not_awaited()
+    stream.send_final.assert_not_awaited()
 
 
 @pytest.mark.asyncio

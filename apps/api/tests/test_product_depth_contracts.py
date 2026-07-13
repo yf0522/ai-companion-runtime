@@ -822,6 +822,44 @@ def test_operator_trace_detail_requires_case_relation_and_writes_audit(monkeypat
     assert session.added[0].actor_user_id == operator_id
 
 
+@pytest.mark.parametrize("role", ["elder", "family"])
+def test_ownerless_trace_is_forbidden_to_non_operator(monkeypatch, role) -> None:
+    actor_id = uuid.uuid4()
+    monkeypatch.setattr(
+        traces.trace_service,
+        "get_trace",
+        AsyncMock(return_value={"trace_id": "trace-ownerless", "user_id": None}),
+    )
+    app = FastAPI()
+    app.include_router(traces.router, prefix="/api")
+
+    response = TestClient(app).get(
+        "/api/traces/trace-ownerless",
+        headers=_auth(actor_id, role=role),
+    )
+
+    assert response.status_code == 404
+
+
+def test_self_owned_trace_is_visible_to_actor(monkeypatch) -> None:
+    actor_id = uuid.uuid4()
+    monkeypatch.setattr(
+        traces.trace_service,
+        "get_trace",
+        AsyncMock(return_value={"trace_id": "trace-own", "user_id": str(actor_id)}),
+    )
+    app = FastAPI()
+    app.include_router(traces.router, prefix="/api")
+
+    response = TestClient(app).get(
+        "/api/traces/trace-own",
+        headers=_auth(actor_id, role="elder"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["authorization"]["scope"] == "self"
+
+
 def test_trace_status_does_not_claim_success_when_evidence_is_missing() -> None:
     assert traces._trace_status(None, None) == "unknown"
     assert traces._trace_status(3, 1) == "failed"

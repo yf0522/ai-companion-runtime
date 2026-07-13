@@ -90,6 +90,14 @@ The API's catalog is authoritative for each row's owner, next action, and runboo
 - **Check ID:** `migration_heads`
 - **Repair:** Compare the database's Alembic heads with `EXPECTED_MIGRATION_HEADS`. Missing expected heads is degraded locally and unsafe in production; a mismatch is unsafe everywhere. Apply only reviewed migrations and rerun the check.
 
+### pgvector embedding schema
+
+<a id="vector-schema"></a>
+
+- **Owner:** Platform runtime
+- **Check ID:** `vector_schema`
+- **Repair:** Verify that the `vector` extension is installed and `memory_embeddings.embedding` reports exactly `vector(1536)`. The additive head migration recreates `idx_memory_embeddings_vector` as an HNSW cosine index. A mismatch is unsafe in production and degraded in development; it is never ready. Repair invalid legacy text embeddings rather than stamping the Alembic head.
+
 ### Notification provider
 
 <a id="notification-provider"></a>

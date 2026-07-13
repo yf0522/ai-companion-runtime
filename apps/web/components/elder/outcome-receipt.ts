@@ -15,12 +15,12 @@ export function assistantBodyAfterToolReceipts(
   const body = content.trim();
   if (!body) return content;
 
-  const repeatedBySuccessfulTool = tools.some((tool) =>
-    tool.status === "success" &&
+  const repeatedByAuthoritativeTool = tools.some((tool) =>
+    ["success", "failed", "timeout", "cancelled", "interrupted"].includes(tool.status) &&
     !tool.action?.toLowerCase().includes("list") &&
     tool.displayText?.trim() === body,
   );
-  return repeatedBySuccessfulTool ? "" : content;
+  return repeatedByAuthoritativeTool ? "" : content;
 }
 
 function safeDetail(value: string | undefined, fallback: string): string {
@@ -39,19 +39,84 @@ function actionIncludes(action: string, values: string[]): boolean {
   return values.some((value) => action.includes(value));
 }
 
+function batchReceiptDetail(data: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(data.receipts)) return undefined;
+  const maxReceipts = 20;
+  const maxTitleChars = 120;
+  const actionLabels: Record<string, string> = {
+    list: "查看",
+    create: "记下",
+    snooze: "推迟",
+    complete: "完成",
+    cancel: "取消",
+    clarify: "确认",
+  };
+  const statusLabels: Record<string, string> = {
+    completed: "已完成",
+    failed: "未完成",
+    unattempted: "未执行",
+    planned: "待执行",
+    needs_clarification: "需要确认",
+  };
+  const lines = data.receipts.slice(0, maxReceipts).flatMap((raw, position) => {
+    if (!raw || typeof raw !== "object") return [];
+    const receipt = raw as Record<string, unknown>;
+    const status = statusLabels[String(receipt.status || "")];
+    if (!status) return [];
+    const action = actionLabels[String(receipt.action || "")] || `第 ${position + 1} 项`;
+    const result = receipt.result && typeof receipt.result === "object" && !Array.isArray(receipt.result)
+      ? receipt.result as Record<string, unknown>
+      : {};
+    const titles = Array.isArray(result.titles)
+      ? result.titles
+        .filter((title): title is string => typeof title === "string" && Boolean(title.trim()))
+        .slice(0, 10)
+      : [];
+    const rawTitle = typeof result.title === "string" && result.title.trim()
+      ? result.title.trim()
+      : titles.join("、");
+    const title = rawTitle.slice(0, maxTitleChars);
+    const detail = title ? `（${title}）` : "";
+    const index = typeof receipt.index === "number" ? receipt.index + 1 : position + 1;
+    return [`${index}. ${action}${detail}：${status}`];
+  });
+  return lines.length ? lines.join("\n") : undefined;
+}
+
 export function outcomeReceiptForTool(
   tool: Pick<ToolChip, "tool" | "status" | "action" | "displayText" | "data">,
 ): OutcomeReceiptModel {
   if (tool.status === "calling") {
     return { title: "正在处理", detail: "完成后会在这里说明结果。", tone: "loading" };
   }
+  if (tool.status === "in_progress") {
+    return {
+      title: "操作仍在处理中",
+      detail: safeDetail(tool.displayText, batchReceiptDetail(tool.data || {}) || "已有操作正在处理，没有重复执行。"),
+      tone: "info",
+    };
+  }
   if (tool.status === "needs_clarification") {
     return { title: "需要你确认", detail: "请核对下面的内容后再继续。", tone: "pending" };
+  }
+  if (tool.status === "cancelled") {
+    return {
+      title: "操作已取消",
+      detail: safeDetail(tool.displayText, batchReceiptDetail(tool.data || {}) || "本次没有继续执行后续操作。"),
+      tone: "info",
+    };
+  }
+  if (tool.status === "interrupted") {
+    return {
+      title: "操作意外中断",
+      detail: safeDetail(tool.displayText, batchReceiptDetail(tool.data || {}) || "部分操作可能没有执行，请核对结果后重试。"),
+      tone: "error",
+    };
   }
   if (tool.status === "failed" || tool.status === "timeout") {
     return {
       title: "这次操作没有完成",
-      detail: safeDetail(tool.displayText, "没有产生变更，可以稍后重试或联系家人。"),
+      detail: safeDetail(tool.displayText, batchReceiptDetail(tool.data || {}) || "没有产生变更，可以稍后重试或联系家人。"),
       tone: "error",
     };
   }

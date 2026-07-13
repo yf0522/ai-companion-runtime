@@ -9,6 +9,63 @@ from app.tools.caretask_batch import detect_compound_caretask, plan_caretask_bat
 from app.tools.caretask_tool import parse_due_at
 
 
+class _SingleScalarResult:
+    def __init__(self, record):
+        self._record = record
+
+    def scalar_one_or_none(self):
+        return self._record
+
+
+class _SingleTransaction:
+    def __init__(self, state, db):
+        self._state = state
+        self._db = db
+        self._snapshot = None
+
+    async def __aenter__(self):
+        self._snapshot = (self._state.record, self._state.snooze_count)
+        self._db.in_transaction = True
+        return self._db
+
+    async def __aexit__(self, exc_type, _exc, _tb):
+        if exc_type is not None:
+            self._state.record, self._state.snooze_count = self._snapshot
+        self._db.in_transaction = False
+        return False
+
+
+class _SingleSession:
+    def __init__(self, state):
+        self._state = state
+        self.in_transaction = False
+
+    def begin(self):
+        return _SingleTransaction(self._state, self)
+
+    async def execute(self, _query):
+        return _SingleScalarResult(self._state.record)
+
+    def add(self, record):
+        assert self.in_transaction
+        record.id = record.id or "single-ledger"
+        self._state.record = record
+
+    async def flush(self):
+        assert self.in_transaction
+
+
+class _SingleSessionContext:
+    def __init__(self, state):
+        self._db = _SingleSession(state)
+
+    async def __aenter__(self):
+        return self._db
+
+    async def __aexit__(self, *_args):
+        return False
+
+
 def test_compound_plan_preserves_source_order():
     query = "先看看今天有哪些任务，然后把降压药推迟30分钟，再完成复诊任务"
     assert detect_compound_caretask(query)
@@ -20,6 +77,78 @@ def test_two_creates_and_cancel_are_all_discovered():
     query = "每天晚上8点提醒我吃降压药，再记一下明天复诊，然后取消吃药提醒"
     plan = plan_caretask_batch(query, now=datetime(2026, 7, 12, 4, 0))
     assert [item.action for item in plan.actions] == ["create", "create", "cancel"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "请问如何取消吃药提醒，然后怎么完成复诊任务",
+        "我只是举例：取消吃药提醒，然后完成复诊任务",
+        "不要取消吃药提醒，然后也别完成复诊任务",
+        "新闻里说“取消吃药提醒，然后完成复诊",
+        "如果需要就取消吃药提醒，然后完成复诊任务",
+        "医生让我取消吃药提醒，然后完成复诊任务",
+        "是否取消吃药提醒，然后完成复诊任务？",
+    ],
+)
+def test_compound_mutations_require_affirmative_authorization(query):
+    assert detect_compound_caretask(query)
+    plan = plan_caretask_batch(query)
+    assert plan.status == "needs_clarification"
+    assert plan.actions == ()
+
+
+@pytest.mark.parametrize("query", ["完成吃药和取消复诊", "完成吃药并取消复诊"])
+def test_bounded_chinese_conjunction_preserves_two_authorized_actions(query):
+    plan = plan_caretask_batch(query)
+    assert plan.status == "planned"
+    assert [item.action for item in plan.actions] == ["complete", "cancel"]
+    assert [item.query for item in plan.actions] == ["完成吃药", "取消复诊"]
+
+
+def test_raw_mutation_cue_cannot_be_silently_dropped():
+    plan = plan_caretask_batch("完成吃药取消复诊")
+    assert plan.status == "needs_clarification"
+    assert plan.reason in {
+        "ambiguous_mutation_cues",
+        "mutation_not_authorized",
+        "unplanned_mutation_cue",
+    }
+    assert plan.actions == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "请问如何取消吃药提醒，然后怎么完成复诊任务",
+        "我只是举例：取消吃药提醒，然后完成复诊任务",
+        "不要取消吃药提醒，然后也别完成复诊任务",
+        "新闻里说“取消吃药提醒，然后完成复诊",
+    ],
+)
+async def test_unauthorized_compound_turn_has_zero_domain_execution(monkeypatch, query):
+    from app.tools import caretask_batch_executor as executor
+
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=None))
+    monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=("ledger", "owner", None)))
+    monkeypatch.setattr(
+        executor,
+        "_save",
+        AsyncMock(return_value={"status": "completed", "receipts": []}),
+    )
+    snapshot = AsyncMock(return_value=[])
+    apply_action = AsyncMock()
+    monkeypatch.setattr(executor.svc, "snapshot_care_tasks", snapshot)
+    monkeypatch.setattr(executor, "_apply_action_transaction", apply_action)
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1", query=query, idempotency_key=f"unsafe-{hash(query)}"
+    )
+
+    assert result.status == "needs_clarification"
+    snapshot.assert_not_awaited()
+    apply_action.assert_not_awaited()
 
 
 def test_exact_space_separated_list_snooze_complete_transcript():
@@ -252,6 +381,47 @@ async def test_transaction_transition_refreshes_due_state_before_completion(monk
 
 
 @pytest.mark.asyncio
+async def test_transaction_reuse_without_state_change_does_not_increment_version(
+    monkeypatch,
+):
+    from app.tools import caretask_service as service
+
+    now = datetime(2026, 7, 12, 4, 0)
+    due = datetime(2026, 7, 12, 12, 0)
+    row = SimpleNamespace(
+        id="task-1", user_id="user-1", title="吃降压药", task_type="medication",
+        status="pending", due_at=due, snooze_until=None, reminder_id="reminder-1",
+        notes=None, created_by="chat", completed_at=None, version=4,
+        created_at=None, updated_at=None,
+    )
+    reminder = SimpleNamespace(
+        schedule_type="daily", time_of_day=due, next_fire_at=due, is_active=True
+    )
+    monkeypatch.setattr(
+        service, "_get_versioned_task_for_update", AsyncMock(return_value=row)
+    )
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=reminder)
+
+    result = await service.create_or_reuse_care_task_in_transaction(
+        db,
+        user_id="user-1",
+        title="吃降压药",
+        task_type="medication",
+        due_at=due,
+        query="每天晚上8点提醒我吃降压药",
+        now=now,
+        reuse_task_id="task-1",
+        expected_version=4,
+    )
+
+    assert result["version"] == 4
+    assert row.updated_at is None
+    db.flush.assert_awaited_once()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_plan_audit_fields_survive_running_terminal_and_cached_replay(monkeypatch):
     from app.tools import caretask_batch_executor as executor
 
@@ -322,6 +492,86 @@ async def test_preflight_preserves_canonical_create_reuse(monkeypatch):
     assert actions[0]["expected_version"] == 4
 
 
+@pytest.mark.asyncio
+async def test_reuse_with_schedule_update_advances_simulated_version_before_transition(
+    monkeypatch,
+):
+    from app.tools import caretask_batch_executor as executor
+
+    old_due = datetime(2026, 7, 12, 11, 0)
+    monkeypatch.setattr(
+        executor.svc,
+        "snapshot_care_tasks",
+        AsyncMock(return_value=[{
+            "id": "task-1", "title": "吃降压药", "task_type": "medication",
+            "status": "pending", "version": 4, "due_at": old_due.isoformat(),
+            "reminder_id": "reminder-1", "schedule_type": "daily",
+            "_reminder_time_of_day": old_due,
+            "_reminder_next_fire_at": old_due,
+            "_reminder_is_active": True,
+        }]),
+    )
+
+    actions, reason = await executor._preflight(
+        "user-1",
+        "每天晚上8点提醒我吃降压药 然后完成降压药",
+        datetime(2026, 7, 12, 4, 0),
+    )
+
+    assert reason is None
+    assert actions[0]["expected_version"] == 4
+    assert actions[1]["task_id"] == "task-1"
+    assert actions[1]["expected_version"] == 5
+
+
+@pytest.mark.asyncio
+async def test_reuse_without_state_change_preserves_version_before_transition(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    due = datetime(2026, 7, 12, 12, 0)
+    monkeypatch.setattr(
+        executor.svc,
+        "snapshot_care_tasks",
+        AsyncMock(return_value=[{
+            "id": "task-1", "title": "吃降压药", "task_type": "medication",
+            "status": "pending", "version": 4, "due_at": due.isoformat(),
+            "reminder_id": "reminder-1", "schedule_type": "daily",
+            "_reminder_time_of_day": due,
+            "_reminder_next_fire_at": due,
+            "_reminder_is_active": True,
+        }]),
+    )
+
+    actions, reason = await executor._preflight(
+        "user-1",
+        "每天晚上8点提醒我吃降压药 然后完成降压药",
+        datetime(2026, 7, 12, 4, 0),
+    )
+
+    assert reason is None
+    assert actions[0]["expected_version"] == 4
+    assert actions[1]["expected_version"] == 4
+
+
+@pytest.mark.asyncio
+async def test_planned_task_uses_latest_prior_action_receipt_after_reuse_update(
+    monkeypatch,
+):
+    from app.tools import caretask_batch_executor as executor
+
+    monkeypatch.setattr(executor.svc, "snapshot_care_tasks", AsyncMock(return_value=[]))
+
+    actions, reason = await executor._preflight(
+        "user-1",
+        "明天早上8点提醒我吃降压药 然后明天晚上8点提醒我吃降压药 然后完成降压药",
+        datetime(2026, 7, 12, 4, 0),
+    )
+
+    assert reason is None
+    assert [action.get("ref_index") for action in actions] == [None, 0, 1]
+    assert [action.get("expected_version") for action in actions] == [None, 1, 2]
+
+
 def test_action_specific_display_includes_titles():
     from app.tools.caretask_batch_executor import _display
 
@@ -359,6 +609,50 @@ async def test_stale_version_marks_current_failed_and_later_unattempted(monkeypa
     )
     assert result.status == "failed"
     assert [item["status"] for item in result.data["receipts"]] == ["failed", "unattempted"]
+
+
+@pytest.mark.asyncio
+async def test_external_version_change_rejects_reuse_before_later_transition(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+
+    actions = [
+        {
+            "index": 0, "action": "create", "title": "吃降压药",
+            "task_type": "medication", "due_at": datetime(2026, 7, 12, 12, 0),
+            "query": "每天晚上8点提醒我吃降压药", "reuse_task_id": "task-1",
+            "expected_version": 4,
+        },
+        {
+            "index": 1, "action": "complete", "task_id": "task-1",
+            "expected_version": 5,
+        },
+    ]
+    monkeypatch.setattr(executor, "_preflight", AsyncMock(return_value=(actions, None)))
+    monkeypatch.setattr(executor, "_lookup_replay", AsyncMock(return_value=None))
+    monkeypatch.setattr(executor, "_claim", AsyncMock(return_value=("ledger", "owner", None)))
+    apply = AsyncMock(
+        side_effect=executor.svc.StaleCareTaskVersionError(
+            expected_version=4, current_version=5
+        )
+    )
+    monkeypatch.setattr(executor, "_apply_action_transaction", apply)
+    monkeypatch.setattr(
+        executor,
+        "_save",
+        AsyncMock(side_effect=lambda _id, status, receipts, **kwargs: {
+            "status": status, "receipts": receipts,
+        }),
+    )
+
+    result = await executor.execute_caretask_batch(
+        user_id="user-1", query="更新后完成", idempotency_key="stale-reuse"
+    )
+
+    assert result.status == "failed"
+    assert [item["status"] for item in result.data["receipts"]] == [
+        "failed", "unattempted",
+    ]
+    apply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -453,6 +747,109 @@ def test_request_hash_is_stable_for_normalized_raw_query_and_not_plan_state():
     assert _stable_request_hash("每天晚上8点提醒我吃药") != _stable_request_hash(
         "每天晚上9点提醒我吃药"
     )
+
+
+@pytest.mark.asyncio
+async def test_single_mutation_replays_same_hash_and_conflicts_on_different_hash(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+    from app.tools.base import ToolResult
+
+    state = SimpleNamespace(record=None, snooze_count=0)
+    monkeypatch.setattr(
+        "app.db.session.async_session", lambda: _SingleSessionContext(state)
+    )
+
+    async def transition(db, **kwargs):
+        assert db.in_transaction
+        state.snooze_count += 1
+        return {
+            "id": kwargs["task_id"],
+            "title": "吃降压药",
+            "status": "snoozed",
+            "snooze_minutes": kwargs["minutes"],
+        }
+
+    monkeypatch.setattr(
+        executor.svc, "transition_care_task_in_transaction", transition
+    )
+
+    def render(row):
+        return ToolResult(
+            tool_name="caretask",
+            status="success",
+            display_text="好的，我30分钟后再提醒您吃降压药",
+            data={
+                "action": "caretask_snooze",
+                "task": row,
+                "snooze_minutes": 30,
+            },
+        )
+
+    kwargs = {
+        "user_id": "11111111-1111-4111-8111-111111111111",
+        "idempotency_key": "same-key",
+        "request_payload": {"action": "snooze", "query": "把降压药延后30分钟"},
+        "mutation": {
+            "action": "snooze",
+            "task_id": "22222222-2222-4222-8222-222222222222",
+            "expected_version": 1,
+            "minutes": 30,
+        },
+        "render": render,
+    }
+    first = await executor.execute_single_caretask_mutation(**kwargs)
+    replay = await executor.execute_single_caretask_mutation(**kwargs)
+    conflict = await executor.execute_single_caretask_mutation(
+        **{
+            **kwargs,
+            "request_payload": {"action": "snooze", "query": "把降压药延后60分钟"},
+        }
+    )
+
+    assert first.display_text == replay.display_text
+    assert replay.data == first.data
+    assert state.snooze_count == 1
+    assert conflict.status == "failed"
+    assert conflict.data["reason"] == "idempotency_conflict"
+
+
+@pytest.mark.asyncio
+async def test_single_mutation_failure_rolls_back_domain_and_idempotency_together(monkeypatch):
+    from app.tools import caretask_batch_executor as executor
+    from app.tools.base import ToolResult
+
+    state = SimpleNamespace(record=None, snooze_count=0)
+    monkeypatch.setattr(
+        "app.db.session.async_session", lambda: _SingleSessionContext(state)
+    )
+
+    async def fail_after_mutation(db, **_kwargs):
+        assert db.in_transaction
+        state.snooze_count += 1
+        raise RuntimeError("commit_path_failed")
+
+    monkeypatch.setattr(
+        executor.svc, "transition_care_task_in_transaction", fail_after_mutation
+    )
+
+    with pytest.raises(RuntimeError, match="commit_path_failed"):
+        await executor.execute_single_caretask_mutation(
+            user_id="11111111-1111-4111-8111-111111111111",
+            idempotency_key="atomic-key",
+            request_payload={"action": "snooze", "query": "延后30分钟"},
+            mutation={
+                "action": "snooze",
+                "task_id": "22222222-2222-4222-8222-222222222222",
+                "expected_version": 1,
+                "minutes": 30,
+            },
+            render=lambda row: ToolResult(
+                tool_name="caretask", status="success", data={"task": row}
+            ),
+        )
+
+    assert state.snooze_count == 0
+    assert state.record is None
 
 
 @pytest.mark.asyncio

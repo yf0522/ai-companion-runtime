@@ -81,7 +81,7 @@ async def get_trace(trace_id: str, user: dict = Depends(get_current_user)):
 
     actor_id = uuid.UUID(user["sub"])
     if user.get("role") != "operator":
-        if result.get("user_id") and result["user_id"] != str(actor_id):
+        if result.get("user_id") != str(actor_id):
             raise HTTPException(status_code=404, detail="Trace not found")
         return {
             **result,

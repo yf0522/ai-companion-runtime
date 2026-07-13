@@ -53,7 +53,7 @@ def parse_due_at(text: str, *, now: datetime | None = None) -> datetime | None:
         return None
 
 
-def format_caretask_time(value: Any) -> str:
+def format_caretask_time(value: Any, *, now: datetime | None = None) -> str:
     """Format stored UTC timestamps for elders while leaving payload ISO intact."""
     if value in (None, ""):
         return ""
@@ -64,8 +64,34 @@ def format_caretask_time(value: Any) -> str:
             parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        local = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
-        return f"{local.year}年{local.month}月{local.day}日 {local:%H:%M}"
+        shanghai = ZoneInfo("Asia/Shanghai")
+        local = parsed.astimezone(shanghai)
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        local_now = reference.astimezone(shanghai)
+
+        hour = local.hour
+        if 5 <= hour < 8:
+            period = "清晨"
+        elif 8 <= hour < 12:
+            period = "上午"
+        elif 12 <= hour < 14:
+            period = "中午"
+        elif 14 <= hour < 18:
+            period = "下午"
+        elif 18 <= hour < 23:
+            period = "晚上"
+        else:
+            period = "夜里"
+
+        day_delta = (local.date() - local_now.date()).days
+        relative_days = {0: "今天", 1: "明天", 2: "后天"}
+        if day_delta in relative_days:
+            day_label = relative_days[day_delta]
+        else:
+            day_label = f"{local.year}年{local.month}月{local.day}日"
+        return f"{day_label}{period} {local:%H:%M}"
     except (TypeError, ValueError):
         return ""
 
@@ -103,6 +129,8 @@ def _infer_title(text: str, task_type: str) -> str:
 
 
 def _infer_action_from_query(query: str) -> str:
+    from app.tools.caretask_batch import is_explicit_scheduled_create
+
     # Read-only language wins over mutation words. This prevents phrases such
     # as "今天完成了哪些任务" from being interpreted as a completion command.
     if re.search(
@@ -118,11 +146,9 @@ def _infer_action_from_query(query: str) -> str:
     if re.search(r"取消|不要了|删掉", query):
         return "cancel"
     if re.search(
-        r"提醒我|帮我记(?:一下|下)|记一下|记下|新增|添加|新建|创建|建立|设置|安排|"
-        r"(?:每天|每日|每周|明天|后天).*(?:吃药|服药|复诊|任务|提醒)|"
-        r"\d{1,2}\s*[点时:].*(?:吃药|服药|复诊|任务|提醒)",
+        r"提醒我|帮我记(?:一下|下)|记一下|记下|新增|添加|新建|创建|建立|设置|安排",
         query,
-    ):
+    ) or is_explicit_scheduled_create(query):
         return "create"
     # Ambiguous care-domain utterances are read-only by default. A write must
     # be grounded in an explicit user mutation cue.
@@ -163,6 +189,60 @@ def _reuse_display(title: str, *, schedule_updated: bool) -> str:
     return f"您已经记过{label}这件事了，我会继续为您保留。"
 
 
+def _create_result(row: dict[str, Any], query: str) -> ToolResult:
+    row = dict(row)
+    action = row.pop("_action", "caretask_create")
+    schedule_updated = bool(row.pop("_schedule_updated", False))
+    schedule_type = row.get("schedule_type")
+    if action == "caretask_reuse":
+        device_action = (
+            "caretask_schedule_updated" if schedule_updated else "caretask_reuse"
+        )
+        return ToolResult(
+            tool_name="caretask",
+            status="success",
+            display_text=_reuse_display(
+                row["title"], schedule_updated=schedule_updated
+            ),
+            data={
+                "action": device_action,
+                "task": row,
+                "schedule_updated": schedule_updated,
+                "schedule_type": schedule_type,
+                "query": query,
+            },
+        )
+    if action == "caretask_clarify_create":
+        candidates = row.get("candidates") or []
+        return ToolResult(
+            tool_name="caretask",
+            status="needs_clarification",
+            display_text=(
+                "已有相似照护任务，请点选要改时间的那一项，或告诉我新建：\n"
+                + _format_candidates(candidates)
+            ),
+            data={
+                "action": "caretask_clarify_create",
+                "clarify_verb": "确认",
+                "candidates": _candidate_payload(candidates),
+                "proposed": row.get("proposed"),
+            },
+        )
+    rendered_due = format_caretask_time(row.get("due_at"))
+    due_text = f"（{rendered_due}）" if rendered_due else ""
+    return ToolResult(
+        tool_name="caretask",
+        status="success",
+        display_text=f"已为您记下：{row['title']}{due_text}",
+        data={
+            "action": "caretask_create",
+            "task": row,
+            "schedule_type": schedule_type,
+            "query": query,
+        },
+    )
+
+
 def _none_resolve_display(verb_cn: str, resolved: Any) -> str:
     hint = getattr(resolved, "hint", None) or ""
     if getattr(resolved, "already_done", False) and hint:
@@ -186,7 +266,7 @@ class CareTaskTool(ToolBase):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "list", "complete", "snooze", "cancel", "missed", "batch"],
+                "enum": ["create", "list", "complete", "snooze", "cancel", "missed"],
                 "description": "CareTask operation",
             },
             "title": {"type": "string", "description": "Task title (create)"},
@@ -214,8 +294,26 @@ class CareTaskTool(ToolBase):
     async def execute(self, params: dict) -> ToolResult:
         action = str(params.get("action") or "").strip().lower()
         query = str(params.get("query") or "")
+        from app.tools.caretask_batch import classify_caretask_speech_act
+
+        speech_act = classify_caretask_speech_act(query) if query else None
+        if (
+            action != "batch"
+            and speech_act
+            and speech_act.action not in {None, "list"}
+            and not speech_act.authorized
+        ):
+            return ToolResult(
+                tool_name=self.name,
+                status="needs_clarification",
+                display_text="我听到了照护事项的说法，但还不能确认您要我执行。请直接告诉我要新增、完成、推迟还是取消。",
+                data={
+                    "action": "caretask_clarification",
+                    "reason": speech_act.reason or "mutation_not_authorized",
+                },
+            )
         if not action or action == "auto":
-            action = _infer_action_from_query(query)
+            action = speech_act.action if speech_act and speech_act.authorized else _infer_action_from_query(query)
         elif (
             action
             in {
@@ -230,12 +328,14 @@ class CareTaskTool(ToolBase):
                 "missed",
             }
             and query
-            and _infer_action_from_query(query) == "list"
+            and (not speech_act or speech_act.action == "list" or not speech_act.authorized)
         ):
             # The user's read-only wording is authoritative. A model-supplied
             # mutation label cannot turn a question or ambiguous care phrase
             # into a persisted change.
             action = "list"
+        elif speech_act and speech_act.authorized:
+            action = speech_act.action
         action = _ACTION_ALIASES.get(action, action)
 
         user_id = params.get("user_id")
@@ -248,6 +348,28 @@ class CareTaskTool(ToolBase):
             )
 
         try:
+            if action in {"create", "complete", "snooze", "cancel"}:
+                idempotency_key = str(params.get("idempotency_key") or "").strip()
+                if idempotency_key:
+                    from app.tools.caretask_batch_executor import (
+                        lookup_single_caretask_result,
+                        single_caretask_request_payload,
+                    )
+
+                    request_payload = single_caretask_request_payload(
+                        action, query, params
+                    )
+                    replay = await lookup_single_caretask_result(
+                        user_id=str(user_id),
+                        idempotency_key=idempotency_key,
+                        request_payload=request_payload,
+                    )
+                    if replay is not None:
+                        return replay
+                    params = {
+                        **params,
+                        "_single_idempotency_request": request_payload,
+                    }
             if action == "create":
                 return await self._create(params, user_id, query)
             if action == "list":
@@ -273,22 +395,38 @@ class CareTaskTool(ToolBase):
                 tool_name=self.name,
                 status="failed",
                 display_text="当前状态不能执行该操作",
-                data={"reason": "invalid_transition", "error": str(e), "action": action},
+                data={
+                    "reason": "invalid_transition",
+                    "error_class": type(e).__name__,
+                    "action": action,
+                },
             )
         except LookupError as e:
             return ToolResult(
                 tool_name=self.name,
                 status="failed",
                 display_text="没有找到对应的照护任务",
-                data={"reason": str(e), "action": action},
+                data={
+                    "reason": "not_found",
+                    "error_class": type(e).__name__,
+                    "action": action,
+                },
             )
         except Exception as e:
-            logger.error("CareTask tool failed: %s", e, exc_info=True)
+            logger.error(
+                "CareTask tool failed error_class=%s code=caretask_execution_failed",
+                type(e).__name__,
+            )
             return ToolResult(
                 tool_name=self.name,
                 status="failed",
                 display_text="照护任务处理失败，请稍后重试",
-                data={"reason": "exception", "error": str(e), "action": action},
+                data={
+                    "reason": "exception",
+                    "error_class": type(e).__name__,
+                    "error_code": "caretask_execution_failed",
+                    "action": action,
+                },
             )
 
     async def _create(self, params: dict, user_id: str, query: str) -> ToolResult:
@@ -307,6 +445,68 @@ class CareTaskTool(ToolBase):
                 data={"action": "caretask_create", "reason": "reminder_time_required"},
             )
 
+        request_payload = params.get("_single_idempotency_request")
+        if isinstance(request_payload, dict):
+            from app.tools.caretask_batch_executor import (
+                execute_single_caretask_mutation,
+            )
+
+            now = datetime.utcnow()
+            tasks = await svc.snapshot_care_tasks(user_id=str(user_id), now=now)
+            fingerprint = svc.identity_key(title, task_type)
+            existing = next(
+                (
+                    task
+                    for task in tasks
+                    if task.get("status") in svc.ACTIVE_STATUSES
+                    and svc.identity_key(
+                        task["title"], task.get("task_type") or task_type
+                    )
+                    == fingerprint
+                ),
+                None,
+            )
+            if existing is None:
+                near = [
+                    task
+                    for task in tasks
+                    if task.get("status") in svc.ACTIVE_STATUSES
+                    and (task.get("task_type") or task_type) == task_type
+                    and svc._token_overlap(title, task["title"]) >= 0.55
+                ]
+                if near:
+                    return _create_result(
+                        {
+                            "_action": "caretask_clarify_create",
+                            "candidates": near,
+                            "proposed": {
+                                "title": title,
+                                "task_type": task_type,
+                                "due_at": due_at.isoformat() if due_at else None,
+                                "schedule_type": params.get("schedule_type"),
+                            },
+                        },
+                        query,
+                    )
+            mutation = {
+                "action": "create",
+                "title": title,
+                "task_type": task_type,
+                "due_at": due_at,
+                "query": query or title,
+                "notes": params.get("notes")
+                or (f"trace:{params['trace_id']}" if params.get("trace_id") else None),
+                "reuse_task_id": existing.get("id") if existing else None,
+                "expected_version": existing.get("version", 1) if existing else None,
+            }
+            return await execute_single_caretask_mutation(
+                user_id=str(user_id),
+                idempotency_key=str(params["idempotency_key"]),
+                request_payload=request_payload,
+                mutation=mutation,
+                render=lambda row: _create_result(row, query),
+            )
+
         schedule_type = params.get("schedule_type")
         row = await svc.create_care_task(
             user_id=str(user_id),
@@ -319,55 +519,7 @@ class CareTaskTool(ToolBase):
             schedule_type=str(schedule_type) if schedule_type else None,
             query=query or title,
         )
-        action = row.pop("_action", "caretask_create")
-        schedule_updated = bool(row.pop("_schedule_updated", False))
-        st = row.get("schedule_type")
-        if action == "caretask_reuse":
-            if schedule_updated:
-                device_action = "caretask_schedule_updated"
-            else:
-                device_action = "caretask_reuse"
-            return ToolResult(
-                tool_name=self.name,
-                status="success",
-                display_text=_reuse_display(row["title"], schedule_updated=schedule_updated),
-                data={
-                    "action": device_action,
-                    "task": row,
-                    "schedule_updated": schedule_updated,
-                    "schedule_type": st,
-                    "query": query,
-                },
-            )
-        if action == "caretask_clarify_create":
-            candidates = row.get("candidates") or []
-            return ToolResult(
-                tool_name=self.name,
-                status="needs_clarification",
-                display_text=(
-                    "已有相似照护任务，请点选要改时间的那一项，或告诉我新建：\n"
-                    + _format_candidates(candidates)
-                ),
-                data={
-                    "action": "caretask_clarify_create",
-                    "clarify_verb": "确认",
-                    "candidates": _candidate_payload(candidates),
-                    "proposed": row.get("proposed"),
-                },
-            )
-        rendered_due = format_caretask_time(row.get("due_at"))
-        due_txt = f"（{rendered_due}）" if rendered_due else ""
-        return ToolResult(
-            tool_name=self.name,
-            status="success",
-            display_text=f"已为您记下：{row['title']}{due_txt}",
-            data={
-                "action": "caretask_create",
-                "task": row,
-                "schedule_type": st,
-                "query": query,
-            },
-        )
+        return _create_result(row, query)
 
     async def _list(self, params: dict, user_id: str) -> ToolResult:
         scope = str(params.get("scope") or "today").strip().lower()
@@ -492,6 +644,28 @@ class CareTaskTool(ToolBase):
         )
         if isinstance(resolved, ToolResult):
             return resolved
+        request_payload = params.get("_single_idempotency_request")
+        if isinstance(request_payload, dict):
+            from app.tools.caretask_batch_executor import (
+                execute_single_caretask_mutation,
+            )
+
+            return await execute_single_caretask_mutation(
+                user_id=str(user_id),
+                idempotency_key=str(params["idempotency_key"]),
+                request_payload=request_payload,
+                mutation={
+                    "action": "complete",
+                    "task_id": str(resolved["id"]),
+                    "expected_version": resolved.get("version", 1),
+                },
+                render=lambda row: ToolResult(
+                    tool_name=self.name,
+                    status="success",
+                    display_text=f"已完成：{row['title']}",
+                    data={"action": "caretask_complete", "task": row},
+                ),
+            )
         row = await svc.complete_care_task(user_id=str(user_id), task_id=str(resolved["id"]))
         return ToolResult(
             tool_name=self.name,
@@ -518,6 +692,36 @@ class CareTaskTool(ToolBase):
         )
         if isinstance(resolved, ToolResult):
             return resolved
+        request_payload = params.get("_single_idempotency_request")
+        if isinstance(request_payload, dict):
+            from app.tools.caretask_batch_executor import (
+                execute_single_caretask_mutation,
+            )
+
+            return await execute_single_caretask_mutation(
+                user_id=str(user_id),
+                idempotency_key=str(params["idempotency_key"]),
+                request_payload=request_payload,
+                mutation={
+                    "action": "snooze",
+                    "task_id": str(resolved["id"]),
+                    "expected_version": resolved.get("version", 1),
+                    "minutes": int(minutes),
+                },
+                render=lambda row: ToolResult(
+                    tool_name=self.name,
+                    status="success",
+                    display_text=(
+                        f"好的，我{int(row.get('snooze_minutes', minutes))}分钟后再提醒您"
+                        f"{row['title']}"
+                    ),
+                    data={
+                        "action": "caretask_snooze",
+                        "task": row,
+                        "snooze_minutes": int(row.get("snooze_minutes", minutes)),
+                    },
+                ),
+            )
         row = await svc.snooze_care_task(
             user_id=str(user_id),
             task_id=str(resolved["id"]),
@@ -545,6 +749,28 @@ class CareTaskTool(ToolBase):
         )
         if isinstance(resolved, ToolResult):
             return resolved
+        request_payload = params.get("_single_idempotency_request")
+        if isinstance(request_payload, dict):
+            from app.tools.caretask_batch_executor import (
+                execute_single_caretask_mutation,
+            )
+
+            return await execute_single_caretask_mutation(
+                user_id=str(user_id),
+                idempotency_key=str(params["idempotency_key"]),
+                request_payload=request_payload,
+                mutation={
+                    "action": "cancel",
+                    "task_id": str(resolved["id"]),
+                    "expected_version": resolved.get("version", 1),
+                },
+                render=lambda row: ToolResult(
+                    tool_name=self.name,
+                    status="success",
+                    display_text=f"已取消：{row['title']}",
+                    data={"action": "caretask_cancel", "task": row},
+                ),
+            )
         row = await svc.cancel_care_task(user_id=str(user_id), task_id=str(resolved["id"]))
         return ToolResult(
             tool_name=self.name,

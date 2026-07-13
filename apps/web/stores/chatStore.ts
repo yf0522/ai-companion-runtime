@@ -3,10 +3,22 @@ import { persist } from "zustand/middleware";
 
 export type ToolChipStatus =
   | "calling"
+  | "in_progress"
   | "success"
   | "failed"
   | "timeout"
-  | "needs_clarification";
+  | "needs_clarification"
+  | "cancelled"
+  | "interrupted";
+
+const TERMINAL_TOOL_STATUSES: ToolChipStatus[] = [
+  "success",
+  "failed",
+  "timeout",
+  "needs_clarification",
+  "cancelled",
+  "interrupted",
+];
 
 export interface CareTaskCandidate {
   id: string;
@@ -74,10 +86,8 @@ function normalizeToolChip(raw: unknown): ToolChip | null {
     const statusRaw = String(obj.status || "calling");
     const allowed: ToolChipStatus[] = [
       "calling",
-      "success",
-      "failed",
-      "timeout",
-      "needs_clarification",
+      "in_progress",
+      ...TERMINAL_TOOL_STATUSES,
     ];
     const status = (allowed.includes(statusRaw as ToolChipStatus)
       ? statusRaw
@@ -119,7 +129,12 @@ function upsertToolChip(
   const next = [...chips];
   const idx = next.findIndex((c) => c.tool === tool);
   if (idx >= 0) {
-    next[idx] = { ...next[idx], ...chip };
+    const currentStatus = next[idx].status;
+    const status = TERMINAL_TOOL_STATUSES.includes(currentStatus) ||
+      (currentStatus === "in_progress" && chip.status === "calling")
+      ? currentStatus
+      : chip.status;
+    next[idx] = { ...next[idx], ...chip, status };
   } else {
     next.push(chip);
   }
@@ -205,6 +220,30 @@ function persistedToolData(data: Record<string, unknown> | undefined): Record<st
   const safe: Record<string, unknown> = {};
   for (const key of ["status", "consent_status"] as const) {
     if (typeof data[key] === "string") safe[key] = data[key];
+  }
+  if (Array.isArray(data.receipts)) {
+    const receipts = data.receipts.slice(0, 20).flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const receipt = raw as Record<string, unknown>;
+      const item: Record<string, unknown> = {};
+      if (typeof receipt.index === "number") item.index = receipt.index;
+      if (typeof receipt.action === "string") item.action = receipt.action;
+      if (typeof receipt.status === "string") item.status = receipt.status;
+      if (receipt.result && typeof receipt.result === "object" && !Array.isArray(receipt.result)) {
+        const result = receipt.result as Record<string, unknown>;
+        const safeResult: Record<string, unknown> = {};
+        if (typeof result.title === "string") safeResult.title = result.title.slice(0, 120);
+        if (Array.isArray(result.titles)) {
+          safeResult.titles = result.titles
+            .filter((title): title is string => typeof title === "string")
+            .slice(0, 10)
+            .map((title) => title.slice(0, 120));
+        }
+        if (Object.keys(safeResult).length) item.result = safeResult;
+      }
+      return Object.keys(item).length ? [item] : [];
+    });
+    if (receipts.length) safe.receipts = receipts;
   }
   return Object.keys(safe).length ? safe : undefined;
 }
@@ -356,11 +395,16 @@ export const useChatStore = create<ChatState>()(
               candidates,
             }
           : clarifyFromChips(toolsUsed) || last.careTaskClarify;
+      const turnEnded = status === "cancelled" || status === "interrupted";
       msgs[msgs.length - 1] = {
         ...last,
         toolsUsed,
         careTaskClarify,
+        status: turnEnded ? "complete" : last.status,
       };
+      if (turnEnded) {
+        return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
+      }
       return stateWithMessages(s, msgs);
     });
   },
@@ -378,12 +422,12 @@ export const useChatStore = create<ChatState>()(
 
   finalizeMessage: (data) => {
     set((s) => {
+      if (s.currentTraceId && s.currentTraceId !== data.traceId) {
+        return {};
+      }
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
-      if (
-        last?.role === "assistant" &&
-        (last.status === "streaming" || last.traceId === data.traceId)
-      ) {
+      if (last?.role === "assistant" && last.traceId === data.traceId) {
         const fromFinal = (data.toolsUsed || [])
           .map(normalizeToolChip)
           .filter((c): c is ToolChip => c !== null);
@@ -408,8 +452,9 @@ export const useChatStore = create<ChatState>()(
           careTaskClarify: clarifyFromChips(chips) || last.careTaskClarify,
           status: "complete",
         };
+        return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
       }
-      return { ...stateWithMessages(s, msgs), isStreaming: false, currentTraceId: null };
+      return {};
     });
   },
 
@@ -418,7 +463,7 @@ export const useChatStore = create<ChatState>()(
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       const hasTerminalToolResult = last?.toolsUsed?.some((tool) =>
-        ["success", "failed", "timeout", "needs_clarification"].includes(tool.status),
+        TERMINAL_TOOL_STATUSES.includes(tool.status),
       );
       if (last?.role !== "assistant" || last.status !== "streaming" || !hasTerminalToolResult) {
         return {};

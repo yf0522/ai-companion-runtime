@@ -7,6 +7,7 @@ from fastapi import WebSocket
 
 from app.runtime import session_service
 from app.runtime.agent_runtime import DEFAULT_RUNTIME, get_agent_runtime
+from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,20 @@ class Connection:
     last_message_id: Optional[str] = None
     is_generating: bool = False
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    active_trace_id: Optional[str] = None
+    active_message_task: asyncio.Task | None = field(default=None, repr=False)
+
+
+class _ConnectionStreamManager(StreamManager):
+    """Bind the trace emitted by a runtime to its active connection turn."""
+
+    def __init__(self, websocket: WebSocket, conn: Connection):
+        super().__init__(websocket)
+        self._conn = conn
+
+    async def send_trace(self, trace_id: str):
+        self._conn.active_trace_id = trace_id
+        await super().send_trace(trace_id)
 
 
 class WebSocketGateway:
@@ -55,11 +70,13 @@ class WebSocketGateway:
 
     async def handle_message(self, conn: Connection, message: str):
         """Main message handling pipeline — dispatches to selected AgentRuntime."""
-        from app.runtime.stream_manager import StreamManager
-
-        conn.is_generating = True
-        conn.cancel_event.clear()
-        stream_mgr = StreamManager(conn.websocket)
+        current_task = asyncio.current_task()
+        conn.active_message_task = current_task
+        conn.active_trace_id = None
+        if not conn.is_generating:
+            conn.cancel_event.clear()
+            conn.is_generating = True
+        stream_mgr = _ConnectionStreamManager(conn.websocket, conn)
         runtime = get_agent_runtime(conn.agent_runtime)
 
         try:
@@ -75,12 +92,35 @@ class WebSocketGateway:
             asyncio.create_task(
                 session_service.increment_message_count(conn.session_id)
             )
-        except Exception as e:
-            logger.error(f"Agent runtime error ({conn.agent_runtime}): {e}", exc_info=True)
-            await stream_mgr.send_error("runtime_error", str(e), retry=True)
+        except Exception as exc:
+            logger.error(
+                "Agent runtime failed runtime=%s error_class=%s code=runtime_error",
+                conn.agent_runtime,
+                type(exc).__name__,
+            )
+            await stream_mgr.send_error(
+                "runtime_error",
+                "服务暂时不可用，请稍后再试。",
+                retry=True,
+            )
         finally:
-            conn.is_generating = False
+            if conn.active_message_task is current_task:
+                conn.is_generating = False
+                conn.active_trace_id = None
+                conn.active_message_task = None
 
-    async def stop_generation(self, conn: Connection, trace_id: str):
-        if conn.is_generating:
-            conn.cancel_event.set()
+    async def stop_generation(self, conn: Connection, trace_id: str) -> bool:
+        requested_trace_id = trace_id.strip()
+        if (
+            not requested_trace_id
+            or not conn.is_generating
+            or conn.active_trace_id != requested_trace_id
+        ):
+            return False
+
+        conn.cancel_event.set()
+        task = conn.active_message_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        return True

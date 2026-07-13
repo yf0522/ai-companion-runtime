@@ -24,8 +24,12 @@ _ACTION_ALIASES = {
 _EXPLICIT_NOTE_PATTERN = re.compile(r"以后记得|帮我记住|记一下|请记住|别忘了")
 
 
+def is_explicit_memory_note(query: str | None) -> bool:
+    return bool(_EXPLICIT_NOTE_PATTERN.search(str(query or "")))
+
+
 def _infer_action(query: str) -> str:
-    if _EXPLICIT_NOTE_PATTERN.search(query):
+    if is_explicit_memory_note(query):
         return "note"
     if re.search(r"你还记得|记得我|我喜欢什么|我说过", query):
         return "recall"
@@ -121,13 +125,21 @@ class MemoryTool(ToolBase):
                 display_text=f"不支持的记忆操作：{action}",
                 data={"reason": "unknown_action", "action": action},
             )
-        except Exception as e:
-            logger.error("Memory tool failed: %s", e, exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "Memory tool failed error_class=%s code=memory_tool_failed",
+                type(exc).__name__,
+            )
             return ToolResult(
                 tool_name=self.name,
                 status="failed",
                 display_text="记忆处理失败，请稍后重试",
-                data={"reason": "exception", "error": str(e), "action": action},
+                data={
+                    "reason": "memory_tool_failed",
+                    "error_class": type(exc).__name__,
+                    "error_code": "memory_tool_failed",
+                    "action": action,
+                },
             )
 
     async def _recall(

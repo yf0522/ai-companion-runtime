@@ -8,6 +8,60 @@ import {
   normalizeMemoryParams,
 } from "../caretask-params.mjs";
 
+test("single CareTask mutations require direct speech-act authorization", () => {
+  for (const query of [
+    "请问如何取消吃药提醒",
+    "我只是举例：取消吃药提醒",
+    "不要取消吃药提醒",
+    "如果我要取消吃药提醒怎么办",
+    "医生问我是否取消吃药提醒",
+    "她说“提醒我晚上8点吃药”",
+    "我没完成吃药任务",
+    "我不是要取消吃药提醒",
+    "我不想取消吃药提醒",
+    "我不打算延后吃药提醒",
+    "我不会建立吃药提醒",
+  ]) {
+    assert.equal(normalizeCareTaskParams({ action: "cancel" }, query).action, "clarify", query);
+  }
+  for (const [query, action] of [
+    ["请完成降压药", "complete"],
+    ["取消吃药提醒", "cancel"],
+    ["不要提醒我吃药", "cancel"],
+    ["提醒我晚上8点吃药", "create"],
+    ["明天晚上八点吃药", "create"],
+    ["后天上午九点复诊", "create"],
+    ["每天晚上八点吃降糖药", "create"],
+    ["把降压药提醒延后30分钟", "snooze"],
+    ["我吃了药", "complete"],
+    ["关掉提醒", "cancel"],
+    ["建立提醒", "create"],
+  ]) {
+    assert.equal(normalizeCareTaskParams({ action: "list" }, query).action, action, query);
+  }
+});
+
+test("scheduled CareTask creation rejects questions, hypotheticals, reports, quotes, and ordinary mentions", () => {
+  for (const query of [
+    "我明天晚上八点吃药",
+    "明天我会吃药",
+    "明天如果不舒服就吃药",
+    "明天医生让我晚上八点吃药",
+    "明天新闻说晚上八点吃药",
+    "明天“晚上八点吃药”",
+    "如果明天晚上八点吃药会怎么样",
+    "明天晚上八点吃药吗？",
+    "新闻里说明天晚上八点吃药",
+    "她说“明天晚上八点吃药”",
+  ]) {
+    assert.notEqual(
+      normalizeCareTaskParams({ action: "create" }, query).action,
+      "create",
+      query,
+    );
+  }
+});
+
 test("corrects list to cancel for explicit cancellation intent", () => {
   assert.deepEqual(
     normalizeCareTaskParams({ action: "list" }, "取消吃药提醒"),

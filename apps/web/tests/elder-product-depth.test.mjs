@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
@@ -93,6 +94,63 @@ test("outcome receipts never expose raw internal tool names", () => {
   assert.equal(recall.title, "没有找到可使用的长期记忆");
 });
 
+test("tool execution states have truthful non-spinning receipt tones", () => {
+  const expected = {
+    calling: "loading",
+    in_progress: "info",
+    cancelled: "info",
+    interrupted: "error",
+    failed: "error",
+  };
+  for (const [status, tone] of Object.entries(expected)) {
+    assert.equal(outcomeReceiptForTool({ tool: "caretask", status }).tone, tone);
+  }
+
+  assert.equal(outcomeReceiptForTool({ tool: "caretask", status: "cancelled" }).title, "操作已取消");
+  assert.equal(outcomeReceiptForTool({ tool: "caretask", status: "interrupted" }).title, "操作意外中断");
+
+  const css = fs.readFileSync(new URL("../components/elder/ElderProduct.module.css", import.meta.url), "utf8");
+  assert.match(css, /\[data-tone="loading"\][^{]*\.outcomeIcon svg\s*\{[^}]*animation:/s);
+  assert.doesNotMatch(css, /\[data-tone="(?:info|pending|success|error)"\][^{]*\.outcomeIcon svg\s*\{[^}]*animation:/s);
+});
+
+test("batch receipts preserve completed failed and unattempted detail", () => {
+  const receipt = outcomeReceiptForTool({
+    tool: "caretask",
+    status: "interrupted",
+    action: "caretask_batch",
+    data: {
+      receipts: [
+        { index: 0, action: "complete", status: "completed", result: { title: "吃降糖药" } },
+        { index: 1, action: "snooze", status: "failed" },
+        { index: 2, action: "list", status: "unattempted" },
+      ],
+    },
+  });
+  assert.equal(receipt.tone, "error");
+  assert.equal(receipt.detail, "1. 完成（吃降糖药）：已完成\n2. 推迟：未完成\n3. 查看：未执行");
+});
+
+test("batch receipt presentation bounds receipt and title payloads", () => {
+  const receipt = outcomeReceiptForTool({
+    tool: "caretask",
+    status: "interrupted",
+    action: "caretask_batch",
+    data: {
+      receipts: Array.from({ length: 25 }, (_, index) => ({
+        index,
+        action: "complete",
+        status: "completed",
+        result: { title: "药".repeat(200) },
+      })),
+    },
+  });
+  assert.equal(receipt.detail.split("\n").length, 20);
+  assert.doesNotMatch(receipt.detail, /^21\./m);
+  assert.match(receipt.detail.split("\n")[0], new RegExp(`药{120}`));
+  assert.doesNotMatch(receipt.detail.split("\n")[0], new RegExp(`药{121}`));
+});
+
 test("read-only task results remain visible as the assistant answer", () => {
   const tools = [{
     tool: "caretask",
@@ -115,6 +173,31 @@ test("read-only task results remain visible as the assistant answer", () => {
   assert.equal(
     assistantBodyAfterToolReceipts("已查看任务，下面是补充说明。", tools),
     "已查看任务，下面是补充说明。",
+  );
+});
+
+test("authoritative terminal tool text is not duplicated in the assistant body", () => {
+  for (const status of ["failed", "cancelled", "interrupted"]) {
+    assert.equal(
+      assistantBodyAfterToolReceipts("1. 完成：未完成\n2. 查看：未执行", [{
+        tool: "caretask",
+        status,
+        action: "caretask_batch",
+        displayText: "1. 完成：未完成\n2. 查看：未执行",
+      }]),
+      "",
+    );
+  }
+
+  const listAnswer = "您当前的照护任务：\n- 晚上吃药";
+  assert.equal(
+    assistantBodyAfterToolReceipts(listAnswer, [{
+      tool: "caretask",
+      status: "success",
+      action: "caretask_list",
+      displayText: listAnswer,
+    }]),
+    listAnswer,
   );
 });
 

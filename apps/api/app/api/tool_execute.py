@@ -23,6 +23,8 @@ class ToolExecuteRequest(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     trace_id: str | None = None
+    query: str | None = None
+    idempotency_key: str | None = None
     risk_blocked: bool = False
     risk_level: str | None = None
 
@@ -79,18 +81,22 @@ async def _record_bridge_tool_call(
     if not trace_id:
         return
     try:
-        from app.observability.trace_service import TraceService
+        from app.observability.trace_service import TraceService, sanitize_tool_evidence
 
         await TraceService().record_tool_call(
             trace_id=trace_id,
             tool_name=tool_name,
-            input_json=input_json,
-            output_json=output_json,
+            input_json=sanitize_tool_evidence(input_json),
+            output_json=sanitize_tool_evidence(output_json),
             status=status,
             latency_ms=latency_ms,
         )
-    except Exception as e:
-        logger.error("Failed to persist bridge tool call for %s: %s", tool_name, e)
+    except Exception as exc:
+        logger.error(
+            "Bridge tool trace failed tool=%s error_class=%s code=bridge_tool_trace_failed",
+            tool_name,
+            type(exc).__name__,
+        )
 
 
 @router.get("/tools/schemas")
@@ -131,24 +137,76 @@ async def tool_execute(
         return resp
 
     params = dict(body.params or {})
+    # Params are model-controlled. Identity and correlation values come only
+    # from the trusted bridge envelope when present and can never be overridden.
+    for key in (
+        "user_id",
+        "session_id",
+        "trace_id",
+        "idempotency_key",
+        "risk_blocked",
+        "risk_level",
+        "query",
+    ):
+        params.pop(key, None)
+    if body.user_id:
+        params["user_id"] = body.user_id
+    if body.session_id:
+        params["session_id"] = body.session_id
+    if body.trace_id:
+        params["trace_id"] = body.trace_id
+    if body.query is not None:
+        params["query"] = body.query
+    if body.idempotency_key is not None:
+        params["idempotency_key"] = body.idempotency_key
+    requested_action = str(params.get("action") or "").strip().lower()
+    trusted_query = str(body.query or "").strip()
+    mutation_requested = False
+    if body.tool_name == "caretask":
+        from app.tools.caretask_batch import (
+            classify_caretask_speech_act,
+            detect_compound_caretask,
+            plan_caretask_batch,
+        )
+
+        plan = plan_caretask_batch(trusted_query) if detect_compound_caretask(trusted_query) else None
+        speech_act = classify_caretask_speech_act(trusted_query)
+        if plan is not None and plan.status == "planned":
+            params["action"] = "batch"
+            mutation_requested = any(action.action != "list" for action in plan.actions)
+        elif speech_act.authorized and speech_act.action is not None:
+            params["action"] = speech_act.action
+            mutation_requested = speech_act.action != "list"
+        elif speech_act.action is None and requested_action not in {"", "list"}:
+            # Model parameters cannot supply missing user authorization.
+            raise HTTPException(status_code=400, detail="side_effect_not_authorized")
+    elif body.tool_name == "memory":
+        from app.tools.memory_tool import is_explicit_memory_note
+
+        mutation_requested = is_explicit_memory_note(trusted_query)
+        params["action"] = "note" if mutation_requested else "recall"
+    elif body.tool_name == "contact":
+        from app.tools.contact_tool import is_explicit_family_contact_request
+
+        if not is_explicit_family_contact_request(trusted_query):
+            raise HTTPException(status_code=400, detail="side_effect_not_authorized")
+        params["action"] = "request_contact"
+        mutation_requested = True
+    if mutation_requested:
+        required = {
+            "user_id": body.user_id,
+            "session_id": body.session_id,
+            "trace_id": body.trace_id,
+            "query": body.query,
+            "idempotency_key": body.idempotency_key,
+        }
+        if any(value is None or str(value).strip() == "" for value in required.values()):
+            raise HTTPException(status_code=400, detail="mutation_requires_trusted_context")
     if body.tool_name == "contact":
         # Contact requests are side effects. Never let model-provided params
         # override the authenticated runtime context or choose a recipient.
-        for key in ("user_id", "session_id", "trace_id", "recipient", "provider", "risk_level"):
+        for key in ("recipient", "provider"):
             params.pop(key, None)
-        if not body.user_id or not body.trace_id:
-            raise HTTPException(status_code=400, detail="contact_requires_trusted_context")
-        params["user_id"] = body.user_id
-        params["trace_id"] = body.trace_id
-        if body.session_id:
-            params["session_id"] = body.session_id
-    else:
-        if body.user_id and "user_id" not in params:
-            params["user_id"] = body.user_id
-        if body.session_id and "session_id" not in params:
-            params["session_id"] = body.session_id
-        if body.trace_id and "trace_id" not in params:
-            params["trace_id"] = body.trace_id
     # Propagate risk context so domain tools (e.g. memory) can empty/skip on crisis.
     params["risk_blocked"] = bool(body.risk_blocked)
     if body.risk_level is not None:
@@ -167,12 +225,7 @@ async def tool_execute(
     await _record_bridge_tool_call(
         trace_id=body.trace_id,
         tool_name=result.tool_name,
-        input_json={
-            "query": params.get("query"),
-            "user_id": params.get("user_id"),
-            "session_id": params.get("session_id"),
-            "action": params.get("action"),
-        },
+        input_json=params,
         output_json={
             "status": result.status,
             "display_text": result.display_text,

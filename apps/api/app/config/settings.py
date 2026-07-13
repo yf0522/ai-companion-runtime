@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings
 _logger = logging.getLogger(__name__)
 
 _INSECURE_JWT_SECRET = "change-me-in-production"
+_REQUIRED_MIGRATION_HEAD = "c1d2e3f4a5b6"
 
 
 class Settings(BaseSettings):
@@ -127,8 +128,14 @@ class Settings(BaseSettings):
             elif not self.public_base_url.startswith("https://"):
                 errors.append("PUBLIC_BASE_URL must use https when REQUIRE_TLS is true.")
 
-            if not self.expected_migration_heads.strip():
-                errors.append("EXPECTED_MIGRATION_HEADS must be set in production.")
+            configured_heads = [
+                item.strip() for item in self.expected_migration_heads.split(",") if item.strip()
+            ]
+            if configured_heads != [_REQUIRED_MIGRATION_HEAD]:
+                errors.append(
+                    "EXPECTED_MIGRATION_HEADS must name the current sole head "
+                    f"{_REQUIRED_MIGRATION_HEAD} in production."
+                )
 
             if not self.backup_bucket.strip():
                 errors.append("BACKUP_BUCKET must be set in production.")

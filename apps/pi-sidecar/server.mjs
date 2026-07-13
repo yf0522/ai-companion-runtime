@@ -10,6 +10,7 @@ import {
   normalizeMemoryParams,
 } from "./caretask-params.mjs";
 import { assistantErrorMessage } from "./pi-events.mjs";
+import { capabilityResponseFor } from "./capability-response.mjs";
 import {
   authoritativeToolResultText,
   authoritativeToolShouldTerminate,
@@ -82,6 +83,23 @@ function writeNdjson(res, payload) {
   res.write(`${JSON.stringify(payload)}\n`);
 }
 
+function writeCapabilityResponse(res, text, stream) {
+  if (stream === false) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ type: "text", text, tools_used: [] }));
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Pi-Bridge": "capability-guard",
+  });
+  writeNdjson(res, { type: "text_delta", delta: text });
+  writeNdjson(res, { type: "done", reason: "capability_guard", tools_used: [] });
+  res.end();
+}
+
 function normalizeMessages(body) {
   const raw = Array.isArray(body.messages) ? body.messages : [];
   const messages = [];
@@ -99,19 +117,10 @@ function normalizeMessages(body) {
 }
 
 function bridgeErrorText(data, status) {
-  const detail = data?.detail ?? data?.error;
-  if (typeof detail === "string" && detail.trim()) return detail.trim();
-  if (detail != null) {
-    try {
-      return JSON.stringify(detail);
-    } catch {
-      /* ignore */
-    }
-  }
-  if (status === 404) {
-    return `tool bridge 404 at ${TOOL_BRIDGE_URL}/tools/execute — set TOOL_BRIDGE_URL to the companion API /api base`;
-  }
-  return `bridge HTTP ${status}`;
+  void data;
+  return status === 401 || status === 403
+    ? "当前服务认证失败，请稍后再试。"
+    : "这项操作暂时无法完成，请稍后再试。";
 }
 
 async function bridgeExecute(toolName, params, ctx) {
@@ -131,31 +140,33 @@ async function bridgeExecute(toolName, params, ctx) {
         user_id: ctx.userId,
         session_id: ctx.sessionId,
         trace_id: ctx.traceId,
+        query: ctx.userText,
+        idempotency_key: ctx.traceId,
         risk_blocked: Boolean(ctx.riskBlocked),
         risk_level: ctx.riskLevel || null,
       }),
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[pi-sidecar] tool bridge fetch failed url=${url} err=${message}`);
+    const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
+    console.error(`[pi-sidecar] tool bridge failed error_class=${errorClass} code=bridge_unreachable`);
     return {
       tool_name: toolName,
       status: "failed",
-      display_text: `tool bridge unreachable (${TOOL_BRIDGE_URL}): ${message}`,
-      data: { reason: "bridge_unreachable", url },
+      display_text: "这项操作暂时无法完成，请稍后再试。",
+      data: { reason: "bridge_unreachable", error_code: "bridge_unreachable" },
     };
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const display_text = bridgeErrorText(data, res.status);
     console.error(
-      `[pi-sidecar] tool bridge HTTP ${res.status} url=${url} detail=${display_text}`,
+      `[pi-sidecar] tool bridge failed status=${res.status} code=bridge_http_error`,
     );
     return {
       tool_name: toolName,
       status: "failed",
       display_text,
-      data: { reason: "bridge_http_error", http_status: res.status, url },
+      data: { reason: "bridge_http_error", http_status: res.status },
     };
   }
   return data;
@@ -467,9 +478,13 @@ async function streamAgentChat({ res, body }) {
     await agent.prompt(lastUser.content);
     await agent.waitForIdle();
   } catch (err) {
+    const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
+    console.error(
+      `[pi-sidecar] agent failed error_class=${errorClass} code=pi_agent_failed`,
+    );
     writeNdjson(res, {
       type: "error",
-      message: err instanceof Error ? err.message : "pi agent error",
+      message: "服务暂时不可用，请稍后再试。",
     });
   }
   if (!res.writableEnded) {
@@ -500,7 +515,7 @@ async function streamChatLegacy({ res, body }) {
     } else if (event.type === "error") {
       writeNdjson(res, {
         type: "error",
-        message: event.error?.errorMessage || "pi-ai stream error",
+        message: "服务暂时不可用，请稍后再试。",
       });
       break;
     } else if (event.type === "done") {
@@ -529,6 +544,13 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/v1/chat") {
       const body = await readJson(req);
+      const messages = normalizeMessages(body);
+      const lastUser = messages.findLast((message) => message.role === "user");
+      const capabilityResponse = capabilityResponseFor(lastUser?.content);
+      if (capabilityResponse) {
+        writeCapabilityResponse(res, capabilityResponse, body.stream);
+        return;
+      }
       const useAgent = body.use_agent_core !== false && ENABLE_TOOLS;
       if (body.stream === false) {
         // Non-stream: still use agent path into a buffer.
@@ -589,7 +611,11 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   } catch (err) {
-    const message = err instanceof Error ? err.message : "sidecar_error";
+    const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
+    const message = "服务暂时不可用，请稍后再试。";
+    console.error(
+      `[pi-sidecar] request failed error_class=${errorClass} code=sidecar_request_failed`,
+    );
     if (!res.headersSent) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: message }));
@@ -601,9 +627,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(
-    `[pi-sidecar] listening on http://127.0.0.1:${PORT} (${DEFAULT_PROVIDER}/${DEFAULT_MODEL}) tools=${ENABLE_TOOLS ? "caretask,memory,contact" : "off"} bridge=${TOOL_BRIDGE_URL}`,
-  );
+  console.log(`[pi-sidecar] listening port=${PORT} tools=${ENABLE_TOOLS ? "on" : "off"}`);
   if (ENABLE_TOOLS) {
     const schemasUrl = `${TOOL_BRIDGE_URL.replace(/\/$/, "")}/tools/schemas`;
     fetch(schemasUrl, {
@@ -614,16 +638,16 @@ server.listen(PORT, "127.0.0.1", () => {
       .then(async (res) => {
         if (!res.ok) {
           console.error(
-            `[pi-sidecar] tool bridge health check failed HTTP ${res.status} at ${schemasUrl}`,
+            `[pi-sidecar] tool bridge health check failed status=${res.status} code=bridge_health_failed`,
           );
           return;
         }
-        console.log(`[pi-sidecar] tool bridge ok ${schemasUrl}`);
+        console.log("[pi-sidecar] tool bridge health check ok");
       })
       .catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
         console.error(
-          `[pi-sidecar] tool bridge health check unreachable ${schemasUrl}: ${message}`,
+          `[pi-sidecar] tool bridge health check failed error_class=${errorClass} code=bridge_health_unreachable`,
         );
       });
   }

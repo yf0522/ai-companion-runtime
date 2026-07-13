@@ -33,7 +33,7 @@
 .outcomeReceipt strong,
 .outcomeReceipt small { display: block; }
 .outcomeReceipt strong { color: var(--care-ink); font-size: 14px; line-height: 1.4; }
-.outcomeReceipt small { margin-top: 3px; color: var(--care-muted); font-size: 12px; line-height: 1.55; }
+.outcomeReceipt small { margin-top: 3px; color: var(--care-muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
 
 @keyframes elder-spin { to { transform: rotate(360deg); } }
 

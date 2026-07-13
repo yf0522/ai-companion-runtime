@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import re
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -88,6 +89,23 @@ CHECK_CATALOG: Mapping[str, CheckCatalogEntry] = MappingProxyType(
             owner="Platform runtime",
             next_action="Verify database reachability, credentials, and connection capacity.",
             runbook="platform-readiness#database",
+        ),
+        "vector_schema": CheckCatalogEntry(
+            label="pgvector embedding schema",
+            owner="Platform runtime",
+            next_action="Verify the vector extension and memory embedding column schema.",
+            runbook="platform-readiness#vector-schema",
+            observed_fields=(
+                ("extension_installed", ObservedField("bool")),
+                ("embedding_type", ObservedField("string", max_length=32)),
+                ("index_exists", ObservedField("bool")),
+                ("index_method", ObservedField("string", max_length=16)),
+                ("index_opclass", ObservedField("string", max_length=32)),
+                ("index_table", ObservedField("string", max_length=64)),
+                ("index_column", ObservedField("string", max_length=64)),
+                ("index_valid", ObservedField("bool")),
+                ("index_ready", ObservedField("bool")),
+            ),
         ),
         "redis": CheckCatalogEntry(
             label="Redis memory and queue store",
@@ -303,6 +321,151 @@ async def check_database(app_settings: Settings) -> ReadinessCheck:
     return ReadinessCheck(READY, "database responded")
 
 
+async def check_vector_schema(app_settings: Settings) -> ReadinessCheck:
+    async def _probe() -> tuple[bool, str, bool, str, str, str, str, bool, bool]:
+        from app.db.session import async_session
+
+        async with async_session() as db:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT
+                        EXISTS (
+                            SELECT 1
+                            FROM pg_extension
+                            WHERE extname = 'vector'
+                        ) AS extension_installed,
+                        COALESCE(
+                            (
+                                SELECT format_type(attribute.atttypid, attribute.atttypmod)
+                                FROM pg_attribute AS attribute
+                                WHERE attribute.attrelid = to_regclass('memory_embeddings')
+                                  AND attribute.attname = 'embedding'
+                                  AND NOT attribute.attisdropped
+                            ),
+                            'missing'
+                        ) AS embedding_type,
+                        to_regclass('idx_memory_embeddings_vector') IS NOT NULL AS index_exists,
+                        COALESCE(
+                            (
+                                SELECT access_method.amname
+                                FROM pg_class AS index_class
+                                JOIN pg_am AS access_method ON access_method.oid = index_class.relam
+                                WHERE index_class.oid = to_regclass('idx_memory_embeddings_vector')
+                            ),
+                            'missing'
+                        ) AS index_method,
+                        COALESCE(
+                            (
+                                SELECT operator_class.opcname
+                                FROM pg_index AS index_definition
+                                JOIN LATERAL unnest(index_definition.indclass) WITH ORDINALITY AS classes(opclass_oid, position)
+                                  ON TRUE
+                                JOIN pg_opclass AS operator_class ON operator_class.oid = classes.opclass_oid
+                                WHERE index_definition.indexrelid = to_regclass('idx_memory_embeddings_vector')
+                                ORDER BY classes.position
+                                LIMIT 1
+                            ),
+                            'missing'
+                        ) AS index_opclass,
+                        COALESCE(
+                            (
+                                SELECT table_class.relname
+                                FROM pg_index AS index_definition
+                                JOIN pg_class AS table_class
+                                  ON table_class.oid = index_definition.indrelid
+                                WHERE index_definition.indexrelid = to_regclass('idx_memory_embeddings_vector')
+                            ),
+                            'missing'
+                        ) AS index_table,
+                        COALESCE(
+                            (
+                                SELECT attribute.attname
+                                FROM pg_index AS index_definition
+                                JOIN LATERAL unnest(index_definition.indkey) WITH ORDINALITY
+                                  AS keys(attnum, position) ON TRUE
+                                JOIN pg_attribute AS attribute
+                                  ON attribute.attrelid = index_definition.indrelid
+                                 AND attribute.attnum = keys.attnum
+                                WHERE index_definition.indexrelid = to_regclass('idx_memory_embeddings_vector')
+                                  AND keys.position = 1
+                            ),
+                            'missing'
+                        ) AS index_column,
+                        COALESCE(
+                            (
+                                SELECT index_definition.indisvalid
+                                FROM pg_index AS index_definition
+                                WHERE index_definition.indexrelid = to_regclass('idx_memory_embeddings_vector')
+                            ),
+                            FALSE
+                        ) AS index_valid,
+                        COALESCE(
+                            (
+                                SELECT index_definition.indisready
+                                FROM pg_index AS index_definition
+                                WHERE index_definition.indexrelid = to_regclass('idx_memory_embeddings_vector')
+                            ),
+                            FALSE
+                        ) AS index_ready
+                    """
+                )
+            )
+            row = result.one()
+            return (
+                bool(row[0]), str(row[1]), bool(row[2]), str(row[3]), str(row[4]),
+                str(row[5]), str(row[6]), bool(row[7]), bool(row[8]),
+            )
+
+    try:
+        async with asyncio.timeout(app_settings.platform_readiness_dependency_timeout_seconds):
+            (
+                extension_installed,
+                embedding_type,
+                index_exists,
+                index_method,
+                index_opclass,
+                index_table,
+                index_column,
+                index_valid,
+                index_ready,
+            ) = await _probe()
+    except Exception:
+        _log_probe_failure("vector_schema", "catalog_unavailable")
+        status = UNSAFE if _is_production(app_settings) else DEGRADED
+        return ReadinessCheck(status, "pgvector schema could not be verified")
+
+    observed = {
+        "extension_installed": extension_installed,
+        "embedding_type": embedding_type,
+        "index_exists": index_exists,
+        "index_method": index_method,
+        "index_opclass": index_opclass,
+        "index_table": index_table,
+        "index_column": index_column,
+        "index_valid": index_valid,
+        "index_ready": index_ready,
+    }
+    if (
+        not extension_installed
+        or embedding_type != "vector(1536)"
+        or not index_exists
+        or index_method != "hnsw"
+        or index_opclass != "vector_cosine_ops"
+        or index_table != "memory_embeddings"
+        or index_column != "embedding"
+        or not index_valid
+        or not index_ready
+    ):
+        status = UNSAFE if _is_production(app_settings) else DEGRADED
+        return ReadinessCheck(
+            status,
+            "pgvector extension or embedding schema does not match the required contract",
+            observed,
+        )
+    return ReadinessCheck(READY, "pgvector embedding schema matches the required contract", observed)
+
+
 async def check_redis(app_settings: Settings) -> ReadinessCheck:
     async def _probe() -> None:
         from app.storage.redis_client import get_redis
@@ -462,6 +625,7 @@ DEFAULT_CHECKS: tuple[tuple[str, CheckFunc], ...] = (
     ("public_api_ws_config", check_public_api_ws_config),
     ("risk_policy", check_risk_policy),
     ("database", check_database),
+    ("vector_schema", check_vector_schema),
     ("redis", check_redis),
     ("migration_heads", check_migration_heads),
     ("notification_provider", check_notification_provider),
@@ -470,6 +634,9 @@ DEFAULT_CHECKS: tuple[tuple[str, CheckFunc], ...] = (
 )
 
 _DETACHED_PROBE_TASKS: set[asyncio.Task[Any]] = set()
+_PROBE_SLOT_LOCK = threading.Lock()
+_MAX_PROBE_SLOTS = max(16, len(REQUIRED_CHECK_IDS) * 4)
+_ACTIVE_PROBE_SLOTS = 0
 
 
 def _definitions_are_valid(
@@ -550,7 +717,8 @@ async def _run_probe(
 
 
 def _consume_detached_task(task: asyncio.Task[Any]) -> None:
-    _DETACHED_PROBE_TASKS.discard(task)
+    with _PROBE_SLOT_LOCK:
+        _DETACHED_PROBE_TASKS.discard(task)
     if task.cancelled():
         return
     try:
@@ -563,8 +731,29 @@ def _track_detached_task(task: asyncio.Task[Any]) -> None:
     if task.done():
         _consume_detached_task(task)
         return
-    _DETACHED_PROBE_TASKS.add(task)
+    with _PROBE_SLOT_LOCK:
+        _DETACHED_PROBE_TASKS.add(task)
     task.add_done_callback(_consume_detached_task)
+
+
+def _try_reserve_probe_slots(count: int) -> bool:
+    global _ACTIVE_PROBE_SLOTS
+
+    if count <= 0:
+        return False
+    with _PROBE_SLOT_LOCK:
+        occupied = _ACTIVE_PROBE_SLOTS + len(_DETACHED_PROBE_TASKS)
+        if occupied + count > _MAX_PROBE_SLOTS:
+            return False
+        _ACTIVE_PROBE_SLOTS += count
+        return True
+
+
+def _release_probe_slots(count: int) -> None:
+    global _ACTIVE_PROBE_SLOTS
+
+    with _PROBE_SLOT_LOCK:
+        _ACTIVE_PROBE_SLOTS = max(0, _ACTIVE_PROBE_SLOTS - count)
 
 
 async def _cancel_and_collect_probe_tasks(
@@ -622,25 +811,12 @@ def _build_payload(
     return payload
 
 
-async def assess_platform_readiness(
-    app_settings: Settings = settings,
-    checks: tuple[tuple[str, CheckFunc], ...] = DEFAULT_CHECKS,
+async def _assess_platform_readiness_admitted(
+    app_settings: Settings,
+    checks: tuple[tuple[str, CheckFunc], ...],
     *,
-    allow_partial_checks: bool = False,
+    started_at: float,
 ) -> dict[str, Any]:
-    started_at = time.perf_counter()
-    if not _definitions_are_valid(checks, allow_partial_checks=allow_partial_checks):
-        _log_probe_failure(_CONFIGURATION_CHECK_ID, "configuration_invalid")
-        return _build_payload(
-            {
-                _CONFIGURATION_CHECK_ID: ReadinessCheck(
-                    UNSAFE,
-                    "readiness check definitions are invalid",
-                )
-            },
-            started_at=started_at,
-        )
-
     tasks = [
         asyncio.create_task(
             _run_probe(check_id, check, app_settings),
@@ -690,6 +866,48 @@ async def assess_platform_readiness(
             )
 
     return _build_payload(results, started_at=started_at)
+
+
+async def assess_platform_readiness(
+    app_settings: Settings = settings,
+    checks: tuple[tuple[str, CheckFunc], ...] = DEFAULT_CHECKS,
+    *,
+    allow_partial_checks: bool = False,
+) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    if not _definitions_are_valid(checks, allow_partial_checks=allow_partial_checks):
+        _log_probe_failure(_CONFIGURATION_CHECK_ID, "configuration_invalid")
+        return _build_payload(
+            {
+                _CONFIGURATION_CHECK_ID: ReadinessCheck(
+                    UNSAFE,
+                    "readiness check definitions are invalid",
+                )
+            },
+            started_at=started_at,
+        )
+
+    slot_count = len(checks)
+    if not _try_reserve_probe_slots(slot_count):
+        _log_probe_failure(_CONFIGURATION_CHECK_ID, "capacity_exhausted")
+        return _build_payload(
+            {
+                _CONFIGURATION_CHECK_ID: ReadinessCheck(
+                    UNSAFE,
+                    "readiness probe capacity is exhausted",
+                )
+            },
+            started_at=started_at,
+        )
+
+    try:
+        return await _assess_platform_readiness_admitted(
+            app_settings,
+            checks,
+            started_at=started_at,
+        )
+    finally:
+        _release_probe_slots(slot_count)
 
 
 _UNKNOWN_OPERATOR_ENTRY = CheckCatalogEntry(

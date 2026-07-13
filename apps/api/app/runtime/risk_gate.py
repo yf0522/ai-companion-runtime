@@ -15,6 +15,7 @@ from app.runtime.stream_manager import StreamManager
 
 logger = logging.getLogger(__name__)
 _BLOCKED_AUDIT_TIMEOUT_S = 0.25
+_NOTIFICATION_TIMEOUT_S = 0.25
 
 
 def _load_safety_messages() -> dict[str, str]:
@@ -26,7 +27,10 @@ def _load_safety_messages() -> dict[str, str]:
         configured = rules.get("safety_messages", {}) or {}
         return {str(key): str(value) for key, value in configured.items() if value}
     except Exception as exc:
-        logger.error("Failed to load safety messages: %s", exc)
+        logger.error(
+            "Safety message load failed error_class=%s code=safety_message_load_failed",
+            type(exc).__name__,
+        )
         return {}
 
 
@@ -125,7 +129,10 @@ async def _analyze_risk(
     except asyncio.TimeoutError:
         logger.warning("Risk gate timed out (%sms)", timeout_ms)
     except Exception as exc:
-        logger.warning("Risk gate failed: %s", exc)
+        logger.warning(
+            "Risk gate failed error_class=%s code=risk_gate_failed",
+            type(exc).__name__,
+        )
     return RiskResult(
         level="critical",
         category="safety_unavailable",
@@ -144,30 +151,31 @@ async def _emit_risk_block(
     session_id: str | None = None,
     user_message: str | None = None,
 ) -> dict:
-    if user_id:
-        # Required durable safety work: do not cancel the DB/outbox transaction
-        # with the best-effort observability timeout used below.
-        notify_status = await _dispatch_family_notify(user_id, risk, trace_id)
-    else:
-        notify_status = {"status": "failed", "error": "missing_user"}
-    safety_msg = build_safety_response(
-        load_safety_message(risk.level, risk.category),
-        notify_status,
-    )
+    base_message = load_safety_message(risk.level, risk.category)
     # Level-only alert: safety copy goes once via first_reply (avoid bubble dup).
     await stream_mgr.send_risk_alert(risk.level, "")
     ttft_ms = int((time.monotonic() - start) * 1000)
-    await stream_mgr.send_first_reply(safety_msg, ttft_ms)
-    total_latency_ms = int((time.monotonic() - start) * 1000)
-    await stream_mgr.send_final(
-        trace_id=trace_id,
-        message_id=f"m_{nanoid(size=12)}",
-        ttft_ms=ttft_ms,
-        total_latency_ms=total_latency_ms,
-        tools_used=[],
-        memory_updated=False,
-    )
-    audit_metadata = {"response_text": safety_msg, "audit_persisted": False}
+    await stream_mgr.send_first_reply(base_message, ttft_ms)
+
+    if user_id:
+        notify_status = await _dispatch_family_notify_bounded(user_id, risk, trace_id)
+    else:
+        notify_status = {
+            "status": "failed",
+            "outbox_ids": [],
+            "error_code": "missing_user",
+        }
+    notice = notification_notice(notify_status)
+    await stream_mgr.send_delta(f" {notice}")
+    response_text = f"{base_message.rstrip()} {notice}"
+    assistant_message_id = str(uuid.uuid4())
+    audit_metadata = {
+        "response_text": response_text,
+        "audit_persisted": False,
+        "assistant_message_id": assistant_message_id,
+        "audit_persistence": "not_attempted",
+        "notification_status": _notification_metadata(notify_status),
+    }
     if user_id and session_id and user_message is not None:
         try:
             await asyncio.wait_for(
@@ -176,23 +184,93 @@ async def _emit_risk_block(
                     session_id=session_id,
                     trace_id=trace_id,
                     user_message=user_message,
-                    assistant_message=safety_msg,
+                    assistant_message=response_text,
+                    assistant_message_id=assistant_message_id,
                     risk=risk,
                     notify_status=notify_status,
-                    total_latency_ms=total_latency_ms,
+                    total_latency_ms=int((time.monotonic() - start) * 1000),
                 ),
                 timeout=_BLOCKED_AUDIT_TIMEOUT_S,
             )
             audit_metadata["audit_persisted"] = True
+            audit_metadata["audit_persistence"] = "persisted"
+        except asyncio.TimeoutError:
+            logger.error(
+                "Blocked-turn audit timed out trace=%s code=blocked_audit_timeout",
+                trace_id[:80],
+            )
+            audit_metadata["audit_error"] = "TimeoutError"
+            audit_metadata["audit_persistence"] = "failed"
         except Exception as exc:
-            # Emergency guidance and terminal stream events have already been
-            # emitted. Surface audit degradation without withholding safety.
+            # Emergency guidance is already visible. Record explicit audit
+            # degradation before emitting the terminal stream event.
             logger.error(
                 "Blocked-turn audit persistence failed trace=%s error_class=%s code=blocked_audit_failed",
                 trace_id[:80], type(exc).__name__,
             )
             audit_metadata["audit_error"] = type(exc).__name__
+            audit_metadata["audit_persistence"] = "failed"
+    else:
+        audit_metadata["audit_error"] = "MissingContext"
+        audit_metadata["audit_persistence"] = "failed"
+
+    total_latency_ms = int((time.monotonic() - start) * 1000)
+    await stream_mgr.send_final(
+        trace_id=trace_id,
+        message_id=assistant_message_id,
+        ttft_ms=ttft_ms,
+        total_latency_ms=total_latency_ms,
+        tools_used=[],
+        memory_updated=False,
+    )
     return audit_metadata
+
+
+async def _dispatch_family_notify_bounded(
+    user_id: str,
+    risk: RiskResult,
+    trace_id: str,
+) -> dict:
+    """Bound notification persistence and return an explicit terminal result."""
+    try:
+        return await asyncio.wait_for(
+            _dispatch_family_notify(user_id, risk, trace_id),
+            timeout=_NOTIFICATION_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Risk gate family notify timed out trace=%s code=family_notify_timeout",
+            trace_id[:80],
+        )
+        return {
+            "status": "failed",
+            "outbox_ids": [],
+            "error_class": "TimeoutError",
+            "error_code": "family_notify_timeout",
+        }
+    except Exception as exc:
+        logger.error(
+            "Risk gate family notify failed trace=%s error_class=%s code=family_notify_failed",
+            trace_id[:80], type(exc).__name__,
+        )
+        return {
+            "status": "failed",
+            "outbox_ids": [],
+            "error_class": type(exc).__name__,
+            "error_code": "family_notify_failed",
+        }
+
+
+def _notification_metadata(status: dict | None) -> dict:
+    status = status or {}
+    return {
+        key: status[key]
+        for key in (
+            "status", "webhook_status", "delivery_status", "delivery_queued",
+            "error_class", "error_code",
+        )
+        if key in status
+    } | {"outbox_count": len(status.get("outbox_ids") or [])}
 
 
 async def _persist_blocked_turn_evidence(
@@ -202,6 +280,7 @@ async def _persist_blocked_turn_evidence(
     trace_id: str,
     user_message: str,
     assistant_message: str,
+    assistant_message_id: str,
     risk: RiskResult,
     notify_status: dict,
     total_latency_ms: int,
@@ -216,7 +295,10 @@ async def _persist_blocked_turn_evidence(
         trace_id=trace_id,
         user_content=user_message,
         assistant_content=assistant_message,
+        assistant_message_id=assistant_message_id,
     )
+    if persisted.assistant_message_id != assistant_message_id:
+        raise RuntimeError("assistant message ID mismatch")
     trace = TraceService()
     common = {
         "risk_level": risk.level,
@@ -258,6 +340,8 @@ def _bounded_notification_state(status: dict | None) -> str:
         return webhook_status
     if status.get("outbox_ids"):
         return "queued"
+    if status.get("status") == "pending":
+        return "pending"
     return "failed"
 
 
@@ -284,20 +368,24 @@ def _default_safety_message() -> str:
     )
 
 
-def build_safety_response(base_message: str, notify_status: dict | None) -> str:
-    """Append truthful family-contact state without claiming unconfirmed delivery."""
+def notification_notice(notify_status: dict | None) -> str:
+    """Return truthful family-contact copy without claiming unconfirmed delivery."""
     status = notify_status or {}
     webhook_status = str(status.get("webhook_status") or "")
     outbox_ids = status.get("outbox_ids") or []
     if webhook_status in {"delivered", "read", "acknowledged"}:
         notice = "您的家人已经收到通知。"
     elif outbox_ids:
-        notice = "我已尝试联系您的家人，消息正在发送，送达状态还在确认。"
+        notice = "联系家人的请求已记录，送达状态还在确认。"
     elif webhook_status == "no_contact":
         notice = "目前没有可通知的已验证家属联系人，请立即联系身边可信任的人。"
     else:
         notice = "我暂时无法联系到您的家人，请立即联系身边可信任的人。"
-    return f"{base_message.rstrip()} {notice}"
+    return notice
+
+
+def build_safety_response(base_message: str, notify_status: dict | None) -> str:
+    return f"{base_message.rstrip()} {notification_notice(notify_status)}"
 
 
 async def _dispatch_family_notify(user_id: str, risk: RiskResult, trace_id: str) -> dict:
