@@ -148,12 +148,28 @@ def test_device_realtime_auth_and_audio_roundtrip(monkeypatch):
 
         assert ws.receive_json() == {"type": "asr_final", "text": "天气怎么样？"}
         assert ws.receive_json() == {"type": "trace", "trace_id": "trace_device_1"}
-        assert ws.receive_json() == {"type": "first_reply", "text": "今天天气", "ttft_ms": 8}
-        assert ws.receive_json() == {"type": "delta", "text": "不错。"}
-        final = ws.receive_json()
-        assert final["type"] == "final"
+        assert ws.receive_json() == {
+            "type": "first_reply",
+            "text": "今天天气",
+            "ttft_ms": 8,
+            "trace_id": "trace_device_1",
+        }
+        assert ws.receive_json() == {
+            "type": "delta",
+            "text": "不错。",
+            "trace_id": "trace_device_1",
+        }
+        assert ws.receive_json() == {
+            "type": "final",
+            "trace_id": "trace_device_1",
+            "message_id": "m1",
+            "ttft_ms": 8,
+            "total_latency_ms": 30,
+            "tools_used": [],
+            "memory_updated": True,
+        }
         assert ws.receive_bytes() == b"pcm-audio"
-        assert ws.receive_json()["type"] == "tts_done"
+        assert ws.receive_json() == {"type": "tts_done", "trace_id": "trace_device_1"}
 
     assert harness.calls[0]["message"] == "天气怎么样？"
     assert [item["sequence"] for item in persisted] == [1, 2]
@@ -274,11 +290,24 @@ def test_device_realtime_falls_back_to_batch_asr_when_realtime_returns_empty(mon
         ws.send_json({"type": "audio_end", "seq": 2})
 
         assert ws.receive_json() == {"type": "asr_final", "text": "后备识别文本"}
-        assert ws.receive_json()["type"] == "trace"
-        assert ws.receive_json()["type"] == "first_reply"
-        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json() == {"type": "trace", "trace_id": "trace_fb"}
+        assert ws.receive_json() == {
+            "type": "first_reply",
+            "text": "收到。",
+            "ttft_ms": 5,
+            "trace_id": "trace_fb",
+        }
+        assert ws.receive_json() == {
+            "type": "final",
+            "trace_id": "trace_fb",
+            "message_id": "m1",
+            "ttft_ms": 5,
+            "total_latency_ms": 20,
+            "tools_used": [],
+            "memory_updated": True,
+        }
         assert ws.receive_bytes() == b"fallback-pcm"
-        assert ws.receive_json()["type"] == "tts_done"
+        assert ws.receive_json() == {"type": "tts_done", "trace_id": "trace_fb"}
 
 
 def test_device_scam_utterance_goes_through_harness_risk_path(monkeypatch):
@@ -321,12 +350,30 @@ def test_device_scam_utterance_goes_through_harness_risk_path(monkeypatch):
         ws.send_json({"type": "audio_end", "seq": 2})
 
         assert ws.receive_json()["type"] == "asr_final"
-        assert ws.receive_json()["type"] == "trace"
-        assert ws.receive_json()["type"] == "risk_alert"
-        assert ws.receive_json()["type"] == "first_reply"
-        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json() == {"type": "trace", "trace_id": "trace_device_1"}
+        assert ws.receive_json() == {
+            "type": "risk_alert",
+            "level": "high",
+            "message": "疑似诈骗，请先挂断",
+            "trace_id": "trace_device_1",
+        }
+        assert ws.receive_json() == {
+            "type": "first_reply",
+            "text": "不要转账，也不要发验证码。",
+            "ttft_ms": 12,
+            "trace_id": "trace_device_1",
+        }
+        assert ws.receive_json() == {
+            "type": "final",
+            "trace_id": "trace_device_1",
+            "message_id": "m1",
+            "ttft_ms": 12,
+            "total_latency_ms": 40,
+            "tools_used": [],
+            "memory_updated": False,
+        }
         assert ws.receive_bytes() == b"risk-pcm"
-        assert ws.receive_json()["type"] == "tts_done"
+        assert ws.receive_json() == {"type": "tts_done", "trace_id": "trace_device_1"}
 
     assert "验证码" in harness.calls[0]["message"]
 
@@ -370,14 +417,33 @@ def test_device_reminder_utterance_emits_reminder_create(monkeypatch):
         ws.send_json({"type": "audio_end", "seq": 2})
 
         assert ws.receive_json()["type"] == "asr_final"
-        assert ws.receive_json()["type"] == "trace"
-        assert ws.receive_json()["type"] == "first_reply"
-        reminder = ws.receive_json()
-        assert reminder["type"] == "reminder_create"
-        assert reminder["label"] == "降压药"
-        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json() == {"type": "trace", "trace_id": "trace_device_1"}
+        assert ws.receive_json() == {
+            "type": "first_reply",
+            "text": "好的，已帮您设好提醒。",
+            "ttft_ms": 10,
+            "trace_id": "trace_device_1",
+        }
+        assert ws.receive_json() == {
+            "type": "reminder_create",
+            "label": "降压药",
+            "timer_type": "alarm",
+            "hour": 20,
+            "minute": 0,
+            "repeat_mode": "daily",
+            "trace_id": "trace_device_1",
+        }
+        assert ws.receive_json() == {
+            "type": "final",
+            "trace_id": "trace_device_1",
+            "message_id": "m1",
+            "ttft_ms": 10,
+            "total_latency_ms": 35,
+            "tools_used": ["reminder"],
+            "memory_updated": True,
+        }
         assert ws.receive_bytes() == b"reminder-pcm"
-        assert ws.receive_json()["type"] == "tts_done"
+        assert ws.receive_json() == {"type": "tts_done", "trace_id": "trace_device_1"}
 
 
 def test_device_realtime_rejects_user_jwt_auth_shape():
