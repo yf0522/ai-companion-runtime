@@ -149,7 +149,7 @@ def test_stop_generation_is_consumed_while_runtime_is_in_flight(monkeypatch):
 async def test_gateway_stop_is_trace_bound_and_cancels_only_matching_active_task():
     gateway = WebSocketGateway()
     conn = Connection(
-        websocket=MagicMock(),
+        websocket=SimpleNamespace(send_json=AsyncMock()),
         user_id="user-1",
         session_id="session-1",
         agent_runtime="pi_experimental",

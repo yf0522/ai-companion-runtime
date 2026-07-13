@@ -175,6 +175,23 @@ test("old trace frames cannot mutate or terminate a newer turn", () => {
   assert.equal(current?.riskAlert, undefined);
 });
 
+test("failed then successful retries keep truthful invocation receipts", () => {
+  const traceId = begin("retry-receipts");
+  useChatStore.getState().setToolResult({
+    traceId, invocationId: "call-1", tool: "caretask", status: "failed", text: "第一次失败",
+  });
+  useChatStore.getState().setToolResult({
+    traceId, invocationId: "call-2", tool: "caretask", status: "success", text: "第二次成功",
+  });
+  const tools = useChatStore.getState().messages.at(-1)?.toolsUsed;
+  assert.deepEqual(tools?.map(({ invocationId, status, displayText }) => ({
+    invocationId, status, displayText,
+  })), [
+    { invocationId: "call-1", status: "failed", displayText: "第一次失败" },
+    { invocationId: "call-2", status: "success", displayText: "第二次成功" },
+  ]);
+});
+
 test("terminal receipt evidence survives device-local history persistence", () => {
   const traceId = begin("persist-receipts");
   useChatStore.getState().setToolResult({
