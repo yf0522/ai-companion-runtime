@@ -196,6 +196,31 @@ _kill_port() {
   fi
 }
 
+_kill_process_tree() {
+  local pid="$1" child
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  while IFS= read -r child; do
+    [[ -n "$child" ]] && _kill_process_tree "$child"
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+  kill "$pid" 2>/dev/null || true
+}
+
+_kill_repo_celery_orphans() {
+  local pattern="$ROOT/apps/api/.venv/bin/celery -A app.workers.celery_app"
+  local pids
+  pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    sleep 0.5
+    pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    if [[ -n "$pids" ]]; then
+      # shellcheck disable=SC2086
+      kill -9 $pids 2>/dev/null || true
+    fi
+  fi
+}
+
 _wait_http() {
   local url="$1"
   local name="$2"
@@ -271,22 +296,26 @@ _load_env() {
 
 cmd_stop() {
   echo "Stopping local stack..."
+  # Stop recorded process trees before killing tmux shells. Celery prefork
+  # children can otherwise be reparented to PID 1 and keep consuming queues.
+  for name in pi api web celery-worker celery-beat; do
+    local pid_file pid
+    pid_file="$(_pid_file "$name")"
+    if [[ -f "$pid_file" ]]; then
+      pid="$(cat "$pid_file")"
+      _kill_process_tree "$pid"
+      rm -f "$pid_file"
+    fi
+  done
   if command -v tmux >/dev/null 2>&1; then
     for s in companion-web companion-api companion-pi companion-celery-worker companion-celery-beat; do
       tmux has-session -t "=$s" 2>/dev/null && tmux kill-session -t "=$s" 2>/dev/null || true
     done
   fi
+  _kill_repo_celery_orphans
   _kill_port "$WEB_PORT"
   _kill_port "$API_PORT"
   _kill_port "$PI_PORT"
-  for name in pi api web celery-worker celery-beat; do
-    local pid_file
-    pid_file="$(_pid_file "$name")"
-    if [[ -f "$pid_file" ]]; then
-      kill "$(cat "$pid_file")" 2>/dev/null || true
-      rm -f "$pid_file"
-    fi
-  done
   echo "Stopped."
 }
 

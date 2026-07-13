@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.workers.celery_app import app
+from app.workers.async_runner import run_async_task
 
 logger = logging.getLogger(__name__)
 
@@ -10,8 +11,7 @@ logger = logging.getLogger(__name__)
 @app.task(name="app.workers.reflection_worker.run_reflection")
 def run_reflection(user_id: str, session_id: str):
     """Analyze recent conversations and propose profile changes."""
-    import asyncio
-    asyncio.run(_reflect(user_id, session_id))
+    run_async_task(lambda: _reflect(user_id, session_id))
 
 
 async def _reflect(user_id: str, session_id: str):
@@ -102,9 +102,7 @@ def generate_session_summary(session_id: str):
 
 @app.task(name="app.workers.reflection_worker.accept_reflection_proposal")
 def accept_reflection_proposal(proposal_id: str, accepted_by: str):
-    import asyncio
-
-    asyncio.run(_accept_reflection_proposal(proposal_id, accepted_by))
+    run_async_task(lambda: _accept_reflection_proposal(proposal_id, accepted_by))
 
 
 async def _accept_reflection_proposal(proposal_id: str, accepted_by: str) -> bool:
