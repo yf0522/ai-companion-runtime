@@ -156,6 +156,25 @@ test("an old trace final cannot finalize or overwrite the newer streaming trace"
   assert.equal(state.messages.at(-1).status, "complete");
 });
 
+test("old trace frames cannot mutate or terminate a newer turn", () => {
+  begin("stale-frames", "trace-old");
+  useChatStore.getState().startAssistantMessage("trace-new");
+  useChatStore.getState().appendDelta("trace-old", "stale delta");
+  useChatStore.getState().setToolStatus("trace-old", "caretask", "failed");
+  useChatStore.getState().setRiskAlert("trace-old", "high", "stale risk");
+  useChatStore.getState().setError("trace-old", "stale error");
+  useChatStore.getState().acknowledgeCancellation("trace-old");
+
+  const state = useChatStore.getState();
+  const current = state.messages.at(-1);
+  assert.equal(state.currentTraceId, "trace-new");
+  assert.equal(state.isStreaming, true);
+  assert.equal(current?.content, "");
+  assert.equal(current?.status, "streaming");
+  assert.deepEqual(current?.toolsUsed, []);
+  assert.equal(current?.riskAlert, undefined);
+});
+
 test("terminal receipt evidence survives device-local history persistence", () => {
   const traceId = begin("persist-receipts");
   useChatStore.getState().setToolResult({
