@@ -145,6 +145,7 @@ async function bridgeExecute(toolName, params, ctx) {
         risk_blocked: Boolean(ctx.riskBlocked),
         risk_level: ctx.riskLevel || null,
       }),
+      signal: ctx.signal,
     });
   } catch (err) {
     const errorClass = err instanceof Error ? err.constructor.name : "UnknownError";
@@ -330,7 +331,10 @@ function makeContactTool(ctx) {
   };
 }
 
-async function streamAgentChat({ res, body }) {
+async function streamAgentChat({ req, res, body }) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(new Error("client_closed"));
+  req?.once?.("close", abort);
   const model = resolveModel(body.provider, body.model);
   const userMessages = normalizeMessages(body);
   const lastUser = userMessages[userMessages.length - 1];
@@ -341,6 +345,7 @@ async function streamAgentChat({ res, body }) {
     riskBlocked: Boolean(body.risk_blocked),
     riskLevel: body.risk_level || null,
     userText: lastUser.content,
+    signal: controller.signal,
   };
 
   const tools = ENABLE_TOOLS
@@ -449,6 +454,8 @@ async function streamAgentChat({ res, body }) {
     },
   });
 
+  controller.signal.addEventListener("abort", () => agent.abort(), { once: true });
+
   agent.subscribe(async (event) => {
     const errorMessage = assistantErrorMessage(event);
     if (errorMessage) {
@@ -490,6 +497,7 @@ async function streamAgentChat({ res, body }) {
   if (!res.writableEnded) {
     res.end();
   }
+  req?.off?.("close", abort);
 }
 
 /** Legacy stream path without agent-core (tools disabled / fallback). */
@@ -601,7 +609,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (useAgent) {
-        await streamAgentChat({ res, body });
+        await streamAgentChat({ req, res, body });
         return;
       }
       await streamChatLegacy({ res, body });
