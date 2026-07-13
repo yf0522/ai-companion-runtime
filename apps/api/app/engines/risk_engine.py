@@ -233,14 +233,6 @@ class RiskEngine(BaseEngine):
 
         # Critical: health emergency
         critical = rules.get("critical", {})
-        for kw in critical.get("keywords", []):
-            if self._keyword_match(message, kw, quote_spans):
-                return RiskResult(
-                    level="critical",
-                    category=critical.get("category", "health_emergency"),
-                    confidence=0.95,
-                    triggered_rules=[f"keyword:{kw}"],
-                )
         for pattern in critical.get("patterns", []):
             if self._pattern_match(message, pattern, quote_spans):
                 return RiskResult(
@@ -249,7 +241,14 @@ class RiskEngine(BaseEngine):
                     confidence=0.95,
                     triggered_rules=[f"pattern:{pattern}"],
                 )
-
+        for kw in critical.get("keywords", []):
+            if self._keyword_match(message, kw, quote_spans):
+                return RiskResult(
+                    level="critical",
+                    category=critical.get("category", "health_emergency"),
+                    confidence=0.95,
+                    triggered_rules=[f"keyword:{kw}"],
+                )
         # High: sub-categories (scam / health)
         high = rules.get("high", {})
         for cat_name, cat_rules in high.get("categories", {}).items():
