@@ -1,7 +1,9 @@
 FROM node:18-alpine AS deps
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+# Install from the committed lockfile so image builds match CI (npm ci) and
+# do not drift onto newer, peer-incompatible releases of ^-ranged deps.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 FROM node:18-alpine AS builder
 WORKDIR /app
